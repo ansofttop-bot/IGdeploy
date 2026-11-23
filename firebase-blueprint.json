@@ -1,0 +1,240 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with settings, plan information, and preferences.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique Firebase Auth user ID." },
+        "displayName": { "type": "string", "maxLength": 100, "description": "User display name." },
+        "email": { "type": "string", "maxLength": 200, "description": "User email address." },
+        "theme": { "type": "string", "enum": ["dark", "light", "crimson"], "description": "Theme preference." },
+        "lang": { "type": "string", "enum": ["en", "ru", "es", "fr", "ar"], "description": "Language preference." },
+        "model": { "type": "string", "enum": ["instinct", "chat", "f1"], "description": "Selected model." },
+        "agent": { "type": "string", "enum": ["universal", "coder", "hacker", "mentor", "psy", "creative"], "description": "Selected agent personality." },
+        "aiStyle": { "type": "string", "maxLength": 2000, "description": "Custom AI communication style instructions." },
+        "aiCreativity": { "type": "string", "maxLength": 30, "description": "Preferred AI creativity level." },
+        "aiLength": { "type": "string", "maxLength": 30, "description": "Preferred AI response length." },
+        "accent": { "type": "string", "maxLength": 30, "description": "Selected UI accent color preset." },
+        "promptUsage": { "type": "object", "description": "Prompt usage counts across engine, chat, and flow workspaces." },
+        "plan": { "type": "string", "enum": ["free", "pro"], "description": "Subscription plan." },
+        "proLifetime": { "type": "boolean", "description": "Whether user was granted lifetime Pro." },
+        "signupNumber": { "type": "number", "description": "Sequential signup number." },
+        "deviceFingerprint": { "type": "string", "maxLength": 128, "description": "Unique device fingerprint." },
+        "createdAt": { "type": "string", "description": "ISO timestamp of creation." },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update." }
+      },
+      "required": ["id", "plan"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A conversation thread belonging to a user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique chat document ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "title": { "type": "string", "maxLength": 200, "description": "Chat title." },
+        "chatType": { "type": "string", "enum": ["chat", "engine"], "description": "Whether thread is regular chat or Engine project." },
+        "isSaved": { "type": "boolean", "description": "Whether chat is bookmarked/saved." },
+        "projectId": { "type": "string", "description": "Optional associated project ID." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Last message timestamp." }
+      },
+      "required": ["userId", "title"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "An individual message within a chat.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique message ID." },
+        "chatId": { "type": "string", "description": "Parent chat ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "role": { "type": "string", "enum": ["user", "assistant"], "description": "Message author role." },
+        "content": { "type": "string", "maxLength": 16000000, "description": "Message text or markdown content." },
+        "reasoning": { "type": "string", "maxLength": 1000000, "description": "Deep reasoning or thought process." },
+        "position": { "type": "number", "description": "Order position of message." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." }
+      },
+      "required": ["chatId", "userId", "role", "content", "position"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A project folder to organize chats.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique project ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "name": { "type": "string", "maxLength": 100, "description": "Project name." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "name"]
+    },
+    "EngineProject": {
+      "title": "EngineProject",
+      "description": "An Engine Studio app project with source files and chat history.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Engine project/chat ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "title": { "type": "string", "maxLength": 200, "description": "Project title." },
+        "projectId": { "type": "string", "description": "Optional associated Library project ID." },
+        "activeFile": { "type": "string", "maxLength": 260, "description": "Currently open file path." },
+        "files": { "type": "object", "description": "Map of file paths to source contents." },
+        "chatMessages": { "type": "array", "description": "Engine chat message history." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "title", "files"]
+    },
+    "LibraryFile": {
+      "title": "LibraryFile",
+      "description": "A user or Flow-generated file stored in the Library.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique library file ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "name": { "type": "string", "maxLength": 260, "description": "File name." },
+        "type": { "type": "string", "maxLength": 50, "description": "File type classification." },
+        "content": { "type": "string", "maxLength": 850000, "description": "Text or serialized content of the file." },
+        "projectId": { "type": "string", "description": "Optional associated Library project ID." },
+        "taskId": { "type": "string", "description": "Optional originating Flow task ID." },
+        "taskTitle": { "type": "string", "maxLength": 200, "description": "Optional originating Flow task title." },
+        "source": { "type": "string", "maxLength": 40, "description": "Origin source (flow or upload)." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "name", "type"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A payment or donation record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique payment ID." },
+        "userId": { "type": "string", "description": "Purchaser user ID." },
+        "providerTxnId": { "type": "string", "maxLength": 128, "description": "Transaction ID from payment provider." },
+        "amount": { "type": "number", "description": "Payment amount." },
+        "currency": { "type": "string", "maxLength": 10, "description": "Currency code." },
+        "status": { "type": "string", "enum": ["PENDING", "CONFIRMED", "CANCELED", "CHARGEBACKED"], "description": "Transaction status." },
+        "purpose": { "type": "string", "maxLength": 50, "description": "Subscription pro or donation." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "providerTxnId", "amount", "status"]
+    },
+    "Memory": {
+      "title": "Memory",
+      "description": "Long-term semantic memory item for the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique memory item ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "content": { "type": "string", "maxLength": 1000, "description": "Learned user preference or fact." },
+        "kind": { "type": "string", "maxLength": 50, "description": "Category of memory." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "content", "kind"]
+    },
+    "FlowTask": {
+      "title": "FlowTask",
+      "description": "An automated workflow task or monitor executed in IG Flow.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Task ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "title": { "type": "string", "maxLength": 200, "description": "Task title." },
+        "goal": { "type": "string", "maxLength": 4000, "description": "User formulated natural language goal." },
+        "status": { "type": "string", "enum": ["idle", "planning", "running", "waiting_approval", "completed", "failed", "paused"], "description": "Execution status." },
+        "autonomy": { "type": "string", "enum": ["assist", "semi-auto", "autopilot"], "description": "Autonomy level." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "title", "goal", "status", "autonomy"]
+    },
+    "FlowScenario": {
+      "title": "FlowScenario",
+      "description": "A reusable automation template or saved workflow.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Scenario ID." },
+        "userId": { "type": "string", "description": "Owner user ID." },
+        "name": { "type": "string", "maxLength": 150, "description": "Scenario name." },
+        "description": { "type": "string", "maxLength": 1000, "description": "Scenario summary." },
+        "category": { "type": "string", "maxLength": 50, "description": "Category tag." },
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
+      },
+      "required": ["userId", "name", "category"]
+    },
+    "DeviceLimits": {
+      "title": "DeviceLimits",
+      "description": "Device-level prompt and photo usage counters keyed by deterministic hardware SHA-256 hash to prevent registration limit bypass.",
+      "type": "object",
+      "properties": {
+        "engine": { "type": "number", "description": "Prompts used in Engine on this device (max 18)." },
+        "chat": { "type": "number", "description": "Legacy chat counter (chat is unlimited)." },
+        "flow": { "type": "number", "description": "Prompts used in Flow on this device (max 18)." },
+        "image": { "type": "number", "description": "Photos generated/edited on this device today (max 8)." },
+        "engineResetAt": { "type": "number", "description": "Epoch ms when Engine limit automatically resets (0 if active)." },
+        "chatResetAt": { "type": "number", "description": "Epoch ms when Chat limit automatically resets (0 if active)." },
+        "flowResetAt": { "type": "number", "description": "Epoch ms when Flow limit automatically resets (0 if active)." },
+        "imageResetAt": { "type": "number", "description": "Epoch ms when daily Photo limit automatically resets (0 if active)." },
+        "updatedAt": { "type": "string", "maxLength": 64, "description": "ISO timestamp of last update." }
+      },
+      "required": ["engine", "chat", "flow", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents keyed by Auth UID."
+    },
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Conversations owned by users."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Messages inside a conversation subcollection."
+    },
+    "/chat_messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Messages inside a conversation top-level collection."
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Project folders owned by users."
+    },
+    "/engine_projects/{projectId}": {
+      "schema": "EngineProject",
+      "description": "Engine Studio projects with files and chat messages owned by users."
+    },
+    "/library_files/{fileId}": {
+      "schema": "LibraryFile",
+      "description": "Library and Flow-generated files synced per user account."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Audit trail of payments."
+    },
+    "/memories/{memoryId}": {
+      "schema": "Memory",
+      "description": "User long-term memory facts."
+    },
+    "/flow_tasks/{taskId}": {
+      "schema": "FlowTask",
+      "description": "Automated workflow tasks created in IG Flow."
+    },
+    "/flow_scenarios/{scenarioId}": {
+      "schema": "FlowScenario",
+      "description": "Saved automation recipes and scenarios in IG Flow."
+    },
+    "/device_limits/{fpHash}": {
+      "schema": "DeviceLimits",
+      "description": "Device-level prompt usage counters keyed by hardware fingerprint hash."
+    }
+  }
+}

@@ -1,0 +1,414 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isSignedIn() && (
+        (('user_id' in resource.data) && resource.data.user_id == request.auth.uid) ||
+        (('userId' in resource.data) && resource.data.userId == request.auth.uid)
+      );
+    }
+
+    function isIncomingOwner() {
+      return isSignedIn() && (
+        (('user_id' in request.resource.data) && request.resource.data.user_id == request.auth.uid) ||
+        (('userId' in request.resource.data) && request.resource.data.userId == request.auth.uid)
+      );
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptionalBool(data, key) {
+      return !(key in data) || data[key] == null || data[key] is bool;
+    }
+
+    function isOptionalNumber(data, key) {
+      return !(key in data) || data[key] == null || data[key] is int || data[key] is float;
+    }
+
+    function isOptionalList(data, key, maxLen) {
+      return !(key in data) || data[key] == null || (data[key] is list && data[key].size() <= maxLen);
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasOnly([
+          'id', 'display_name', 'displayName', 'email', 'theme', 'lang',
+          'model', 'agent', 'ai_style', 'aiStyle', 'ai_creativity', 'aiCreativity',
+          'ai_length', 'aiLength', 'accent', 'needs_accent_onboarding',
+          'defaults_v2_migrated', 'plan', 'pro_lifetime', 'proLifetime',
+          'signup_number', 'signupNumber', 'device_fingerprint', 'deviceFingerprint',
+          'prompt_usage', 'promptUsage', 'created_at', 'createdAt',
+          'updated_at', 'updatedAt', 'avatar_url', 'avatarUrl', 'photoURL'
+        ])
+        && isOptionalString(data, 'id', 128)
+        && isOptionalString(data, 'display_name', 120)
+        && isOptionalString(data, 'displayName', 120)
+        && isOptionalString(data, 'email', 254)
+        && isOptionalString(data, 'theme', 32)
+        && isOptionalString(data, 'lang', 16)
+        && isOptionalString(data, 'model', 32)
+        && isOptionalString(data, 'agent', 32)
+        && isOptionalString(data, 'ai_style', 2000)
+        && isOptionalString(data, 'aiStyle', 2000)
+        && isOptionalString(data, 'ai_creativity', 32)
+        && isOptionalString(data, 'aiCreativity', 32)
+        && isOptionalString(data, 'ai_length', 32)
+        && isOptionalString(data, 'aiLength', 32)
+        && isOptionalString(data, 'accent', 32)
+        && isOptionalBool(data, 'needs_accent_onboarding')
+        && isOptionalBool(data, 'defaults_v2_migrated')
+        && isOptionalString(data, 'plan', 32)
+        && isOptionalBool(data, 'pro_lifetime')
+        && isOptionalBool(data, 'proLifetime')
+        && isOptionalNumber(data, 'signup_number')
+        && isOptionalNumber(data, 'signupNumber')
+        && isOptionalString(data, 'device_fingerprint', 128)
+        && isOptionalString(data, 'deviceFingerprint', 128)
+        && (!('prompt_usage' in data) || data.prompt_usage == null || data.prompt_usage is map)
+        && (!('promptUsage' in data) || data.promptUsage == null || data.promptUsage is map)
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updated_at', 64)
+        && isOptionalString(data, 'updatedAt', 64)
+        && isOptionalString(data, 'avatar_url', 2048)
+        && isOptionalString(data, 'avatarUrl', 2048)
+        && isOptionalString(data, 'photoURL', 2048);
+    }
+
+    function isValidChat(data) {
+      return isIncomingOwner()
+        && isOptionalString(data, 'title', 200)
+        && isOptionalString(data, 'chat_type', 20)
+        && isOptionalString(data, 'chatType', 20)
+        && isOptionalBool(data, 'is_saved')
+        && isOptionalBool(data, 'isSaved')
+        && isOptionalString(data, 'project_id', 128)
+        && isOptionalString(data, 'projectId', 128)
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updated_at', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidChatMessage(data) {
+      return isIncomingOwner()
+        && isOptionalString(data, 'chat_id', 128)
+        && isOptionalString(data, 'chatId', 128)
+        && (!('role' in data) || data.role in ['user', 'assistant', 'system'])
+        && isOptionalString(data, 'content', 1000000)
+        && isOptionalString(data, 'reasoning', 500000)
+        && isOptionalNumber(data, 'position')
+        && isOptionalList(data, 'artifacts', 50)
+        && isOptionalList(data, 'images', 20)
+        && isOptionalList(data, 'web_images', 20)
+        && isOptionalList(data, 'webImages', 20)
+        && isOptionalList(data, 'calendar_events', 20)
+        && isOptionalList(data, 'calendarEvents', 20)
+        && isOptionalList(data, 'task_events', 20)
+        && isOptionalList(data, 'taskEvents', 20)
+        && isOptionalList(data, 'gmail_events', 20)
+        && isOptionalList(data, 'gmailEvents', 20)
+        && isOptionalList(data, 'refusals', 20)
+        && isOptionalList(data, 'tab_transitions', 20)
+        && isOptionalList(data, 'tabTransitions', 20)
+        && isOptionalBool(data, 'memory_saved')
+        && isOptionalBool(data, 'memorySaved')
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updated_at', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidProject(data) {
+      return isIncomingOwner()
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updated_at', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidEngineProject(data) {
+      return isIncomingOwner()
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.files is map
+        && isOptionalList(data, 'chatMessages', 500)
+        && isOptionalString(data, 'activeFile', 260)
+        && isOptionalString(data, 'projectId', 128);
+    }
+
+    function isValidLibraryFile(data) {
+      return isIncomingOwner()
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 260
+        && data.type is string && data.type.size() > 0 && data.type.size() <= 50
+        && isOptionalString(data, 'content', 900000)
+        && isOptionalString(data, 'projectId', 128)
+        && isOptionalString(data, 'taskId', 128)
+        && isOptionalString(data, 'taskTitle', 200)
+        && isOptionalString(data, 'source', 40);
+    }
+
+    function isValidMemory(data) {
+      return isIncomingOwner()
+        && data.content is string && data.content.size() > 0 && data.content.size() <= 4000
+        && data.kind is string && data.kind.size() > 0 && data.kind.size() <= 50
+        && (!('attachment' in data) || data.attachment == null || data.attachment is map);
+    }
+
+    function isValidPayment(data) {
+      return isIncomingOwner()
+        && isOptionalNumber(data, 'amount')
+        && isOptionalString(data, 'currency', 16)
+        && isOptionalString(data, 'status', 32)
+        && isOptionalString(data, 'purpose', 64);
+    }
+
+    function isValidFlowTask(data) {
+      return isIncomingOwner()
+        && isOptionalString(data, 'title', 200)
+        && isOptionalString(data, 'goal', 4000)
+        && isOptionalString(data, 'status', 40)
+        && isOptionalString(data, 'autonomy', 40)
+        && isOptionalList(data, 'steps', 50)
+        && isOptionalList(data, 'logs', 500);
+    }
+
+    function isValidFlowScenario(data) {
+      return isIncomingOwner()
+        && isOptionalString(data, 'name', 150)
+        && isOptionalString(data, 'description', 1000)
+        && isOptionalString(data, 'category', 50);
+    }
+
+    function isValidDeviceLimits(data) {
+      return data.keys().hasAll(['engine', 'chat', 'flow', 'updatedAt'])
+        && data.keys().hasOnly(['engine', 'chat', 'flow', 'image', 'engineResetAt', 'chatResetAt', 'flowResetAt', 'imageResetAt', 'updatedAt', 'updated_at'])
+        && data.engine is int && data.engine >= 0 && data.engine <= 18
+        && data.chat is int && data.chat >= 0 && data.chat <= 1000000
+        && data.flow is int && data.flow >= 0 && data.flow <= 18
+        && (!('image' in data) || (data.image is int && data.image >= 0 && data.image <= 8))
+        && (!('engineResetAt' in data) || (data.engineResetAt is int && data.engineResetAt >= 0))
+        && (!('chatResetAt' in data) || (data.chatResetAt is int && data.chatResetAt >= 0))
+        && (!('flowResetAt' in data) || (data.flowResetAt is int && data.flowResetAt >= 0))
+        && (!('imageResetAt' in data) || (data.imageResetAt is int && data.imageResetAt >= 0))
+        && data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64
+        && (!('updated_at' in data) || (data.updated_at is string && data.updated_at.size() > 0 && data.updated_at.size() <= 64));
+    }
+
+    function canTransitionResetAt(newCount, limit, hasOldReset, oldReset, newReset, minDelayMs) {
+      return (newCount < limit && newReset == 0)
+        || (newCount == limit && (
+          (hasOldReset && oldReset is int && oldReset > 0 && newReset >= oldReset)
+          || ((!hasOldReset || oldReset == 0) && newReset >= request.time.toMillis() + minDelayMs)
+        ));
+    }
+
+    function canUpdateDeviceScope(newCount, oldCount, limit, hasOldReset, oldReset, newReset, minDelayMs) {
+      return (
+        newCount >= oldCount - 1
+        && canTransitionResetAt(newCount, limit, hasOldReset, oldReset, newReset, minDelayMs)
+      ) || (
+        newCount == 0
+        && hasOldReset
+        && oldReset is int
+        && oldReset > 0
+        && request.time.toMillis() >= oldReset
+        && newReset == 0
+      );
+    }
+
+    // Profiles: /profiles/{userId}
+    match /profiles/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId) && isOwner(userId) && isValidProfile(request.resource.data);
+      allow update: if isValidId(userId) && isOwner(userId) && isValidProfile(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Chats: /chats/{chatId}
+    match /chats/{chatId} {
+      allow get, delete: if isValidId(chatId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(chatId) && isValidChat(request.resource.data);
+      allow update: if isValidId(chatId) && isDocOwner() && isValidChat(request.resource.data);
+
+      // Subcollection messages: /chats/{chatId}/messages/{messageId}
+      match /messages/{messageId} {
+        allow get, delete: if isValidId(chatId) && isValidId(messageId) && (
+          isDocOwner() || (
+            isSignedIn() && (
+              get(/databases/$(database)/documents/chats/$(chatId)).data.user_id == request.auth.uid ||
+              get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid
+            )
+          )
+        );
+        allow list: if isSignedIn() && (
+          resource.data.user_id == request.auth.uid ||
+          resource.data.userId == request.auth.uid ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.user_id == request.auth.uid ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid
+        );
+        allow create: if isValidId(chatId) && isValidId(messageId) && isSignedIn() && (
+          isValidChatMessage(request.resource.data) ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.user_id == request.auth.uid ||
+          get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid
+        );
+        allow update: if isValidId(chatId) && isValidId(messageId) && isDocOwner() && isValidChatMessage(request.resource.data);
+      }
+    }
+
+    // Chat messages top-level collection: /chat_messages/{messageId}
+    match /chat_messages/{messageId} {
+      allow get, delete: if isValidId(messageId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(messageId) && isValidChatMessage(request.resource.data);
+      allow update: if isValidId(messageId) && isDocOwner() && isValidChatMessage(request.resource.data);
+    }
+
+    // Projects: /projects/{projectId}
+    match /projects/{projectId} {
+      allow get, delete: if isValidId(projectId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(projectId) && isValidProject(request.resource.data);
+      allow update: if isValidId(projectId) && isDocOwner() && isValidProject(request.resource.data);
+    }
+
+    // Engine Projects: /engine_projects/{projectId}
+    match /engine_projects/{projectId} {
+      allow get, delete: if isValidId(projectId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(projectId) && isValidEngineProject(request.resource.data);
+      allow update: if isValidId(projectId) && isDocOwner() && isValidEngineProject(request.resource.data);
+    }
+
+    // Library Files: /library_files/{fileId}
+    match /library_files/{fileId} {
+      allow get, delete: if isValidId(fileId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(fileId) && isValidLibraryFile(request.resource.data);
+      allow update: if isValidId(fileId) && isDocOwner() && isValidLibraryFile(request.resource.data);
+    }
+
+    // Memories: /memories/{memoryId}
+    match /memories/{memoryId} {
+      allow get, delete: if isValidId(memoryId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(memoryId) && isValidMemory(request.resource.data);
+      allow update: if isValidId(memoryId) && isDocOwner() && isValidMemory(request.resource.data);
+    }
+
+    // Payments: /payments/{paymentId}
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(paymentId) && isValidPayment(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Flow Tasks: /flow_tasks/{taskId}
+    match /flow_tasks/{taskId} {
+      allow get, delete: if isValidId(taskId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(taskId) && isValidFlowTask(request.resource.data);
+      allow update: if isValidId(taskId) && isDocOwner() && isValidFlowTask(request.resource.data);
+    }
+
+    // Flow Scenarios: /flow_scenarios/{scenarioId}
+    match /flow_scenarios/{scenarioId} {
+      allow get, delete: if isValidId(scenarioId) && isDocOwner();
+      allow list: if isSignedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow create: if isValidId(scenarioId) && isValidFlowScenario(request.resource.data);
+      allow update: if isValidId(scenarioId) && isDocOwner() && isValidFlowScenario(request.resource.data);
+    }
+
+    // Device Limits: /device_limits/{fpHash}
+    match /device_limits/{fpHash} {
+      allow get: if isSignedIn() && isValidId(fpHash);
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidId(fpHash)
+        && isValidDeviceLimits(request.resource.data)
+        && (request.resource.data.engine < 18 || !('engineResetAt' in request.resource.data) || request.resource.data.engineResetAt == 0 || request.resource.data.engineResetAt > request.time.toMillis())
+        && (request.resource.data.flow < 18 || !('flowResetAt' in request.resource.data) || request.resource.data.flowResetAt == 0 || request.resource.data.flowResetAt > request.time.toMillis())
+        && (!('image' in request.resource.data) || request.resource.data.image < 8 || !('imageResetAt' in request.resource.data) || request.resource.data.imageResetAt == 0 || request.resource.data.imageResetAt > request.time.toMillis());
+      allow update: if isSignedIn()
+        && isValidId(fpHash)
+        && isValidDeviceLimits(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['engine', 'chat', 'flow', 'image', 'engineResetAt', 'chatResetAt', 'flowResetAt', 'imageResetAt', 'updatedAt', 'updated_at'])
+        && canUpdateDeviceScope(
+          request.resource.data.engine,
+          resource.data.engine,
+          18,
+          'engineResetAt' in resource.data,
+          'engineResetAt' in resource.data ? resource.data.engineResetAt : 0,
+          'engineResetAt' in request.resource.data ? request.resource.data.engineResetAt : 0,
+          41400000
+        )
+        && canUpdateDeviceScope(
+          request.resource.data.flow,
+          resource.data.flow,
+          18,
+          'flowResetAt' in resource.data,
+          'flowResetAt' in resource.data ? resource.data.flowResetAt : 0,
+          'flowResetAt' in request.resource.data ? request.resource.data.flowResetAt : 0,
+          41400000
+        )
+        && canUpdateDeviceScope(
+          'image' in request.resource.data ? request.resource.data.image : 0,
+          'image' in resource.data ? resource.data.image : 0,
+          8,
+          'imageResetAt' in resource.data,
+          'imageResetAt' in resource.data ? resource.data.imageResetAt : 0,
+          'imageResetAt' in request.resource.data ? request.resource.data.imageResetAt : 0,
+          82800000
+        );
+      allow delete: if false;
+    }
+  }
+}

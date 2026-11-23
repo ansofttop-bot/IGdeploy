@@ -1,0 +1,116 @@
+export type FilterCategory = "terrorism" | "weapons";
+
+type Rule = { category: FilterCategory; pattern: RegExp };
+
+const TERROR_TRIGGERS = [
+  "террор", "терак", "теракт", "джихад", "шахид",
+  "игил", "isis", "isil", "daesh",
+  "al-qaeda", "al qaeda", "alqaeda", "аль-каид", "аль каид",
+  "хамас", "hamas", "талибан", "taliban",
+  "hezbollah", "хезболл",
+  "радикализац", "вербовк в игил", "вербовка в игил",
+  "mass shooting", "school shooting",
+  "план теракт", "плановать теракт", "спланировать теракт",
+  "как устроить теракт", "как совершить теракт",
+  "plan a terror", "plan an attack", "planning an attack",
+  "bomb a school", "bomb the school", "bomb a mall", "bomb the mall",
+  "bomb a station", "bomb the station", "bomb an airport", "bomb the airport",
+  "взрыв в метро", "взрыв в школе", "взрыв в толпе", "взрыв на вокзале",
+];
+
+const WEAPON_ACTION = [
+  "сделать", "сделай", "изготов", "собрать", "собери", "построить",
+  "синтез", "синтезир", "скрафтить", "смастерить", "смодел",
+  "инструкц", "схем", "чертеж", "рецепт", "гайд", "туториал", "мануал",
+  "как ", "how to ", "how do i ", "guide to ", "tutorial",
+  "make ", "build ", "craft ", "assemble", "manufactur", "synthes", "3d print",
+  "print a gun", "print a firearm",
+];
+
+const WEAPON_OBJECT = [
+  "оруж", "бомб", "взрывчат", "взрывное устройств", "взрывного устройств",
+  "снаряд", "гранат", "мина ", "мины ", "детонатор",
+  "пистолет", "револьвер", "автомат калаш", "автомата калаш", "винтовк",
+  "пулемет", "дробовик", "карабин", "глушител", "патрон", "порох",
+  "нитроглицерин", "тротил", "тнт", " tnt", "c-4", "c4 ", "semtex",
+  "аммонал", "напалм", "термит", "коктейль молотов", "molotov",
+  "zip gun", "zipgun", "ghost gun",
+  "weapon", "firearm", " gun ", " rifle", "pistol", "shotgun",
+  "silencer", "suppressor", "explosive", " bomb", "grenade", "ied ",
+  "nerve agent", "chemical weapon", "biological weapon", "dirty bomb",
+  "нервно-паралит", "химическое оруж", "биологическое оруж", "ядерное оруж",
+  "зарин", "зоман", " vx ", "новичок", "антракс", "anthrax", "рицин", "ricin",
+];
+
+const WEAPON_DIRECT = [
+  "pipe bomb", "nail bomb",
+  "самодельная бомба", "самодельное взрывное", "самодельный пистолет",
+  "самодельное оруж", "самодельный автомат",
+  "improvised explosive",
+];
+
+function containsAny(text: string, list: string[]): boolean {
+  for (const t of list) if (text.includes(t)) return true;
+  return false;
+}
+
+const RULES: Rule[] = [
+  {
+    category: "terrorism",
+    pattern: /__never__/,
+  },
+  {
+    category: "weapons",
+    pattern: /__never__/,
+  },
+];
+
+export function checkContent(text: string): { blocked: true; category: FilterCategory } | { blocked: false } {
+  if (!text) return { blocked: false };
+  const normalized = " " + text
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{L}\p{N}\s\-]/gu, " ")
+    .replace(/\s+/g, " ") + " ";
+
+  if (containsAny(normalized, TERROR_TRIGGERS)) {
+    return { blocked: true, category: "terrorism" };
+  }
+  if (containsAny(normalized, WEAPON_DIRECT)) {
+    return { blocked: true, category: "weapons" };
+  }
+  if (containsAny(normalized, WEAPON_OBJECT) && containsAny(normalized, WEAPON_ACTION)) {
+    return { blocked: true, category: "weapons" };
+  }
+  void RULES;
+  return { blocked: false };
+}
+
+export function refusalMessage(
+  category: FilterCategory,
+  lang: "en" | "ru" | "es" | "fr" | "ar" = "en"
+): string {
+  if (lang === "ru") {
+    return category === "terrorism"
+      ? "Я не помогаю с планированием, организацией или поддержкой террористической деятельности — ни схемами, ни советами, ни в какой форме. Если кому-то угрожает опасность, обратись в экстренные службы."
+      : "Я не даю инструкций, схем и рекомендаций по изготовлению, модификации или получению оружия любого вида — огнестрельного, взрывчатого, холодного, химического, биологического или ядерного.";
+  }
+  if (lang === "es") {
+    return category === "terrorism"
+      ? "No puedo ayudar con la planificación, organización o apoyo de actividades terroristas. Si tú o alguien más está en peligro, contacta a los servicios de emergencia locales."
+      : "No puedo proporcionar instrucciones, esquemas ni guías para fabricar, modificar o adquirir armas de ningún tipo (armas de fuego, explosivos, químicas, biológicas o nucleares).";
+  }
+  if (lang === "fr") {
+    return category === "terrorism"
+      ? "Je ne peux pas aider à planifier, organiser ou soutenir des activités terroristes. Si vous ou quelqu'un d'autre êtes en danger, contactez les services d'urgence locaux."
+      : "Je ne peux pas fournir d'instructions, de schémas ou de conseils pour fabriquer, modifier ou acquérir des armes de quelque nature que ce soit (armes à feu, explosifs, armes chimiques, biologiques ou nucléaires).";
+  }
+  if (lang === "ar") {
+    return category === "terrorism"
+      ? "لا يمكنني المساعدة في التخطيط لأنشطة إرهابية أو تنظيمها أو دعمها. إذا كنت أنت أو أي شخص آخر في خطر، يرجى الاتصال بخدمات الطوارئ المحلية."
+      : "لا يمكنني تقديم تعليمات أو مخططات أو إرشادات لتصنيع أو تعديل أو الحصول على أسلحة من أي نوع (نارية أو متفجرات أو كيميائية أو بيولوجية أو نووية).";
+  }
+  return category === "terrorism"
+    ? "I can't help with planning, organizing or supporting terrorist activity. If you or someone else is in danger, please contact local emergency services."
+    : "I can't provide instructions, schematics or guidance for manufacturing, modifying or acquiring weapons of any kind (firearms, explosives, chemical, biological or nuclear).";
+}
