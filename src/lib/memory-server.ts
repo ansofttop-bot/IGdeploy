@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import firebaseConfig from "../../firebase-applet-config.json";
-import { firebaseClient } from "./firebase-service";
 import { getWritableDataDir } from "./server-data-dir";
 import {
   APIMIRA_NO_REASONING_PARAMS,
@@ -43,7 +42,7 @@ export type MemoryKind =
 
 export type AuthedUser = {
   id: string;
-  client: typeof firebaseClient;
+  client: unknown;
   token: string;
   isJwt: boolean;
 };
@@ -78,11 +77,11 @@ export async function getUserFromToken(token: string): Promise<AuthedUser | null
       const payload = JSON.parse(decoded);
       const uid = payload.sub || payload.user_id;
       if (uid && typeof uid === "string") {
-        return { id: uid, client: firebaseClient, token, isJwt: true };
+        return { id: uid, client: null, token, isJwt: true };
       }
     }
     if (isLocalFallbackToken(token)) {
-      return { id: token, client: firebaseClient, token, isJwt: false };
+      return { id: token, client: null, token, isJwt: false };
     }
     return null;
   } catch (err) {
@@ -350,7 +349,7 @@ async function fetchMemoriesFromFirestore(userId: string, token: string): Promis
 }
 
 export async function listAllMemories(
-  _client: typeof firebaseClient,
+  _client: unknown,
   userId: string,
   token?: string,
   opts?: { bypassCache?: boolean },
@@ -513,7 +512,7 @@ function normalizeForMatch(s: string): string {
 }
 
 export async function loadRelevantMemories(
-  _client: typeof firebaseClient,
+  _client: unknown,
   userId: string,
   queryText: string,
   matchCount = 12,
@@ -585,7 +584,7 @@ RULES:
 - Output ONLY valid JSON, no prose.`;
 
 export async function analyzeAndUpdateMemory(
-  client: typeof firebaseClient,
+  client: unknown,
   userId: string,
   userMessage: string,
   assistantMessage: string,
