@@ -22,6 +22,8 @@ import {
   orderBy,
   getDocs,
   addDoc,
+  OperationType,
+  handleFirestoreError,
   type User,
 } from './firebase';
 import { getDeviceFingerprint } from './device-fingerprint';
@@ -878,8 +880,9 @@ class FirestoreQueryBuilder<T = any> {
         const items = await runClientFilteredPrimaryQuery();
         if (items !== null) return { data: items, error: null };
       } catch (err: any) {
-        if (err?.message?.includes('permission') || err?.code === 'permission-denied') {
-          return { data: [], error: err };
+        try {
+          handleFirestoreError(err, OperationType.LIST, this.collectionName);
+        } catch {
         }
         return { data: [], error: err };
       }
@@ -973,6 +976,10 @@ class FirestoreQueryBuilder<T = any> {
         if (toSave.chatId && !toSave.chat_id) toSave.chat_id = toSave.chatId;
         if (toSave.chat_type && !toSave.chatType) toSave.chatType = toSave.chat_type;
         if (toSave.chatType && !toSave.chat_type) toSave.chat_type = toSave.chatType;
+        if ('project_id' in toSave && !('projectId' in toSave)) toSave.projectId = toSave.project_id;
+        if ('projectId' in toSave && !('project_id' in toSave)) toSave.project_id = toSave.projectId;
+        if ('is_saved' in toSave && !('isSaved' in toSave)) toSave.isSaved = toSave.is_saved;
+        if ('isSaved' in toSave && !('is_saved' in toSave)) toSave.is_saved = toSave.isSaved;
 
         toSave = this.fitRecordToFirestoreLimit(toSave);
 
@@ -1000,7 +1007,10 @@ class FirestoreQueryBuilder<T = any> {
           error: null,
         };
       } catch (err: any) {
-        console.error(`Firestore insert error (${this.collectionName}):`, err);
+        try {
+          handleFirestoreError(err, OperationType.CREATE, this.collectionName);
+        } catch {
+        }
         return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
       }
     };
@@ -1028,6 +1038,26 @@ class FirestoreQueryBuilder<T = any> {
   update(patch: any) {
     const cleanedPatch = this.fitRecordToFirestoreLimit(cleanObjectForFirestore(patch));
     delete cleanedPatch.id;
+    if ('project_id' in cleanedPatch && !('projectId' in cleanedPatch)) {
+      cleanedPatch.projectId = cleanedPatch.project_id;
+    } else if ('projectId' in cleanedPatch && !('project_id' in cleanedPatch)) {
+      cleanedPatch.project_id = cleanedPatch.projectId;
+    }
+    if ('is_saved' in cleanedPatch && !('isSaved' in cleanedPatch)) {
+      cleanedPatch.isSaved = cleanedPatch.is_saved;
+    } else if ('isSaved' in cleanedPatch && !('is_saved' in cleanedPatch)) {
+      cleanedPatch.is_saved = cleanedPatch.isSaved;
+    }
+    if ('chat_type' in cleanedPatch && !('chatType' in cleanedPatch)) {
+      cleanedPatch.chatType = cleanedPatch.chat_type;
+    } else if ('chatType' in cleanedPatch && !('chat_type' in cleanedPatch)) {
+      cleanedPatch.chat_type = cleanedPatch.chatType;
+    }
+    if ('updated_at' in cleanedPatch && !('updatedAt' in cleanedPatch)) {
+      cleanedPatch.updatedAt = cleanedPatch.updated_at;
+    } else if ('updatedAt' in cleanedPatch && !('updated_at' in cleanedPatch)) {
+      cleanedPatch.updated_at = cleanedPatch.updatedAt;
+    }
     return {
       eq: async (field: string, value: any) => {
         if (!cleanedPatch || Object.keys(cleanedPatch).length === 0) {
@@ -1074,7 +1104,10 @@ class FirestoreQueryBuilder<T = any> {
           }
           return { error: null };
         } catch (err: any) {
-          console.error(`Firestore update error (${this.collectionName}):`, err);
+          try {
+            handleFirestoreError(err, OperationType.UPDATE, `${this.collectionName}/${field === 'id' ? value : field}`);
+          } catch {
+          }
           return { error: err instanceof Error ? err : new Error(String(err)) };
         }
       },
@@ -1744,8 +1777,7 @@ export const firebaseClient = {
         const code = err?.code || '';
         const shouldUseLocalAccountFallback =
           code === 'auth/operation-not-allowed' ||
-          code === 'auth/admin-restricted-operation' ||
-          code === 'auth/network-request-failed';
+          code === 'auth/admin-restricted-operation';
 
         if (!shouldUseLocalAccountFallback) {
           return {

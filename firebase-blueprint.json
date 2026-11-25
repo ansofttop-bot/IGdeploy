@@ -51,10 +51,20 @@
         "chatId": { "type": "string", "description": "Parent chat ID." },
         "userId": { "type": "string", "description": "Owner user ID." },
         "role": { "type": "string", "enum": ["user", "assistant"], "description": "Message author role." },
-        "content": { "type": "string", "maxLength": 16000000, "description": "Message text or markdown content." },
-        "reasoning": { "type": "string", "maxLength": 1000000, "description": "Deep reasoning or thought process." },
+        "content": { "type": "string", "maxLength": 1000000, "description": "Message text or markdown content." },
+        "reasoning": { "type": "string", "maxLength": 500000, "description": "Deep reasoning or thought process." },
+        "artifacts": { "type": "array", "description": "Generated code or document artifacts attached to this message." },
+        "images": { "type": "array", "description": "Generated image payloads attached to this message." },
+        "webImages": { "type": "array", "description": "Web search image payloads." },
+        "calendarEvents": { "type": "array", "description": "Google Calendar events attached to this message." },
+        "taskEvents": { "type": "array", "description": "Google Tasks items attached to this message." },
+        "gmailEvents": { "type": "array", "description": "Gmail event cards attached to this message." },
+        "refusals": { "type": "array", "description": "Tool refusal diagnostics." },
+        "tabTransitions": { "type": "array", "description": "Workspace navigation actions." },
+        "memorySaved": { "type": "boolean", "description": "Whether this turn saved a new memory item." },
         "position": { "type": "number", "description": "Order position of message." },
-        "createdAt": { "type": "string", "description": "Creation timestamp." }
+        "createdAt": { "type": "string", "description": "Creation timestamp." },
+        "updatedAt": { "type": "string", "description": "Update timestamp." }
       },
       "required": ["chatId", "userId", "role", "content", "position"]
     },
@@ -97,11 +107,11 @@
         "userId": { "type": "string", "description": "Owner user ID." },
         "name": { "type": "string", "maxLength": 260, "description": "File name." },
         "type": { "type": "string", "maxLength": 50, "description": "File type classification." },
-        "content": { "type": "string", "maxLength": 850000, "description": "Text or serialized content of the file." },
+        "content": { "type": "string", "maxLength": 900000, "description": "Text or serialized content of the file." },
         "projectId": { "type": "string", "description": "Optional associated Library project ID." },
         "taskId": { "type": "string", "description": "Optional originating Flow task ID." },
         "taskTitle": { "type": "string", "maxLength": 200, "description": "Optional originating Flow task title." },
-        "source": { "type": "string", "maxLength": 40, "description": "Origin source (flow or upload)." },
+        "source": { "type": "string", "maxLength": 40, "description": "Origin source (flow, upload, or library)." },
         "createdAt": { "type": "string", "description": "Creation timestamp." },
         "updatedAt": { "type": "string", "description": "Update timestamp." }
       },
@@ -131,8 +141,9 @@
       "properties": {
         "id": { "type": "string", "description": "Unique memory item ID." },
         "userId": { "type": "string", "description": "Owner user ID." },
-        "content": { "type": "string", "maxLength": 1000, "description": "Learned user preference or fact." },
+        "content": { "type": "string", "maxLength": 4000, "description": "Learned user preference or fact." },
         "kind": { "type": "string", "maxLength": 50, "description": "Category of memory." },
+        "attachment": { "type": "object", "description": "Optional file attachment metadata and content." },
         "createdAt": { "type": "string", "description": "Creation timestamp." },
         "updatedAt": { "type": "string", "description": "Update timestamp." }
       },

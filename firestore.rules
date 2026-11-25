@@ -22,14 +22,18 @@ service cloud.firestore {
       return isSignedIn() && (
         (('user_id' in resource.data) && resource.data.user_id == request.auth.uid) ||
         (('userId' in resource.data) && resource.data.userId == request.auth.uid)
-      );
+      )
+      && (!('user_id' in resource.data) || resource.data.user_id == request.auth.uid)
+      && (!('userId' in resource.data) || resource.data.userId == request.auth.uid);
     }
 
     function isIncomingOwner() {
       return isSignedIn() && (
         (('user_id' in request.resource.data) && request.resource.data.user_id == request.auth.uid) ||
         (('userId' in request.resource.data) && request.resource.data.userId == request.auth.uid)
-      );
+      )
+      && (!('user_id' in request.resource.data) || request.resource.data.user_id == request.auth.uid)
+      && (!('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid);
     }
 
     function isOptionalString(data, key, maxLen) {
@@ -152,7 +156,12 @@ service cloud.firestore {
         && data.files is map
         && isOptionalList(data, 'chatMessages', 500)
         && isOptionalString(data, 'activeFile', 260)
-        && isOptionalString(data, 'projectId', 128);
+        && isOptionalString(data, 'projectId', 128)
+        && isOptionalString(data, 'project_id', 128)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'updatedAt', 64)
+        && isOptionalString(data, 'updated_at', 64);
     }
 
     function isValidLibraryFile(data) {
@@ -161,16 +170,25 @@ service cloud.firestore {
         && data.type is string && data.type.size() > 0 && data.type.size() <= 50
         && isOptionalString(data, 'content', 900000)
         && isOptionalString(data, 'projectId', 128)
+        && isOptionalString(data, 'project_id', 128)
         && isOptionalString(data, 'taskId', 128)
         && isOptionalString(data, 'taskTitle', 200)
-        && isOptionalString(data, 'source', 40);
+        && isOptionalString(data, 'source', 40)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'updatedAt', 64)
+        && isOptionalString(data, 'updated_at', 64);
     }
 
     function isValidMemory(data) {
       return isIncomingOwner()
         && data.content is string && data.content.size() > 0 && data.content.size() <= 4000
         && data.kind is string && data.kind.size() > 0 && data.kind.size() <= 50
-        && (!('attachment' in data) || data.attachment == null || data.attachment is map);
+        && (!('attachment' in data) || data.attachment == null || data.attachment is map)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'created_at', 64)
+        && isOptionalString(data, 'updatedAt', 64)
+        && isOptionalString(data, 'updated_at', 64);
     }
 
     function isValidPayment(data) {
@@ -266,15 +284,9 @@ service cloud.firestore {
         );
         allow list: if isSignedIn() && (
           resource.data.user_id == request.auth.uid ||
-          resource.data.userId == request.auth.uid ||
-          get(/databases/$(database)/documents/chats/$(chatId)).data.user_id == request.auth.uid ||
-          get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid
+          resource.data.userId == request.auth.uid
         );
-        allow create: if isValidId(chatId) && isValidId(messageId) && isSignedIn() && (
-          isValidChatMessage(request.resource.data) ||
-          get(/databases/$(database)/documents/chats/$(chatId)).data.user_id == request.auth.uid ||
-          get(/databases/$(database)/documents/chats/$(chatId)).data.userId == request.auth.uid
-        );
+        allow create: if isValidId(chatId) && isValidId(messageId) && isValidChatMessage(request.resource.data);
         allow update: if isValidId(chatId) && isValidId(messageId) && isDocOwner() && isValidChatMessage(request.resource.data);
       }
     }

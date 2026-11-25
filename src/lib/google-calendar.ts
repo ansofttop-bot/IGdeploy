@@ -1,5 +1,10 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { auth } from './firebase';
+import {
+  clearWorkspaceAccessToken,
+  connectGoogleWorkspace,
+  getWorkspaceAccessToken,
+  parseGoogleApiError,
+  setWorkspaceAccessToken,
+} from './google-workspace-auth';
 
 export interface CalendarReminderOverride {
   method: 'popup' | 'email';
@@ -54,56 +59,20 @@ export interface CalendarListEntry {
   timeZone?: string;
 }
 
-let cachedCalendarToken: string | null = null;
-
 export function getCachedCalendarToken(): string | null {
-  return cachedCalendarToken;
+  return getWorkspaceAccessToken();
 }
 
 export function setCachedCalendarToken(token: string | null): void {
-  cachedCalendarToken = token;
-  if (token) {
-    window.dispatchEvent(new CustomEvent('igseek:calendar-auth-changed', { detail: { connected: true } }));
-  } else {
-    window.dispatchEvent(new CustomEvent('igseek:calendar-auth-changed', { detail: { connected: false } }));
-  }
+  setWorkspaceAccessToken(token);
 }
 
 export async function connectGoogleCalendar(): Promise<{ accessToken: string; userEmail?: string } | null> {
-  try {
-    const calendarScopes = [
-      'https://www.googleapis.com/auth/calendar',
-      'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/calendar.settings.readonly',
-    ];
-
-    const provider = new GoogleAuthProvider();
-    calendarScopes.forEach((scope) => {
-      provider.addScope(scope);
-    });
-    provider.setCustomParameters({ prompt: 'consent' });
-
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-
-    if (!credential?.accessToken) {
-      throw new Error('Failed to retrieve Google OAuth access token');
-    }
-
-    setCachedCalendarToken(credential.accessToken);
-    return {
-      accessToken: credential.accessToken,
-      userEmail: result.user.email ?? undefined,
-    };
-  } catch (error) {
-    console.error('Google Calendar OAuth error:', error);
-    throw error;
-  }
+  return connectGoogleWorkspace();
 }
 
 export function disconnectGoogleCalendar(): void {
-  setCachedCalendarToken(null);
+  clearWorkspaceAccessToken();
 }
 
 const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -111,7 +80,7 @@ const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
 async function fetchCalendarApi(endpoint: string, options: RequestInit = {}): Promise<any> {
   const token = getCachedCalendarToken();
   if (!token) {
-    throw new Error('Google Calendar is not connected. Please authenticate with Google.');
+    throw new Error('Google Calendar is not connected. Please sign in with Google.');
   }
 
   const headers = new Headers(options.headers || {});
@@ -125,9 +94,17 @@ async function fetchCalendarApi(endpoint: string, options: RequestInit = {}): Pr
     headers,
   });
 
-  if (res.status === 401 || res.status === 403) {
-    setCachedCalendarToken(null);
-    throw new Error('Google Calendar access token expired or lacks permissions. Please re-connect Google Calendar.');
+  if (res.status === 401) {
+    clearWorkspaceAccessToken();
+    throw new Error(await parseGoogleApiError(res, 'Google Calendar'));
+  }
+
+  if (res.status === 403) {
+    const errMsg = await parseGoogleApiError(res, 'Google Calendar');
+    if (errMsg.toLowerCase().includes('insufficient') || errMsg.toLowerCase().includes('scope')) {
+      clearWorkspaceAccessToken();
+    }
+    throw new Error(errMsg);
   }
 
   if (res.status === 204) {
@@ -135,8 +112,7 @@ async function fetchCalendarApi(endpoint: string, options: RequestInit = {}): Pr
   }
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Google Calendar API error (${res.status}): ${errText || res.statusText}`);
+    throw new Error(await parseGoogleApiError(res, 'Google Calendar'));
   }
 
   return res.json();

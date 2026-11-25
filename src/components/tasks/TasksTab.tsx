@@ -120,7 +120,7 @@ export function TasksTab({ onAskAiAboutTask, onNavigateToChat }: TasksTabProps) 
 
   useEffect(() => {
     loadData();
-  }, [selectedListId]);
+  }, [selectedListId, isConnected]);
 
   const handleConnect = async () => {
     try {

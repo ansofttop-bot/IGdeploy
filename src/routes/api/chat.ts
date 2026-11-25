@@ -1199,8 +1199,8 @@ export async function handleChatPost(request: Request): Promise<Response> {
               : "";
 
             const gmailStatusInfo = parsed.gmailConnected
-              ? "Gmail: connected."
-              : "Gmail: not yet signed in — still call manage_gmail for any email request so the UI opens Google sign-in and auto-executes.";
+              ? "Google Workspace (Gmail, Calendar, Tasks): connected."
+              : "Google Workspace (Gmail, Calendar, Tasks): not yet signed in — still call manage_gmail / manage_calendar_event / manage_google_task so an interactive card appears where the user can sign in to Google and confirm execution.";
 
             const capabilities =
               activeTools.length > 0
@@ -1210,6 +1210,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
 - Email: call manage_gmail autonomously; supports attachments from library (search_and_read_library + library_id), generated_image (generate_image first), user_upload, or memory (memory_id).
 - Images: analyze attached images directly; call edit_image whenever asked to modify/add/remove/restyle an attached or previously generated image; call generate_image to create a new image from scratch; call find_web_image ONLY when asked how something real looks ("покажи фото", "как выглядит").
 - Productivity & Web: call manage_calendar_event for events/reminders, manage_google_task for tasks, create_artifact for substantial code/docs${effectiveWebSearch ? ", web_search for live/current info (cite sources)" : ""}.
+- Google Workspace honesty: manage_calendar_event, manage_google_task, and manage_gmail create an interactive confirmation card in the UI. NEVER claim the email is already sent or the event/task is already saved in Google — tell the user to click the Confirm button on the card (and sign in to Google if prompted).
 - Boundaries & Tabs: call refuse_unsupported_request immediately for impossible actions (calls, SMS, banking, physical acts, live hacking); call suggest_tab_transition ONLY for full-stack/IDE live preview ('engine'), GitHub/CI-CD/terminal ('flow'), or opening Library UI ('library' — NOT when asked to read/remember/email a Library file).
 - Never print raw tool markup; after tools, confirm briefly without repeating full payloads.`
                 : "";
@@ -2021,9 +2022,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
+                          pendingConfirmation: true,
                           action: calendarPayload.action,
                           event: calendarPayload,
-                          message: `Событие «${calendarPayload.summary}» (${calendarPayload.action}) передано в интерфейс календаря пользователя и отображено карточкой.`,
+                          message: `Подготовлена карточка Google Calendar для события «${calendarPayload.summary}» (${calendarPayload.action}). Оно ЕЩЁ НЕ записано в Google Calendar — сообщи пользователю нажать кнопку подтверждения в карточке (и при необходимости войти в Google), чтобы выполнить действие.`,
                         }),
                       });
                     } catch (e) {
@@ -2065,9 +2067,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
+                          pendingConfirmation: true,
                           action: taskPayload.action,
                           task: taskPayload,
-                          message: `Задача «${taskPayload.title}» (${taskPayload.action}) передана в интерфейс Google Tasks пользователя и показана карточкой.`,
+                          message: `Подготовлена карточка Google Tasks для задачи «${taskPayload.title}» (${taskPayload.action}). Она ЕЩЁ НЕ записана в Google Tasks — сообщи пользователю нажать кнопку подтверждения в карточке (и при необходимости войти в Google), чтобы выполнить действие.`,
                         }),
                       });
                     } catch (e) {
@@ -2217,9 +2220,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
+                          pendingConfirmation: true,
                           action: gmailPayload.action,
                           gmail: gmailPayload,
-                          message: `Интеграция Gmail (${gmailPayload.action}) передана в клиентский интерфейс почты.${resolvedAttachments.length ? ` Вложено файлов: ${resolvedAttachments.map((a) => a.filename).join(", ")}.` : ""}${!parsed.gmailConnected ? " Пользователь еще не вошел в Gmail — интерфейс сразу откроет окно входа в Gmail и автоматически отправит письмо с вложением сразу после авторизации." : ""}`,
+                          message: `Подготовлена карточка Gmail (${gmailPayload.action}).${resolvedAttachments.length ? ` Вложено файлов: ${resolvedAttachments.map((a) => a.filename).join(", ")}.` : ""} Действие ЕЩЁ НЕ выполнено и письмо ЕЩЁ НЕ отправлено — попроси пользователя проверить данные и нажать кнопку подтверждения в карточке (при необходимости войдя в Google).`,
                         }),
                       });
                     } catch (e) {

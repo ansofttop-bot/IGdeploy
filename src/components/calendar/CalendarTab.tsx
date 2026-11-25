@@ -75,6 +75,7 @@ export function CalendarTab({ onAskAiAboutEvent, onNavigateToChat }: CalendarTab
   useEffect(() => {
     const handleAuthChange = (e: any) => {
       setConnected(!!e.detail?.connected);
+      void loadEvents();
     };
     const handleLocalUpdate = () => {
       void loadEvents();

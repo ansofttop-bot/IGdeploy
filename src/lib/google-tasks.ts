@@ -1,5 +1,10 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { auth } from './firebase';
+import {
+  clearWorkspaceAccessToken,
+  connectGoogleWorkspace,
+  getWorkspaceAccessToken,
+  parseGoogleApiError,
+  setWorkspaceAccessToken,
+} from './google-workspace-auth';
 
 export interface GoogleTask {
   id: string;
@@ -30,50 +35,20 @@ export interface TaskPayload {
   taskListId?: string;
 }
 
-let cachedTasksToken: string | null = null;
-
 export function getCachedTasksToken(): string | null {
-  return cachedTasksToken;
+  return getWorkspaceAccessToken();
 }
 
 export function setCachedTasksToken(token: string | null): void {
-  cachedTasksToken = token;
-  window.dispatchEvent(new CustomEvent('igseek:tasks-auth-changed', { detail: { connected: !!token } }));
+  setWorkspaceAccessToken(token);
 }
 
 export async function connectGoogleTasks(): Promise<{ accessToken: string; userEmail?: string } | null> {
-  try {
-    const tasksScopes = [
-      'https://www.googleapis.com/auth/tasks',
-      'https://www.googleapis.com/auth/tasks.readonly',
-    ];
-
-    const provider = new GoogleAuthProvider();
-    tasksScopes.forEach((scope) => {
-      provider.addScope(scope);
-    });
-    provider.setCustomParameters({ prompt: 'consent' });
-
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-
-    if (!credential?.accessToken) {
-      throw new Error('Failed to retrieve Google OAuth access token');
-    }
-
-    setCachedTasksToken(credential.accessToken);
-    return {
-      accessToken: credential.accessToken,
-      userEmail: result.user.email ?? undefined,
-    };
-  } catch (error) {
-    console.error('Google Tasks OAuth error:', error);
-    throw error;
-  }
+  return connectGoogleWorkspace();
 }
 
 export function disconnectGoogleTasks(): void {
-  setCachedTasksToken(null);
+  clearWorkspaceAccessToken();
 }
 
 const TASKS_API_BASE = 'https://tasks.googleapis.com/tasks/v1';
@@ -81,7 +56,7 @@ const TASKS_API_BASE = 'https://tasks.googleapis.com/tasks/v1';
 async function fetchTasksApi(endpoint: string, options: RequestInit = {}): Promise<any> {
   const token = getCachedTasksToken();
   if (!token) {
-    throw new Error('Google Tasks is not connected. Please authenticate with Google.');
+    throw new Error('Google Tasks is not connected. Please sign in with Google.');
   }
 
   const headers = new Headers(options.headers || {});
@@ -95,9 +70,17 @@ async function fetchTasksApi(endpoint: string, options: RequestInit = {}): Promi
     headers,
   });
 
-  if (res.status === 401 || res.status === 403) {
-    setCachedTasksToken(null);
-    throw new Error('Google Tasks access token expired or lacks permissions. Please re-connect.');
+  if (res.status === 401) {
+    clearWorkspaceAccessToken();
+    throw new Error(await parseGoogleApiError(res, 'Google Tasks'));
+  }
+
+  if (res.status === 403) {
+    const errMsg = await parseGoogleApiError(res, 'Google Tasks');
+    if (errMsg.toLowerCase().includes('insufficient') || errMsg.toLowerCase().includes('scope')) {
+      clearWorkspaceAccessToken();
+    }
+    throw new Error(errMsg);
   }
 
   if (res.status === 204) {
@@ -105,8 +88,7 @@ async function fetchTasksApi(endpoint: string, options: RequestInit = {}): Promi
   }
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Google Tasks API error (${res.status}): ${errText || res.statusText}`);
+    throw new Error(await parseGoogleApiError(res, 'Google Tasks'));
   }
 
   return res.json();

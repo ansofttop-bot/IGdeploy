@@ -34,14 +34,20 @@ import {
   subscribeCloudProjects,
   subscribeCloudChatMessages,
   subscribeCloudEngineProjectIds,
+  subscribeCloudEngineProject,
   subscribeCloudMemories,
+  subscribeCloudChatMediaForLibrary,
+  subscribeCloudSyncState,
+  migrateLocalDataToCloud,
+  forceCloudSync,
+  unlinkProjectCloudAssets,
   createCloudMemory,
   updateCloudMemory,
   deleteCloudMemory,
-  fetchCloudChatMessagesForLibrary,
   renameCloudChatMediaItem,
   deleteCloudChatMediaItem,
   type CloudChatMessageForLibrary,
+  type CloudSyncState,
   type SyncedChatMessageRow,
 } from "@/lib/cloud-sync";
 import { compressBrowserImageDataUrl } from "@/lib/mime-utils";
@@ -136,6 +142,8 @@ import {
   Volume2,
   Palette,
   Upload,
+  Cloud,
+  CloudOff,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -146,24 +154,33 @@ import mermaid from "mermaid";
 
 import logoAsset from "@/assets/igseek-logo.png";
 import {
-  getCachedCalendarToken,
+  listCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
-  saveLocalReminder,
-  deleteLocalReminder,
+  type CalendarEvent,
   type CalendarEventPayload,
 } from "@/lib/google-calendar";
 import {
-  getCachedTasksToken,
+  listGoogleTasks,
   createGoogleTask,
   updateGoogleTask,
   deleteGoogleTask,
-  saveLocalTask,
-  toggleLocalTaskStatus,
-  deleteLocalTask,
+  type GoogleTask,
 } from "@/lib/google-tasks";
-import { getCachedGmailToken, sendGmailMessage, saveLocalEmail, connectGmail } from "@/lib/gmail";
+import {
+  getCachedGmailToken,
+  listGmailMessages,
+  sendGmailMessage,
+  trashGmailMessage,
+  saveLocalEmail,
+  connectGmail,
+  type GmailMessageSummary,
+} from "@/lib/gmail";
+import {
+  connectGoogleWorkspace,
+  getWorkspaceAccessToken,
+} from "@/lib/google-workspace-auth";
 import { FlowView } from "@/components/flow/FlowView";
 import { LibraryPickerModal } from "@/components/LibraryPickerModal";
 import { ConfirmModal, type ConfirmDialogConfig } from "@/components/ConfirmModal";
@@ -288,14 +305,16 @@ type ChatMessage = {
     prompt: string;
   };
   memorySaved?: boolean;
-  calendarEvents?: CalendarEventPayload[];
-  taskEvents?: Array<{ id?: string; action: string; title: string; notes?: string; due?: string; taskListId?: string }>;
+  calendarEvents?: Array<CalendarEventPayload & { id?: string; action?: string; eventId?: string; query?: string }>;
+  taskEvents?: Array<{ id?: string; action: string; title: string; notes?: string; due?: string; taskId?: string; taskListId?: string }>;
   gmailEvents?: Array<{
     id?: string;
     action: string;
     to?: string;
     subject?: string;
     body?: string;
+    messageId?: string;
+    query?: string;
     attachments?: Array<{ filename: string; mimeType?: string; dataUrl?: string }>;
   }>;
   refusals?: Array<{ id?: string; action: string; reason: string; alternative: string }>;
@@ -591,6 +610,11 @@ function Index() {
   useEffect(() => {
     if (!user || isGuest || user.id === GUEST_ID || user.id.startsWith("local_")) return;
     const uid = user.id;
+
+    // Automatically migrate any pre-existing guest/local Projects, Chats, Messages,
+    // Engine Projects, and Library Files into the signed-in Firebase account once.
+    void migrateLocalDataToCloud(uid);
+
     const unsubLibrary = subscribeCloudLibraryFiles(uid, replaceFlowLibraryFilesFromCloud);
     const unsubChats = subscribeCloudChats(uid, (rows) => {
       const visible = rows.filter((c) => !deletedChatIdsRef.current.has(c.id));
@@ -638,11 +662,17 @@ function Index() {
         return next;
       });
     });
+    const unsubMemories = subscribeCloudMemories(uid, () => {
+      try {
+        window.dispatchEvent(new CustomEvent("igseek:memory-updated"));
+      } catch {}
+    });
     return () => {
       unsubLibrary();
       unsubChats();
       unsubProjects();
       unsubEngineIds();
+      unsubMemories();
     };
   }, [user?.id, isGuest]);
 
@@ -1079,6 +1109,9 @@ function Index() {
     await supabase.from("projects").delete().eq("id", projectId);
     for (const c of affectedChats) {
       void supabase.from("chats").update({ project_id: null, updated_at: new Date().toISOString() }).eq("id", c.id);
+    }
+    if (user?.id && !user.id.startsWith("local_")) {
+      void unlinkProjectCloudAssets(user.id, projectId);
     }
   };
 
@@ -1949,7 +1982,8 @@ function Index() {
                     : typeof rawEvt?.reminderMinutes === "number"
                       ? [rawEvt.reminderMinutes]
                       : undefined;
-                  const normalizedEvt: CalendarEventPayload & { action?: string; eventId?: string } = {
+                  const normalizedEvt: CalendarEventPayload & { id?: string; action?: string; eventId?: string; query?: string } = {
+                    id: rawEvt?.id,
                     summary: rawEvt?.summary || "Calendar Event",
                     description: rawEvt?.description,
                     location: rawEvt?.location,
@@ -1958,77 +1992,22 @@ function Index() {
                     reminderMinutes: remList,
                     action: rawEvt?.action || "create",
                     eventId: rawEvt?.eventId,
+                    query: rawEvt?.query,
                   };
                   currentAssistantMsg.calendarEvents = [...(currentAssistantMsg.calendarEvents ?? []), normalizedEvt];
                   updateLiveUi();
-                  const token = getCachedCalendarToken();
-                  const calAction = normalizedEvt.action || "create";
-                  if (calAction === "delete" && normalizedEvt.eventId) {
-                    if (token && !normalizedEvt.eventId.startsWith("local_")) {
-                      void deleteCalendarEvent(normalizedEvt.eventId).catch(() => deleteLocalReminder(normalizedEvt.eventId!));
-                    } else {
-                      deleteLocalReminder(normalizedEvt.eventId);
-                    }
-                  } else if (calAction === "update" && normalizedEvt.eventId && token && !normalizedEvt.eventId.startsWith("local_")) {
-                    void updateCalendarEvent(normalizedEvt.eventId, normalizedEvt).catch(() =>
-                      saveLocalReminder({ ...normalizedEvt, id: normalizedEvt.eventId, isReminder: true }),
-                    );
-                  } else if (calAction !== "list") {
-                    if (token) {
-                      void createCalendarEvent(normalizedEvt).catch(() =>
-                        saveLocalReminder({ ...normalizedEvt, isReminder: true }),
-                      );
-                    } else {
-                      saveLocalReminder({ ...normalizedEvt, isReminder: true });
-                    }
-                  }
                 } catch {  }
               } else if (currentEvent === "task_event") {
                 try {
                   const taskEvt = JSON.parse(raw);
                   currentAssistantMsg.taskEvents = [...(currentAssistantMsg.taskEvents ?? []), taskEvt];
                   updateLiveUi();
-                  const token = getCachedTasksToken();
-                  const listId = taskEvt.taskListId || "@default";
-                  const taskAction = taskEvt.action || "create";
-                  if (taskAction === "delete" && taskEvt.taskId) {
-                    if (token && !String(taskEvt.taskId).startsWith("local_")) {
-                      void deleteGoogleTask(taskEvt.taskId, listId).catch(() => deleteLocalTask(taskEvt.taskId));
-                    } else {
-                      deleteLocalTask(taskEvt.taskId);
-                    }
-                  } else if (taskAction === "complete" && taskEvt.taskId) {
-                    if (token && !String(taskEvt.taskId).startsWith("local_")) {
-                      void updateGoogleTask(taskEvt.taskId, { status: "completed" }, listId).catch(() =>
-                        toggleLocalTaskStatus(taskEvt.taskId),
-                      );
-                    } else {
-                      toggleLocalTaskStatus(taskEvt.taskId);
-                    }
-                  } else if (taskAction === "update" && taskEvt.taskId) {
-                    if (token && !String(taskEvt.taskId).startsWith("local_")) {
-                      void updateGoogleTask(
-                        taskEvt.taskId,
-                        { title: taskEvt.title, notes: taskEvt.notes, due: taskEvt.due },
-                        listId,
-                      ).catch(() => saveLocalTask({ ...taskEvt, id: taskEvt.taskId }));
-                    } else {
-                      saveLocalTask({ ...taskEvt, id: taskEvt.taskId });
-                    }
-                  } else if (taskAction !== "list") {
-                    if (token) {
-                      void createGoogleTask(taskEvt, listId).catch(() => saveLocalTask(taskEvt));
-                    } else {
-                      saveLocalTask(taskEvt);
-                    }
-                  }
                 } catch {  }
               } else if (currentEvent === "gmail_event") {
                 try {
                   const gmailEvt = JSON.parse(raw);
                   currentAssistantMsg.gmailEvents = [...(currentAssistantMsg.gmailEvents ?? []), gmailEvt];
                   updateLiveUi();
-                  const token = getCachedGmailToken();
                   if (gmailEvt.action === "draft") {
                     saveLocalEmail({
                       to: gmailEvt.to || "",
@@ -2038,33 +2017,6 @@ function Index() {
                       snippet: (gmailEvt.body || "").slice(0, 120),
                       labelIds: ["DRAFT"],
                     });
-                  } else if (!token) {
-                    setPendingGmailAction(gmailEvt);
-                    setGmailAuthOpen(true);
-                  } else if (gmailEvt.action === "send" && gmailEvt.to && gmailEvt.body) {
-                    void sendGmailMessage({
-                      to: gmailEvt.to,
-                      subject: gmailEvt.subject || "No Subject",
-                      body: gmailEvt.body,
-                      attachments: gmailEvt.attachments,
-                    })
-                      .then(() =>
-                        toast.success(
-                          gmailEvt.attachments?.length
-                            ? `${t("Email sent via Gmail!")} (${t("Attached files:")} ${gmailEvt.attachments.length})`
-                            : t("Email sent via Gmail!"),
-                        ),
-                      )
-                      .catch(() =>
-                        saveLocalEmail({
-                          to: gmailEvt.to || "",
-                          from: t("You (Local)"),
-                          subject: gmailEvt.subject || "No Subject",
-                          body: gmailEvt.body || "",
-                          snippet: (gmailEvt.body || "").slice(0, 120),
-                          labelIds: ["DRAFT"],
-                        }),
-                      );
                   }
                 } catch {  }
               } else if (currentEvent === "refusal_event") {
@@ -2313,9 +2265,6 @@ function Index() {
     setMessages([...nextMessages, assistantMsg]);
     setInput("");
     setAttachments([]);
-    if (/(письм|почт|gmail|email|отправь.*письмо|напиши.*на.*@|send.*email|enviar.*correo|envoyer.*mail)/i.test(trimmed) && !getCachedGmailToken()) {
-      setGmailAuthOpen(true);
-    }
     stickToBottomRef.current = true;
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -4465,10 +4414,32 @@ function WebImageCard({ payload }: { payload: WebImagePayload }) {
   );
 }
 
-function CalendarEventCard({ event, onGoToCalendar }: { event: CalendarEventPayload; onGoToCalendar: () => void }) {
+function useWorkspaceConnected() {
+  const [connected, setConnected] = useState<boolean>(() => !!getWorkspaceAccessToken());
+  useEffect(() => {
+    const sync = () => setConnected(!!getWorkspaceAccessToken());
+    window.addEventListener("igseek:workspace-auth-changed", sync);
+    return () => window.removeEventListener("igseek:workspace-auth-changed", sync);
+  }, []);
+  return connected;
+}
+
+function CalendarEventCard({
+  event,
+}: {
+  event: CalendarEventPayload & { id?: string; action?: string; eventId?: string; query?: string };
+}) {
   const t = useT();
   const lang = useLang();
   const loc = localeFor(lang);
+  const isConnected = useWorkspaceConnected();
+  const action = event.action || "create";
+
+  const [status, setStatus] = useState<"pending" | "running" | "done" | "cancelled" | "error">("pending");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [resultLink, setResultLink] = useState<string>("https://calendar.google.com");
+  const [listedEvents, setListedEvents] = useState<CalendarEvent[] | null>(null);
+
   const formatTime = (iso?: string) => {
     if (!iso) return "";
     try {
@@ -4488,6 +4459,84 @@ function CalendarEventCard({ event, onGoToCalendar }: { event: CalendarEventPayl
     }
   };
 
+  const resolveTargetEventId = async (): Promise<string> => {
+    if (event.eventId && !event.eventId.startsWith("local_")) return event.eventId;
+    const matches = await listCalendarEvents({
+      q: event.summary || event.query || undefined,
+      maxResults: 10,
+    });
+    if (matches[0]?.id) return matches[0].id;
+    throw new Error(t("No upcoming events found"));
+  };
+
+  const handleConfirm = async () => {
+    setStatus("running");
+    setErrorMsg(null);
+    try {
+      if (!getWorkspaceAccessToken()) {
+        await connectGoogleWorkspace();
+      }
+
+      if (action === "list") {
+        const items = await listCalendarEvents({
+          timeMin: new Date().toISOString(),
+          q: event.query || undefined,
+          maxResults: 10,
+        });
+        setListedEvents(items);
+        setStatus("done");
+        return;
+      }
+
+      if (action === "delete") {
+        const targetId = await resolveTargetEventId();
+        await deleteCalendarEvent(targetId);
+        setStatus("done");
+        toast.success(t("Deleted from Google Calendar"));
+        return;
+      }
+
+      if (action === "update") {
+        const targetId = await resolveTargetEventId();
+        const updated = await updateCalendarEvent(targetId, {
+          summary: event.summary,
+          description: event.description,
+          location: event.location,
+          start: event.start,
+          end: event.end,
+          reminderMinutes: event.reminderMinutes,
+        });
+        if (updated.htmlLink) setResultLink(updated.htmlLink);
+        setStatus("done");
+        toast.success(t("Saved to Google Calendar"));
+        return;
+      }
+
+      const created = await createCalendarEvent(event);
+      if (created.htmlLink) setResultLink(created.htmlLink);
+      setStatus("done");
+      toast.success(t("Saved to Google Calendar"));
+    } catch (err: any) {
+      const message = err?.message || t("Error saving event");
+      setErrorMsg(message);
+      setStatus("error");
+      toast.error(message);
+    }
+  };
+
+  const primaryLabel =
+    action === "list"
+      ? isConnected
+        ? t("Load Calendar Events")
+        : t("Connect Google & Load Events")
+      : action === "delete"
+        ? t("Confirm & Delete Event")
+        : action === "update"
+          ? t("Confirm & Update Event")
+          : isConnected
+            ? t("Confirm & Add to Calendar")
+            : t("Connect Google & Add to Calendar");
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -4500,23 +4549,43 @@ function CalendarEventCard({ event, onGoToCalendar }: { event: CalendarEventPayl
             <CalendarIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">{event.summary || t("Reminder")}</div>
-            {event.start?.dateTime && (
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 tabular-nums truncate">
-                {formatDate(event.start.dateTime)} · {formatTime(event.start.dateTime)}{event.end?.dateTime ? ` – ${formatTime(event.end.dateTime)}` : ""}
-              </div>
-            )}
+            <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">
+              {event.summary || t("Reminder")}
+            </div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums">
+              {action !== "list" && event.start?.dateTime && (
+                <span>
+                  {formatDate(event.start.dateTime)} · {formatTime(event.start.dateTime)}
+                  {event.end?.dateTime ? ` – ${formatTime(event.end.dateTime)}` : ""}
+                </span>
+              )}
+              {status === "done" && (
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                  {action === "delete" ? t("Deleted from Google Calendar") : t("Saved to Google Calendar")}
+                </span>
+              )}
+              {status === "pending" && (
+                <span className="text-amber-600 dark:text-amber-400">{t("Awaiting confirmation")}</span>
+              )}
+              {status === "cancelled" && (
+                <span className="text-zinc-400">{t("Cancelled")}</span>
+              )}
+            </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onGoToCalendar}
-          className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors shrink-0 cursor-pointer"
-        >
-          <span>{t("Open Calendar")}</span>
-          <ArrowUpRight className="h-3 w-3" />
-        </button>
+        {status === "done" && (
+          <a
+            href={resultLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors shrink-0"
+          >
+            <span>{t("Open Calendar")}</span>
+            <ArrowUpRight className="h-3 w-3" />
+          </a>
+        )}
       </div>
+
       {event.description && (
         <p className="mt-2.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-white/[0.03] px-2.5 py-2 rounded-xl break-words">
           {event.description}
@@ -4527,13 +4596,170 @@ function CalendarEventCard({ event, onGoToCalendar }: { event: CalendarEventPayl
           {event.location}
         </div>
       )}
+
+      {listedEvents && (
+        <div className="mt-2.5 space-y-1.5 rounded-xl bg-zinc-50 dark:bg-white/[0.03] p-2.5">
+          {listedEvents.length === 0 ? (
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{t("No upcoming events found")}</div>
+          ) : (
+            listedEvents.map((item) => (
+              <div key={item.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium text-zinc-800 dark:text-zinc-200 truncate">{item.summary}</span>
+                <span className="text-zinc-500 dark:text-zinc-400 shrink-0 tabular-nums">
+                  {formatDate(item.start?.dateTime || item.start?.date)} {formatTime(item.start?.dateTime)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="mt-2.5 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300 break-words">
+          {errorMsg}
+        </div>
+      )}
+
+      {(status === "pending" || status === "error" || status === "running") && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={status === "running"}
+            onClick={handleConfirm}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-60 ${
+              action === "delete"
+                ? "bg-red-600 hover:bg-red-700"
+                : "bg-brand hover:opacity-90"
+            }`}
+          >
+            {status === "running" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {status === "running"
+                ? t("Executing...")
+                : status === "error"
+                  ? t("Retry")
+                  : primaryLabel}
+            </span>
+          </button>
+          {status !== "running" && (
+            <button
+              type="button"
+              onClick={() => {
+                setStatus("cancelled");
+                setErrorMsg(null);
+              }}
+              className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 transition-colors cursor-pointer"
+            >
+              <X className="h-3 w-3" />
+              <span>{t("Cancel")}</span>
+            </button>
+          )}
+        </div>
+      )}
     </motion.div>
   );
 }
 
-function TaskEventCard({ task, onGoToTasks }: { task: { action: string; title: string; notes?: string; due?: string }; onGoToTasks: () => void }) {
+function TaskEventCard({
+  task,
+}: {
+  task: { id?: string; action: string; title: string; notes?: string; due?: string; taskId?: string; taskListId?: string };
+}) {
   const t = useT();
   const lang = useLang();
+  const isConnected = useWorkspaceConnected();
+  const action = task.action || "create";
+  const listId = task.taskListId || "@default";
+
+  const [status, setStatus] = useState<"pending" | "running" | "done" | "cancelled" | "error">("pending");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [listedTasks, setListedTasks] = useState<GoogleTask[] | null>(null);
+
+  const resolveTargetTaskId = async (): Promise<string> => {
+    if (task.taskId && !String(task.taskId).startsWith("local_")) return task.taskId;
+    const all = await listGoogleTasks(listId, true);
+    const needle = (task.title || "").trim().toLowerCase();
+    const match = all.find((item) => item.title.trim().toLowerCase().includes(needle));
+    if (match?.id) return match.id;
+    throw new Error(t("No tasks found"));
+  };
+
+  const handleConfirm = async () => {
+    setStatus("running");
+    setErrorMsg(null);
+    try {
+      if (!getWorkspaceAccessToken()) {
+        await connectGoogleWorkspace();
+      }
+
+      if (action === "list") {
+        const items = await listGoogleTasks(listId, false);
+        setListedTasks(items.slice(0, 15));
+        setStatus("done");
+        return;
+      }
+
+      if (action === "delete") {
+        const targetId = await resolveTargetTaskId();
+        await deleteGoogleTask(targetId, listId);
+        setStatus("done");
+        toast.success(t("Deleted from Google Tasks"));
+        return;
+      }
+
+      if (action === "complete") {
+        const targetId = await resolveTargetTaskId();
+        await updateGoogleTask(targetId, { status: "completed" }, listId);
+        setStatus("done");
+        toast.success(t("Task updated in Google Tasks"));
+        return;
+      }
+
+      if (action === "update") {
+        const targetId = await resolveTargetTaskId();
+        await updateGoogleTask(
+          targetId,
+          { title: task.title, notes: task.notes, due: task.due },
+          listId,
+        );
+        setStatus("done");
+        toast.success(t("Task updated in Google Tasks"));
+        return;
+      }
+
+      await createGoogleTask(
+        { title: task.title, notes: task.notes, due: task.due, taskListId: listId },
+        listId,
+      );
+      setStatus("done");
+      toast.success(t("Saved to Google Tasks"));
+    } catch (err: any) {
+      const message = err?.message || t("Failed to create task");
+      setErrorMsg(message);
+      setStatus("error");
+      toast.error(message);
+    }
+  };
+
+  const primaryLabel =
+    action === "list"
+      ? isConnected
+        ? t("Load Google Tasks")
+        : t("Connect Google & Load Tasks")
+      : action === "delete"
+        ? t("Confirm & Delete Task")
+        : action === "complete"
+          ? t("Confirm & Complete Task")
+          : action === "update"
+            ? t("Confirm & Update Task")
+            : isConnected
+              ? t("Confirm & Add to Google Tasks")
+              : t("Connect Google & Add Task");
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -4546,35 +4772,204 @@ function TaskEventCard({ task, onGoToTasks }: { task: { action: string; title: s
             <CheckSquareIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">{task.title || t("Task")}</div>
-            {task.due && (
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 tabular-nums truncate">
-                {t("Due:")} {new Date(task.due).toLocaleDateString(localeFor(lang), { day: "numeric", month: "long" })}
-              </div>
-            )}
+            <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">
+              {task.title || t("Task")}
+            </div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums">
+              {task.due && (
+                <span>
+                  {t("Due:")} {new Date(task.due).toLocaleDateString(localeFor(lang), { day: "numeric", month: "long" })}
+                </span>
+              )}
+              {status === "done" && (
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                  {action === "delete"
+                    ? t("Deleted from Google Tasks")
+                    : action === "complete" || action === "update"
+                      ? t("Task updated in Google Tasks")
+                      : t("Saved to Google Tasks")}
+                </span>
+              )}
+              {status === "pending" && (
+                <span className="text-amber-600 dark:text-amber-400">{t("Awaiting confirmation")}</span>
+              )}
+              {status === "cancelled" && (
+                <span className="text-zinc-400">{t("Cancelled")}</span>
+              )}
+            </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onGoToTasks}
-          className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors shrink-0 cursor-pointer"
-        >
-          <span>{t("Open Tasks")}</span>
-          <ArrowUpRight className="h-3 w-3" />
-        </button>
+        {status === "done" && (
+          <a
+            href="https://tasks.google.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors shrink-0"
+          >
+            <span>{t("Open Tasks")}</span>
+            <ArrowUpRight className="h-3 w-3" />
+          </a>
+        )}
       </div>
+
       {task.notes && (
         <p className="mt-2.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-white/[0.03] px-2.5 py-2 rounded-xl break-words">
           {task.notes}
         </p>
       )}
+
+      {listedTasks && (
+        <div className="mt-2.5 space-y-1.5 rounded-xl bg-zinc-50 dark:bg-white/[0.03] p-2.5">
+          {listedTasks.length === 0 ? (
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{t("No tasks found")}</div>
+          ) : (
+            listedTasks.map((item) => (
+              <div key={item.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-medium text-zinc-800 dark:text-zinc-200 truncate">{item.title}</span>
+                {item.due && (
+                  <span className="text-zinc-500 dark:text-zinc-400 shrink-0 tabular-nums">
+                    {new Date(item.due).toLocaleDateString(localeFor(lang), { day: "numeric", month: "short" })}
+                  </span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="mt-2.5 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300 break-words">
+          {errorMsg}
+        </div>
+      )}
+
+      {(status === "pending" || status === "error" || status === "running") && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={status === "running"}
+            onClick={handleConfirm}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-60 ${
+              action === "delete"
+                ? "bg-red-600 hover:bg-red-700"
+                : "bg-brand hover:opacity-90"
+            }`}
+          >
+            {status === "running" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {status === "running"
+                ? t("Executing...")
+                : status === "error"
+                  ? t("Retry")
+                  : primaryLabel}
+            </span>
+          </button>
+          {status !== "running" && (
+            <button
+              type="button"
+              onClick={() => {
+                setStatus("cancelled");
+                setErrorMsg(null);
+              }}
+              className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 transition-colors cursor-pointer"
+            >
+              <X className="h-3 w-3" />
+              <span>{t("Cancel")}</span>
+            </button>
+          )}
+        </div>
+      )}
     </motion.div>
   );
 }
 
-function GmailEventCard({ email, onGoToGmail }: { email: { action: string; to?: string; subject?: string; body?: string }; onGoToGmail: () => void }) {
+function GmailEventCard({
+  email,
+}: {
+  email: {
+    id?: string;
+    action: string;
+    to?: string;
+    subject?: string;
+    body?: string;
+    messageId?: string;
+    query?: string;
+    attachments?: Array<{ filename: string; mimeType?: string; dataUrl?: string }>;
+  };
+}) {
   const t = useT();
-  const isConnected = !!getCachedGmailToken();
+  const isConnected = useWorkspaceConnected();
+  const action = email.action || (email.to ? "send" : "list");
+
+  const [status, setStatus] = useState<"pending" | "running" | "done" | "cancelled" | "error">(
+    action === "draft" ? "done" : "pending",
+  );
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [listedEmails, setListedEmails] = useState<GmailMessageSummary[] | null>(null);
+
+  const handleConfirm = async () => {
+    setStatus("running");
+    setErrorMsg(null);
+    try {
+      if (!getWorkspaceAccessToken()) {
+        await connectGoogleWorkspace();
+      }
+
+      if (action === "list" || action === "search" || action === "read") {
+        const items = await listGmailMessages({
+          q: email.query || undefined,
+          maxResults: 8,
+        });
+        setListedEmails(items);
+        setStatus("done");
+        return;
+      }
+
+      if ((action === "trash" || action === "delete") && email.messageId) {
+        await trashGmailMessage(email.messageId);
+        setStatus("done");
+        toast.success(t("Moved to Trash in Gmail"));
+        return;
+      }
+
+      if (!email.to) {
+        throw new Error("Recipient email address (to) is required.");
+      }
+
+      await sendGmailMessage({
+        to: email.to,
+        subject: email.subject || "No Subject",
+        body: email.body || "",
+        attachments: email.attachments,
+      });
+      setStatus("done");
+      toast.success(
+        email.attachments?.length
+          ? `${t("Sent via Gmail")} (${t("Attached files:")} ${email.attachments.length})`
+          : t("Sent via Gmail"),
+      );
+    } catch (err: any) {
+      const message = err?.message || t("Failed to send email");
+      setErrorMsg(message);
+      setStatus("error");
+      toast.error(message);
+    }
+  };
+
+  const primaryLabel =
+    action === "list" || action === "search" || action === "read"
+      ? isConnected
+        ? t("Load Gmail Messages")
+        : t("Connect Google & Load Mail")
+      : action === "trash" || action === "delete"
+        ? t("Confirm & Move to Trash")
+        : isConnected
+          ? t("Confirm & Send Email")
+          : t("Connect Google & Send Email");
 
   return (
     <motion.div
@@ -4593,29 +4988,120 @@ function GmailEventCard({ email, onGoToGmail }: { email: { action: string; to?: 
             </div>
             <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
               {email.to && <span className="truncate max-w-full">{t("To:")} {email.to}</span>}
-              <span className={isConnected ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>
-                {isConnected ? t("Gmail connected") : t("Sign-in required")}
-              </span>
+              {status === "done" && (
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                  {action === "draft"
+                    ? t("Saved as local draft")
+                    : action === "trash" || action === "delete"
+                      ? t("Moved to Trash in Gmail")
+                      : action === "list" || action === "search" || action === "read"
+                        ? t("Gmail connected")
+                        : t("Sent via Gmail")}
+                </span>
+              )}
+              {status === "pending" && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {isConnected ? t("Awaiting confirmation") : t("Sign-in required")}
+                </span>
+              )}
+              {status === "cancelled" && (
+                <span className="text-zinc-400">{t("Cancelled")}</span>
+              )}
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onGoToGmail}
-          className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0 cursor-pointer ${
-            isConnected
-              ? "border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 dark:text-zinc-200"
-              : "bg-red-600 hover:bg-red-700 text-white"
-          }`}
-        >
-          <span>{isConnected ? t("Open Gmail") : t("Sign in to Gmail")}</span>
-          <ArrowUpRight className="h-3 w-3" />
-        </button>
+        {status === "done" && (
+          <a
+            href="https://mail.google.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors shrink-0"
+          >
+            <span>{t("Open Gmail")}</span>
+            <ArrowUpRight className="h-3 w-3" />
+          </a>
+        )}
       </div>
+
+      {email.attachments && email.attachments.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {email.attachments.map((att, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 rounded-lg bg-zinc-100 dark:bg-white/[0.06] px-2 py-0.5 text-[11px] text-zinc-600 dark:text-zinc-300"
+            >
+              <Paperclip className="h-3 w-3" />
+              <span className="truncate max-w-[180px]">{att.filename}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       {email.body && (
         <p className="mt-2.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-white/[0.03] px-2.5 py-2 rounded-xl whitespace-pre-wrap break-words">
           {email.body}
         </p>
+      )}
+
+      {listedEmails && (
+        <div className="mt-2.5 space-y-2 rounded-xl bg-zinc-50 dark:bg-white/[0.03] p-2.5">
+          {listedEmails.length === 0 ? (
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">{t("No emails found")}</div>
+          ) : (
+            listedEmails.map((msg) => (
+              <div key={msg.id} className="border-b border-zinc-200/60 dark:border-white/[0.06] last:border-0 pb-1.5 last:pb-0">
+                <div className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">{msg.subject}</div>
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">{msg.from}</div>
+                {msg.snippet && (
+                  <div className="text-[11px] text-zinc-600 dark:text-zinc-400 line-clamp-2 mt-0.5">{msg.snippet}</div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="mt-2.5 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300 break-words">
+          {errorMsg}
+        </div>
+      )}
+
+      {(status === "pending" || status === "error" || status === "running") && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={status === "running"}
+            onClick={handleConfirm}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 hover:bg-red-700 px-3 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer disabled:opacity-60"
+          >
+            {status === "running" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {status === "running"
+                ? t("Executing...")
+                : status === "error"
+                  ? t("Retry")
+                  : primaryLabel}
+            </span>
+          </button>
+          {status !== "running" && (
+            <button
+              type="button"
+              onClick={() => {
+                setStatus("cancelled");
+                setErrorMsg(null);
+              }}
+              className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 transition-colors cursor-pointer"
+            >
+              <X className="h-3 w-3" />
+              <span>{t("Cancel")}</span>
+            </button>
+          )}
+        </div>
       )}
     </motion.div>
   );
@@ -5615,32 +6101,21 @@ const MessageBubble = memo(function MessageBubble({
               {message.calendarEvents?.length ? (
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
                   {message.calendarEvents.map((evt, idx) => (
-                    <CalendarEventCard key={idx} event={evt} onGoToCalendar={() => window.open("https://calendar.google.com", "_blank", "noopener,noreferrer")} />
+                    <CalendarEventCard key={evt.id || idx} event={evt} />
                   ))}
                 </div>
               ) : null}
               {message.taskEvents?.length ? (
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
-                  {message.taskEvents.map((t, idx) => (
-                    <TaskEventCard key={idx} task={t} onGoToTasks={() => window.open("https://tasks.google.com", "_blank", "noopener,noreferrer")} />
+                  {message.taskEvents.map((taskItem, idx) => (
+                    <TaskEventCard key={taskItem.id || idx} task={taskItem} />
                   ))}
                 </div>
               ) : null}
               {message.gmailEvents?.length ? (
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
                   {message.gmailEvents.map((g, idx) => (
-                    <GmailEventCard
-                      key={idx}
-                      email={g}
-                      onGoToGmail={() => {
-                        const token = getCachedGmailToken();
-                        if (!token) {
-                          window.dispatchEvent(new CustomEvent("igseek:open-gmail-auth", { detail: g }));
-                        } else {
-                          window.open("https://mail.google.com", "_blank", "noopener,noreferrer");
-                        }
-                      }}
-                    />
+                    <GmailEventCard key={g.id || idx} email={g} />
                   ))}
                 </div>
               ) : null}
@@ -5953,18 +6428,17 @@ function LibraryView({
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!userId || userId === GUEST_ID) {
+    if (!userId || userId === GUEST_ID || userId.startsWith("local_")) {
       setCloudMediaMsgs([]);
       return;
     }
-    void fetchCloudChatMessagesForLibrary(userId).then((items) => {
-      if (!cancelled) setCloudMediaMsgs(items);
+    const unsub = subscribeCloudChatMediaForLibrary(userId, (items) => {
+      setCloudMediaMsgs(items);
     });
     return () => {
-      cancelled = true;
+      unsub();
     };
-  }, [userId, refreshKey, chats.length]);
+  }, [userId]);
 
   const getLibFlowHeaders = async (): Promise<Record<string, string>> => {
     const headers: Record<string, string> = {
@@ -7574,45 +8048,54 @@ function EngineView({
     } catch {}
 
     let cancelled = false;
-    if (cloudUid) {
-      void loadCloudEngineProject(cloudUid, activeChatId).then((cloudProj) => {
-        if (cancelled || !cloudProj || activeChatIdRef.current !== activeChatId) return;
-        const localTime = localParsed?.updatedAt ? new Date(localParsed.updatedAt).getTime() : 0;
-        const cloudTime = cloudProj.updatedAt ? new Date(cloudProj.updatedAt).getTime() : 0;
-        if (!localParsed || !localTime || cloudTime >= localTime) {
-          if (cloudProj.files && Object.keys(cloudProj.files).length > 0) {
-            setFiles(cloudProj.files);
-            if (cloudProj.activeFile && cloudProj.files[cloudProj.activeFile] !== undefined) {
-              setActiveFile(cloudProj.activeFile);
-            } else {
-              const firstKey = Object.keys(cloudProj.files)[0];
-              if (firstKey) setActiveFile(firstKey);
-            }
+    let unsubCloudEngine: (() => void) | null = null;
+    let latestLocalTime = localParsed?.updatedAt ? new Date(localParsed.updatedAt).getTime() : 0;
+
+    const applyCloudEngineProject = (cloudProj: Awaited<ReturnType<typeof loadCloudEngineProject>>) => {
+      if (cancelled || !cloudProj || activeChatIdRef.current !== activeChatId) return;
+      if (activeEngineJobsRef.current.has(activeChatId)) return;
+      const cloudTime = cloudProj.updatedAt ? new Date(cloudProj.updatedAt).getTime() : 0;
+      if (!latestLocalTime || cloudTime > latestLocalTime) {
+        latestLocalTime = cloudTime || Date.now();
+        if (cloudProj.files && Object.keys(cloudProj.files).length > 0) {
+          setFiles(cloudProj.files);
+          if (cloudProj.activeFile && cloudProj.files[cloudProj.activeFile] !== undefined) {
+            setActiveFile(cloudProj.activeFile);
+          } else {
+            const firstKey = Object.keys(cloudProj.files)[0];
+            if (firstKey) setActiveFile(firstKey);
           }
-          if (Array.isArray(cloudProj.chatMessages) && cloudProj.chatMessages.length > 0) {
-            setChatMessages(cloudProj.chatMessages);
-            setHasStarted(true);
-          }
-          if (cloudProj.projectId !== undefined) {
-            setSelectedProjectId(cloudProj.projectId);
-          }
-          try {
-            window.localStorage.setItem(
-              `igseek:engine_proj_${activeChatId}`,
-              JSON.stringify({
-                files: cloudProj.files,
-                chatMessages: cloudProj.chatMessages,
-                activeFile: cloudProj.activeFile,
-                title: cloudProj.title,
-                updatedAt: cloudProj.updatedAt,
-              })
-            );
-          } catch {}
         }
-      });
+        if (Array.isArray(cloudProj.chatMessages) && cloudProj.chatMessages.length > 0) {
+          setChatMessages(cloudProj.chatMessages);
+          setHasStarted(true);
+        }
+        if (cloudProj.projectId !== undefined) {
+          setSelectedProjectId(cloudProj.projectId);
+        }
+        try {
+          window.localStorage.setItem(
+            `igseek:engine_proj_${activeChatId}`,
+            JSON.stringify({
+              files: cloudProj.files,
+              chatMessages: cloudProj.chatMessages,
+              activeFile: cloudProj.activeFile,
+              title: cloudProj.title,
+              projectId: cloudProj.projectId ?? null,
+              updatedAt: cloudProj.updatedAt,
+            })
+          );
+        } catch {}
+      }
+    };
+
+    if (cloudUid) {
+      void loadCloudEngineProject(cloudUid, activeChatId).then(applyCloudEngineProject);
+      unsubCloudEngine = subscribeCloudEngineProject(cloudUid, activeChatId, applyCloudEngineProject);
     }
     return () => {
       cancelled = true;
+      unsubCloudEngine?.();
     };
   }, [activeChatId, cloudUid]);
 
@@ -9519,6 +10002,37 @@ function ProfileModal({
   const [creativity, setCreativity] = useState(() => window.localStorage.getItem("igseek:ai_creativity") || "balance");
   const [lengthOpt, setLengthOpt] = useState(() => window.localStorage.getItem("igseek:ai_length") || "medium");
   const [currentAgent, setCurrentAgent] = useState(() => window.localStorage.getItem("igseek:agent") || "universal");
+  const [cloudSync, setCloudSync] = useState<CloudSyncState>(() => ({
+    uid: null,
+    status: "idle",
+    lastSyncedAt: null,
+    error: null,
+    counts: { projects: 0, chats: 0, library: 0, memories: 0 },
+  }));
+  const [manualSyncing, setManualSyncing] = useState(false);
+
+  const isFirebaseCloudAccount = !isGuest && user.id !== GUEST_ID && !user.id.startsWith("local_");
+
+  useEffect(() => {
+    return subscribeCloudSyncState((state) => {
+      setCloudSync(state);
+    });
+  }, []);
+
+  const handleManualCloudSync = async () => {
+    if (!isFirebaseCloudAccount || manualSyncing) return;
+    setManualSyncing(true);
+    try {
+      const res = await forceCloudSync(user.id);
+      if (res.ok) {
+        toast.success(t("Cloud sync complete"));
+      } else {
+        toast.error(res.error || t("Cloud sync failed"));
+      }
+    } finally {
+      setManualSyncing(false);
+    }
+  };
 
   const initials = user.name.split(" ").map((p) => p[0]).slice(0, 2).join("").toUpperCase();
   const memberSince = new Date(user.since).toLocaleDateString(localeFor(lang), {
@@ -9918,6 +10432,76 @@ function ProfileModal({
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="glass-card rounded-xl border border-border/80 bg-surface-elevated/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                    {isFirebaseCloudAccount ? (
+                      <Cloud className="h-4 w-4 text-brand" />
+                    ) : (
+                      <CloudOff className="h-4 w-4 text-amber-500" />
+                    )}
+                    <span>{t("Cloud sync")}</span>
+                  </div>
+                  {isFirebaseCloudAccount ? (
+                    <button
+                      type="button"
+                      disabled={manualSyncing || cloudSync.status === "syncing"}
+                      onClick={() => void handleManualCloudSync()}
+                      className="glass-button inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-surface-elevated transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${manualSyncing || cloudSync.status === "syncing" ? "animate-spin" : ""}`} />
+                      {manualSyncing || cloudSync.status === "syncing" ? t("Syncing…") : t("Sync now")}
+                    </button>
+                  ) : (
+                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      {t("Local-only mode")}
+                    </span>
+                  )}
+                </div>
+
+                {isFirebaseCloudAccount ? (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { label: t("Projects"), value: cloudSync.counts.projects },
+                        { label: t("Chats"), value: cloudSync.counts.chats },
+                        { label: t("Library"), value: cloudSync.counts.library },
+                        { label: t("Memory"), value: cloudSync.counts.memories },
+                      ].map((stat) => (
+                        <div
+                          key={stat.label}
+                          className="rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-center"
+                        >
+                          <div className="font-mono text-sm font-semibold tabular-nums text-foreground">
+                            {stat.value}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground truncate">{stat.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
+                        <Check className="h-3 w-3" />
+                        {t("Synced with Firebase")}
+                      </span>
+                      {cloudSync.lastSyncedAt && (
+                        <span>
+                          {t("Last synced")}:{" "}
+                          {new Date(cloudSync.lastSyncedAt).toLocaleTimeString(localeFor(lang), {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    {t("Sign in with Firebase to sync Projects, Library, Memory, and Chats across devices.")}
+                  </p>
+                )}
               </div>
 
               <div className="glass-card rounded-xl border border-border/80 bg-surface-elevated/40 p-4 space-y-3">

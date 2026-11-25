@@ -4,6 +4,7 @@ import {
   upsertCloudLibraryFiles,
   renameCloudLibraryFile,
   deleteCloudLibraryFile,
+  assignCloudLibraryFileProject,
 } from "./cloud-sync";
 
 export const FLOW_LIBRARY_STORAGE_KEY = "igseek:flow_library_files";
@@ -39,7 +40,7 @@ export interface StoredFlowLibraryFile {
   projectId: string | null;
   taskId?: string;
   taskTitle?: string;
-  source: "flow";
+  source: "flow" | "upload" | "library";
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +73,18 @@ export function writeFlowLibraryFiles(files: StoredFlowLibraryFile[]): void {
  * - On initial sync, pushes any pre-existing local files missing from cloud
  */
 let initialBackfillDoneForUid: string | null = null;
+
+export function resetFlowLibraryBackfill(): void {
+  initialBackfillDoneForUid = null;
+  pendingLocalUploads.clear();
+  recentlyDeletedIds.clear();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("igseek:cloud-cache-cleared", () => {
+    resetFlowLibraryBackfill();
+  });
+}
 
 export function replaceFlowLibraryFilesFromCloud(cloudFiles: StoredFlowLibraryFile[]): void {
   const now = Date.now();
@@ -128,6 +141,7 @@ export function upsertFlowLibraryFiles(
     projectId?: string | null;
     taskId?: string;
     taskTitle?: string;
+    source?: "flow" | "upload" | "library";
   }>,
   opts?: { skipCloudSync?: boolean },
 ): StoredFlowLibraryFile[] {
@@ -159,7 +173,7 @@ export function upsertFlowLibraryFiles(
       projectId: proj,
       taskId: item.taskId ?? prev?.taskId,
       taskTitle: item.taskTitle ?? prev?.taskTitle,
-      source: "flow",
+      source: item.source || prev?.source || "flow",
       createdAt: prev?.createdAt || now,
       updatedAt: sameContent && prev?.updatedAt ? prev.updatedAt : now,
     };
@@ -223,5 +237,30 @@ export function deleteStoredFlowLibraryFile(id: string): StoredFlowLibraryFile |
     }
   });
 
+  return target;
+}
+
+export function assignStoredFlowLibraryFileProject(
+  id: string,
+  projectId: string | null,
+): StoredFlowLibraryFile | null {
+  const existing = readFlowLibraryFiles();
+  let target: StoredFlowLibraryFile | null = null;
+  const next = existing.map((f) => {
+    if (f.id === id) {
+      target = { ...f, projectId, updatedAt: new Date().toISOString() };
+      return target;
+    }
+    return f;
+  });
+  if (target) {
+    pendingLocalUploads.set(id, { file: target, expiresAt: Date.now() + 15_000 });
+    writeFlowLibraryFiles(next);
+    void waitForCloudAuth().then((cloudUid) => {
+      if (cloudUid) {
+        void assignCloudLibraryFileProject(cloudUid, id, projectId);
+      }
+    });
+  }
   return target;
 }

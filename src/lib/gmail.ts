@@ -1,5 +1,10 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { auth } from './firebase';
+import {
+  clearWorkspaceAccessToken,
+  connectGoogleWorkspace,
+  getWorkspaceAccessToken,
+  parseGoogleApiError,
+  setWorkspaceAccessToken,
+} from './google-workspace-auth';
 
 export interface GmailMessageHeader {
   name: string;
@@ -43,54 +48,20 @@ export interface SendEmailPayload {
   attachments?: EmailAttachment[];
 }
 
-let cachedGmailToken: string | null = null;
-
 export function getCachedGmailToken(): string | null {
-  return cachedGmailToken;
+  return getWorkspaceAccessToken();
 }
 
 export function setCachedGmailToken(token: string | null): void {
-  cachedGmailToken = token;
-  window.dispatchEvent(new CustomEvent('igseek:gmail-auth-changed', { detail: { connected: !!token } }));
+  setWorkspaceAccessToken(token);
 }
 
 export async function connectGmail(): Promise<{ accessToken: string; userEmail?: string } | null> {
-  try {
-    const gmailScopes = [
-      'https://mail.google.com/',
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/gmail.compose',
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/gmail.labels',
-    ];
-
-    const provider = new GoogleAuthProvider();
-    gmailScopes.forEach((scope) => {
-      provider.addScope(scope);
-    });
-    provider.setCustomParameters({ prompt: 'consent' });
-
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-
-    if (!credential?.accessToken) {
-      throw new Error('Failed to retrieve Google OAuth access token');
-    }
-
-    setCachedGmailToken(credential.accessToken);
-    return {
-      accessToken: credential.accessToken,
-      userEmail: result.user.email ?? undefined,
-    };
-  } catch (error) {
-    console.error('Gmail OAuth error:', error);
-    throw error;
-  }
+  return connectGoogleWorkspace();
 }
 
 export function disconnectGmail(): void {
-  setCachedGmailToken(null);
+  clearWorkspaceAccessToken();
 }
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -98,7 +69,7 @@ const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 async function fetchGmailApi(endpoint: string, options: RequestInit = {}): Promise<any> {
   const token = getCachedGmailToken();
   if (!token) {
-    throw new Error('Gmail is not connected. Please authenticate with Google.');
+    throw new Error('Gmail is not connected. Please sign in with Google.');
   }
 
   const headers = new Headers(options.headers || {});
@@ -112,9 +83,17 @@ async function fetchGmailApi(endpoint: string, options: RequestInit = {}): Promi
     headers,
   });
 
-  if (res.status === 401 || res.status === 403) {
-    setCachedGmailToken(null);
-    throw new Error('Gmail access token expired or lacks permissions. Please re-connect Gmail.');
+  if (res.status === 401) {
+    clearWorkspaceAccessToken();
+    throw new Error(await parseGoogleApiError(res, 'Gmail'));
+  }
+
+  if (res.status === 403) {
+    const errMsg = await parseGoogleApiError(res, 'Gmail');
+    if (errMsg.toLowerCase().includes('insufficient') || errMsg.toLowerCase().includes('scope')) {
+      clearWorkspaceAccessToken();
+    }
+    throw new Error(errMsg);
   }
 
   if (res.status === 204) {
@@ -122,8 +101,7 @@ async function fetchGmailApi(endpoint: string, options: RequestInit = {}): Promi
   }
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gmail API error (${res.status}): ${errText || res.statusText}`);
+    throw new Error(await parseGoogleApiError(res, 'Gmail'));
   }
 
   return res.json();
@@ -200,7 +178,7 @@ export async function getGmailMessage(messageId: string): Promise<GmailMessageSu
 }
 
 export async function sendGmailMessage(payload: SendEmailPayload): Promise<{ id: string; threadId: string }> {
-  const utf8Subject = `=?utf-8?B?${btoa(unescape(encodeURIComponent(payload.subject)))}?=`;
+  const utf8Subject = `=?utf-8?B?${encodeUtf8Base64(payload.subject)}?=`;
 
   let emailRaw = "";
   if (payload.attachments && payload.attachments.length > 0) {
@@ -234,9 +212,9 @@ export async function sendGmailMessage(payload: SendEmailPayload): Promise<{ id:
           } else {
             try {
               const decodedText = decodeURIComponent(rawBody);
-              base64Data = btoa(unescape(encodeURIComponent(decodedText)));
+              base64Data = encodeUtf8Base64(decodedText);
             } catch {
-              base64Data = btoa(unescape(encodeURIComponent(rawBody)));
+              base64Data = encodeUtf8Base64(rawBody);
             }
           }
         }
@@ -266,7 +244,7 @@ export async function sendGmailMessage(payload: SendEmailPayload): Promise<{ id:
       '',
       payload.body,
     ];
-    emailRaw = messageParts.join('\n');
+    emailRaw = messageParts.join('\r\n');
   }
 
   const encodedEmail = encodeBase64Url(emailRaw);
@@ -305,8 +283,18 @@ export async function listGmailLabels(): Promise<GmailLabel[]> {
   }));
 }
 
+function encodeUtf8Base64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 function encodeBase64Url(str: string): string {
-  const base64 = btoa(unescape(encodeURIComponent(str)));
+  const base64 = encodeUtf8Base64(str);
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
@@ -316,7 +304,12 @@ function decodeBase64Url(base64url: string): string {
     base64 += '=';
   }
   try {
-    return decodeURIComponent(escape(atob(base64)));
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder('utf-8').decode(bytes);
   } catch {
     return atob(base64);
   }

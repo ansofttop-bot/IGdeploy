@@ -414,6 +414,7 @@ export async function addFileToUnifiedLibrary(
         content: safeStoredContent,
         projectId: opts?.projectId ?? null,
         taskTitle: opts?.taskTitle || "Library",
+        source: "upload",
       },
     ],
     { skipCloudSync: true },

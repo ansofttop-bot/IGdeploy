@@ -112,7 +112,7 @@ export function GmailTab({ onAskAiAboutEmail, onNavigateToChat }: GmailTabProps)
 
   useEffect(() => {
     loadData();
-  }, [selectedFolder]);
+  }, [selectedFolder, isConnected]);
 
   const handleConnect = async () => {
     try {
@@ -139,23 +139,19 @@ export function GmailTab({ onAskAiAboutEmail, onNavigateToChat }: GmailTabProps)
     setError(null);
 
     try {
-      if (isConnected) {
-        await sendGmailMessage({
-          to: to.trim(),
-          subject: subject.trim(),
-          body: body.trim(),
-        });
-      } else {
-        saveLocalEmail({
-          to: to.trim(),
-          from: t('You (Local)'),
-          subject: subject.trim(),
-          body: body.trim(),
-          snippet: body.trim().slice(0, 100),
-          date: new Date().toISOString(),
-          labelIds: ['SENT'],
-        });
+      if (!getCachedGmailToken()) {
+        const authRes = await connectGmail();
+        if (!authRes?.accessToken) {
+          throw new Error(t('Please connect Gmail to send emails'));
+        }
+        setIsConnected(true);
       }
+
+      await sendGmailMessage({
+        to: to.trim(),
+        subject: subject.trim(),
+        body: body.trim(),
+      });
 
       setTo('');
       setSubject('');
