@@ -773,7 +773,7 @@ private fun ProSubscriptionSheet(
                 Text(
                     text = err,
                     style = MaterialTheme.typography.bodySmall,
-                    color = palette.danger
+                    color = Color(0xFFEF4444)
                 )
             }
 

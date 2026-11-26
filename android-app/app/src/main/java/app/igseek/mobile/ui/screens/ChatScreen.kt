@@ -1028,7 +1028,7 @@ private fun ChatGlassComposer(
                                     Icon(
                                         imageVector = LucideIcons.Square,
                                         contentDescription = if (isEn) "Stop generation" else "Остановить генерацию",
-                                        tint = palette.canvas,
+                                        tint = palette.bg,
                                         modifier = Modifier.size(13.dp)
                                     )
                                 }

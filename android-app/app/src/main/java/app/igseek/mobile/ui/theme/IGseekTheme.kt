@@ -40,7 +40,9 @@ data class IGseekPalette(
     val userBubbleBorder: Color,
     val codeBg: Color,
     val logoTint: Color,
-    val divider: Color
+    val divider: Color,
+    val danger: Color = Color(0xFFEF4444),
+    val canvas: Color = bg
 )
 
 val LocalIGseekPalette = staticCompositionLocalOf {
