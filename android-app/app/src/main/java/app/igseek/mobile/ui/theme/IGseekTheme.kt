@@ -32,10 +32,31 @@ fun accentPaletteFor(id: AccentPresetId): AccentColors = when (id) {
 }
 
 private val IGseekTypography = Typography(
-    headlineSmall = TextStyle(FontFamily.SansSerif, FontWeight.SemiBold, 22.sp, lineHeight = 28.sp, letterSpacing = (-0.3).sp),
-    titleMedium = TextStyle(FontFamily.SansSerif, FontWeight.SemiBold, 16.sp, lineHeight = 22.sp),
-    bodyMedium = TextStyle(FontFamily.SansSerif, FontWeight.Normal, 14.5.sp, lineHeight = 21.sp),
-    labelMedium = TextStyle(FontFamily.SansSerif, FontWeight.Medium, 12.sp, lineHeight = 16.sp)
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.3).sp
+    ),
+    titleMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp,
+        lineHeight = 22.sp
+    ),
+    bodyMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.5.sp,
+        lineHeight = 21.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        lineHeight = 16.sp
+    )
 )
 
 @Composable
