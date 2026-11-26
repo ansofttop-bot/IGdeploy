@@ -60,7 +60,16 @@ jobs:
           if [ -n "$INPUT_API_URL" ]; then
             EXTRA_ARGS="-PIGSEEK_API_BASE_URL=${INPUT_API_URL}"
           fi
-          gradle -p android-app testDebugUnitTest assembleDebug $EXTRA_ARGS --no-daemon --console=plain
+          for attempt in 1 2 3; do
+            if gradle -p android-app assembleDebug testDebugUnitTest $EXTRA_ARGS --no-daemon --console=plain; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "Transient Gradle failure (attempt $attempt), retrying in 10s..."
+            sleep 10
+          done
 
       - name: Stage & Verify Compiled APK
         run: |
