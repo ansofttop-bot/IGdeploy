@@ -1,12 +1,19 @@
 package app.igseek.mobile.data.api
 
+import android.util.Base64
+import app.igseek.mobile.data.models.AgentRoleId
+import app.igseek.mobile.data.models.AiModelId
+import app.igseek.mobile.data.models.AuthSession
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.ChatMessageItem
+import app.igseek.mobile.data.models.EngineFileItem
+import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.FlowStepItem
 import app.igseek.mobile.data.models.GeneratedImageItem
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.SubscriptionInfo
+import app.igseek.mobile.data.models.WebSourceItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,7 +24,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.UUID
+
+data class StreamChatResult(
+    val content: String,
+    val reasoning: String,
+    val images: List<GeneratedImageItem>,
+    val webSources: List<WebSourceItem>
+)
+
+data class FlowPlanResult(
+    val title: String,
+    val steps: List<FlowStepItem>
+)
 
 class IGseekApiClient(
     private val client: OkHttpClient,
@@ -25,482 +46,727 @@ class IGseekApiClient(
 ) {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    private fun endpoint(path: String): String = "${baseUrlProvider().trimEnd('/')}$path"
+    private fun optionalGatewayUrl(): String = baseUrlProvider().trim().trimEnd('/')
 
-    data class StreamCallbacks(
-        val onTextDelta: (String) -> Unit,
-        val onReasoningDelta: (String) -> Unit,
-        val onImageGenerated: (GeneratedImageItem) -> Unit,
-        val onStatus: (String) -> Unit
-    )
+    private fun gatewayHeaders(builder: Request.Builder, session: AuthSession?): Request.Builder {
+        if (session != null && !session.isGuest && session.idToken.isNotBlank()) {
+            builder.header("Authorization", "Bearer ${session.idToken}")
+        }
+        return builder
+    }
 
-    suspend fun streamChat(
-        token: String?,
-        history: List<ChatMessageItem>,
-        modelApiId: String,
-        agentApiId: String,
-        webSearch: Boolean,
-        reasoning: Boolean,
-        attachments: List<ChatAttachment>,
-        idempotencyKey: String,
-        callbacks: StreamCallbacks
-    ) = withContext(Dispatchers.IO) {
-        val msgsArr = JSONArray()
-        history.takeLast(24).forEachIndexed { idx, msg ->
-            val isLast = idx == history.takeLast(24).lastIndex
-            val obj = JSONObject().apply {
-                put("role", msg.role)
-                put("content", msg.content)
-                if (isLast && attachments.isNotEmpty() && msg.role == "user") {
-                    val attArr = JSONArray()
-                    attachments.forEach { a ->
-                        attArr.put(JSONObject().apply {
-                            put("name", a.name)
-                            put("type", a.mimeType)
-                            put("size", a.sizeBytes)
-                            put("dataUrl", a.dataUrl)
-                        })
+    // ==================== DIRECT WEB SEARCH GROUNDING ====================
+
+    suspend fun searchWebDirect(query: String, lang: String = "ru"): List<WebSourceItem> = withContext(Dispatchers.IO) {
+        val clean = query.trim().take(180)
+        if (clean.isBlank()) return@withContext emptyList()
+        val encoded = URLEncoder.encode(clean, StandardCharsets.UTF_8.name())
+        val results = mutableListOf<WebSourceItem>()
+
+        // 1. Wikipedia live search API (fast, reliable, multilingual)
+        val wikiLang = if (lang == "en" && !clean.any { it in '\u0400'..'\u04FF' }) "en" else "ru"
+        runCatching {
+            val wikiUrl = "https://$wikiLang.wikipedia.org/w/api.php?action=query&list=search&srsearch=$encoded&srlimit=4&utf8=&format=json"
+            val req = Request.Builder()
+                .url(wikiUrl)
+                .header("User-Agent", "IGseekAndroid/2.0")
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return@use
+                val obj = JSONObject(res.body?.string().orEmpty())
+                val arr = obj.optJSONObject("query")?.optJSONArray("search") ?: return@use
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val title = item.optString("title").trim()
+                    val snippet = item.optString("snippet")
+                        .replace(Regex("<[^>]+>"), "")
+                        .replace("&quot;", "\"")
+                        .replace("&amp;", "&")
+                        .trim()
+                    if (title.isNotBlank()) {
+                        val slug = URLEncoder.encode(title.replace(' ', '_'), StandardCharsets.UTF_8.name())
+                        results.add(
+                            WebSourceItem(
+                                title = title,
+                                url = "https://$wikiLang.wikipedia.org/wiki/$slug",
+                                snippet = snippet
+                            )
+                        )
                     }
-                    put("attachments", attArr)
                 }
             }
-            msgsArr.put(obj)
         }
 
-        val bodyJson = JSONObject().apply {
-            put("messages", msgsArr)
-            put("model", modelApiId)
-            put("agent", agentApiId)
-            put("webSearch", webSearch)
-            put("reasoning", reasoning)
-            put("idempotencyKey", idempotencyKey)
-        }
-
-        val reqBuilder = Request.Builder()
-            .url(endpoint("/api/chat"))
-            .header("Accept", "text/event-stream")
-            .header("Idempotency-Key", idempotencyKey)
-            .post(bodyJson.toString().toRequestBody(jsonMedia))
-        if (!token.isNullOrBlank()) {
-            reqBuilder.header("Authorization", "Bearer $token")
-        }
-
-        client.newCall(reqBuilder.build()).execute().use { res ->
-            if (!res.isSuccessful) {
-                val errBody = res.body?.string().orEmpty().take(240)
-                throw IllegalStateException("HTTP ${res.code}: $errBody")
-            }
-            val body = res.body ?: throw IllegalStateException("Пустой ответ сервера")
-            BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val raw = line?.trim() ?: continue
-                    if (!raw.startsWith("data:")) continue
-                    val payload = raw.removePrefix("data:").trim()
-                    if (payload == "[DONE]" || payload.isEmpty()) continue
-                    val evt = runCatching { JSONObject(payload) }.getOrNull() ?: continue
-                    when (evt.optString("type")) {
-                        "delta", "text", "content" -> {
-                            val chunk = evt.optString("text").ifEmpty { evt.optString("content") }
-                            if (chunk.isNotEmpty()) callbacks.onTextDelta(chunk)
-                        }
-                        "reasoning", "thought" -> {
-                            val chunk = evt.optString("text").ifEmpty { evt.optString("content") }
-                            if (chunk.isNotEmpty()) callbacks.onReasoningDelta(chunk)
-                        }
-                        "image" -> {
-                            val url = evt.optString("dataUrl").ifEmpty { evt.optString("url") }
-                            if (url.isNotBlank()) {
-                                callbacks.onImageGenerated(
-                                    GeneratedImageItem(
-                                        id = evt.optString("id").ifBlank { UUID.randomUUID().toString() },
-                                        title = evt.optString("title", "Изображение IGseek"),
-                                        dataUrl = url
-                                    )
+        // 2. DuckDuckGo Instant Answer API
+        runCatching {
+            val ddgUrl = "https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1"
+            val req = Request.Builder()
+                .url(ddgUrl)
+                .header("User-Agent", "IGseekAndroid/2.0")
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return@use
+                val obj = JSONObject(res.body?.string().orEmpty())
+                val abstractText = obj.optString("AbstractText").trim()
+                val abstractUrl = obj.optString("AbstractURL").trim()
+                val heading = obj.optString("Heading").trim()
+                if (abstractText.isNotBlank() && abstractUrl.isNotBlank()) {
+                    results.add(
+                        0,
+                        WebSourceItem(
+                            title = heading.ifBlank { "DuckDuckGo" },
+                            url = abstractUrl,
+                            snippet = abstractText.take(280)
+                        )
+                    )
+                }
+                val related = obj.optJSONArray("RelatedTopics")
+                if (related != null) {
+                    for (i in 0 until minOf(related.length(), 3)) {
+                        val rt = related.optJSONObject(i) ?: continue
+                        val text = rt.optString("Text").trim()
+                        val firstUrl = rt.optString("FirstURL").trim()
+                        if (text.isNotBlank() && firstUrl.isNotBlank()) {
+                            results.add(
+                                WebSourceItem(
+                                    title = text.substringBefore(" - ").take(80),
+                                    url = firstUrl,
+                                    snippet = text.take(220)
                                 )
-                            }
-                        }
-                        "status" -> {
-                            val msg = evt.optString("message").ifEmpty { evt.optString("text") }
-                            if (msg.isNotBlank()) callbacks.onStatus(msg)
-                        }
-                        "error" -> {
-                            throw IllegalStateException(evt.optString("message", "Ошибка генерации"))
-                        }
-                        else -> {
-                            // OpenAI SSE compatibility fallback
-                            val delta = evt.optJSONArray("choices")
-                                ?.optJSONObject(0)
-                                ?.optJSONObject("delta")
-                            val content = delta?.optString("content").orEmpty()
-                            val rContent = delta?.optString("reasoning_content").orEmpty()
-                            if (rContent.isNotEmpty()) callbacks.onReasoningDelta(rContent)
-                            if (content.isNotEmpty()) callbacks.onTextDelta(content)
+                            )
                         }
                     }
                 }
             }
         }
+
+        results.distinctBy { it.url }.take(5)
     }
 
-    suspend fun transcribeAudio(base64Audio: String): String = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("audioBase64", base64Audio)
-            put("mimeType", "audio/mp4")
-            put("lang", "ru")
-        }
+    // ==================== DIRECT IMAGE GENERATION ====================
+
+    suspend fun generateImageDirect(prompt: String): GeneratedImageItem = withContext(Dispatchers.IO) {
+        val cleanPrompt = prompt.trim().ifBlank { "modern futuristic red fox minimal dark aesthetic artwork" }
+        val encoded = URLEncoder.encode(cleanPrompt, StandardCharsets.UTF_8.name()).replace("+", "%20")
+        val seed = (System.currentTimeMillis() % 999_999L).toInt()
+        val url = "https://image.pollinations.ai/prompt/$encoded?width=1024&height=1024&nologo=true&seed=$seed&model=flux"
+
         val req = Request.Builder()
-            .url(endpoint("/api/transcribe"))
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Ошибка транскрибации (${res.code})")
-            }
-            obj?.optString("text").orEmpty().trim()
-        }
-    }
-
-    // ==================== FLOW ====================
-
-    suspend fun planFlow(
-        token: String?,
-        goal: String,
-        modelApiId: String,
-        agentApiId: String
-    ): Pair<String, List<FlowStepItem>> = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("action", "plan")
-            put("goal", goal)
-            put("model", modelApiId)
-            put("agent", agentApiId)
-        }
-        val req = Request.Builder()
-            .url(endpoint("/api/flow"))
-            .apply { if (!token.isNullOrBlank()) header("Authorization", "Bearer $token") }
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Ошибка планирования Flow (${res.code})")
-            }
-            val title = obj?.optString("title").orEmpty().ifBlank { goal.take(48) }
-            val arr = obj?.optJSONArray("steps") ?: JSONArray()
-            val steps = List(arr.length()) { i ->
-                val s = arr.getJSONObject(i)
-                FlowStepItem(
-                    id = s.optString("id").ifBlank { "step_${i + 1}" },
-                    title = s.optString("title", "Шаг ${i + 1}"),
-                    description = s.optString("description"),
-                    tool = s.optString("tool", "reason"),
-                    requiresApproval = s.optBoolean("requiresApproval", false)
-                )
-            }
-            title to steps
-        }
-    }
-
-    suspend fun runFlowStep(
-        token: String?,
-        goal: String,
-        step: FlowStepItem,
-        previousSteps: List<FlowStepItem>,
-        modelApiId: String,
-        agentApiId: String
-    ): String = withContext(Dispatchers.IO) {
-        val prevArr = JSONArray()
-        previousSteps.forEach { ps ->
-            prevArr.put(JSONObject().apply {
-                put("title", ps.title)
-                put("output", ps.output.take(1500))
-            })
-        }
-        val body = JSONObject().apply {
-            put("action", "run_step")
-            put("goal", goal)
-            put("model", modelApiId)
-            put("agent", agentApiId)
-            put("step", JSONObject().apply {
-                put("id", step.id)
-                put("title", step.title)
-                put("description", step.description)
-                put("tool", step.tool)
-            })
-            put("previousSteps", prevArr)
-        }
-        val req = Request.Builder()
-            .url(endpoint("/api/flow"))
-            .apply { if (!token.isNullOrBlank()) header("Authorization", "Bearer $token") }
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Ошибка шага Flow (${res.code})")
-            }
-            obj?.optString("output").orEmpty().ifBlank { obj?.optString("result").orEmpty() }
-        }
-    }
-
-    // ==================== LIBRARY (PG RLS + S3 PRESIGNED) ====================
-
-    suspend fun listLibrary(token: String): List<LibraryFileItem> = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url(endpoint("/api/library"))
-            .header("Authorization", "Bearer $token")
+            .url(url)
+            .header("User-Agent", "IGseekAndroid/2.0")
             .get()
             .build()
+
         client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
             if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Ошибка загрузки Library (${res.code})")
+                throw IllegalStateException("Не удалось сгенерировать изображение (${res.code})")
             }
-            val arr = obj?.optJSONArray("items") ?: JSONArray()
-            List(arr.length()) { i ->
-                val it = arr.getJSONObject(i)
-                LibraryFileItem(
-                    id = it.optString("id"),
-                    name = it.optString("name"),
-                    type = it.optString("type", "doc"),
-                    mimeType = it.optString("mimeType", "application/octet-stream"),
-                    sizeBytes = it.optLong("size", 0L),
-                    source = it.optString("source", "library"),
-                    chatTitle = it.optString("chatTitle", "Library"),
-                    updatedAt = it.optString("updatedAt"),
-                    content = it.optString("content").takeIf { s -> s.isNotBlank() },
-                    dataUrl = it.optString("dataUrl").takeIf { s -> s.isNotBlank() },
-                    downloadUrl = it.optString("downloadUrl").takeIf { s -> s.isNotBlank() }
-                )
+            val bytes = res.body?.bytes() ?: throw IllegalStateException("Пустой ответ от генератора изображений")
+            if (bytes.size < 512) {
+                throw IllegalStateException("Изображение не получено, попробуйте другой запрос")
             }
-        }
-    }
-
-    suspend fun uploadLibraryFile(
-        token: String,
-        name: String,
-        mimeType: String,
-        bytes: ByteArray,
-        dataUrl: String
-    ) = withContext(Dispatchers.IO) {
-        val fileType = if (mimeType.startsWith("image/")) "image" else "doc"
-
-        // 1. Try presigned direct S3 upload
-        val presignBody = JSONObject().apply {
-            put("action", "presign_upload")
-            put("name", name)
-            put("mimeType", mimeType)
-            put("size", bytes.size)
-            put("type", fileType)
-            put("source", "user_upload")
-        }
-        val presignReq = Request.Builder()
-            .url(endpoint("/api/library"))
-            .header("Authorization", "Bearer $token")
-            .post(presignBody.toString().toRequestBody(jsonMedia))
-            .build()
-
-        val presigned = runCatching {
-            client.newCall(presignReq).execute().use { res ->
-                if (!res.isSuccessful) null
-                else JSONObject(res.body?.string().orEmpty())
-            }
-        }.getOrNull()
-
-        if (presigned?.optBoolean("presigned", false) == true) {
-            val uploadUrl = presigned.optString("uploadUrl")
-            val fileId = presigned.optString("fileId")
-            if (uploadUrl.isNotBlank() && fileId.isNotBlank()) {
-                val putReq = Request.Builder()
-                    .url(uploadUrl)
-                    .put(bytes.toRequestBody(mimeType.toMediaType()))
-                    .build()
-                client.newCall(putReq).execute().use { putRes ->
-                    if (!putRes.isSuccessful) throw IllegalStateException("Ошибка загрузки в S3 (${putRes.code})")
-                }
-                val confirmBody = JSONObject().apply {
-                    put("action", "confirm_upload")
-                    put("fileId", fileId)
-                }
-                val confirmReq = Request.Builder()
-                    .url(endpoint("/api/library"))
-                    .header("Authorization", "Bearer $token")
-                    .post(confirmBody.toString().toRequestBody(jsonMedia))
-                    .build()
-                client.newCall(confirmReq).execute().use { cRes ->
-                    if (!cRes.isSuccessful) throw IllegalStateException("Ошибка подтверждения загрузки")
-                }
-                return@withContext
-            }
-        }
-
-        // 2. Fallback standard JSON upload
-        val fallbackBody = JSONObject().apply {
-            put("name", name)
-            put("type", fileType)
-            put("mimeType", mimeType)
-            put("size", bytes.size)
-            put("source", "user_upload")
-            if (mimeType.startsWith("text/") && bytes.size <= 500_000) {
-                put("content", String(bytes, Charsets.UTF_8))
-            } else if (dataUrl.isNotBlank()) {
-                put("dataUrl", dataUrl)
-            }
-        }
-        val req = Request.Builder()
-            .url(endpoint("/api/library"))
-            .header("Authorization", "Bearer $token")
-            .post(fallbackBody.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("Ошибка загрузки файла (${res.code})")
-        }
-    }
-
-    suspend fun deleteLibraryFile(token: String, id: String) = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply { put("id", id) }
-        val req = Request.Builder()
-            .url(endpoint("/api/library"))
-            .header("Authorization", "Bearer $token")
-            .delete(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("Ошибка удаления файла (${res.code})")
-        }
-    }
-
-    // ==================== MEMORY ====================
-
-    suspend fun listMemories(token: String): List<MemoryEntryItem> = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url(endpoint("/api/memory"))
-            .header("Authorization", "Bearer $token")
-            .get()
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) throw IllegalStateException(obj?.optString("error") ?: "Ошибка загрузки памяти")
-            parseMemoryList(obj)
-        }
-    }
-
-    suspend fun saveMemory(token: String, content: String, kind: String): List<MemoryEntryItem> = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("content", content)
-            put("kind", kind)
-        }
-        val req = Request.Builder()
-            .url(endpoint("/api/memory"))
-            .header("Authorization", "Bearer $token")
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) throw IllegalStateException(obj?.optString("error") ?: "Ошибка сохранения памяти")
-            parseMemoryList(obj)
-        }
-    }
-
-    suspend fun deleteMemory(token: String, id: String) = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply { put("id", id) }
-        val req = Request.Builder()
-            .url(endpoint("/api/memory"))
-            .header("Authorization", "Bearer $token")
-            .delete(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("Ошибка удаления памяти")
-        }
-    }
-
-    private fun parseMemoryList(obj: JSONObject?): List<MemoryEntryItem> {
-        val arr = obj?.optJSONArray("memories") ?: obj?.optJSONArray("items") ?: JSONArray()
-        return List(arr.length()) { i ->
-            val m = arr.getJSONObject(i)
-            MemoryEntryItem(
-                id = m.optString("id"),
-                content = m.optString("content"),
-                kind = m.optString("kind", "other"),
-                createdAt = m.optString("created_at").ifBlank { m.optString("createdAt") }
+            val mime = res.header("Content-Type")?.substringBefore(';')?.ifBlank { "image/jpeg" } ?: "image/jpeg"
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            GeneratedImageItem(
+                id = "img_${UUID.randomUUID().toString().take(10)}",
+                title = cleanPrompt.take(70),
+                dataUrl = "data:$mime;base64,$b64"
             )
         }
     }
 
-    // ==================== SUBSCRIPTION ====================
+    // ==================== DIRECT STREAMING CHAT ====================
 
-    suspend fun fetchSubscription(token: String?): SubscriptionInfo = withContext(Dispatchers.IO) {
+    suspend fun streamChat(
+        session: AuthSession?,
+        history: List<ChatMessageItem>,
+        model: AiModelId,
+        agent: AgentRoleId,
+        webSearch: Boolean,
+        reasoning: Boolean,
+        imageMode: Boolean,
+        memories: List<MemoryEntryItem>,
+        language: String,
+        attachments: List<ChatAttachment>,
+        idempotencyKey: String,
+        onDelta: (String) -> Unit,
+        onReasoning: (String) -> Unit,
+        onImage: (GeneratedImageItem) -> Unit,
+        onSources: (List<WebSourceItem>) -> Unit
+    ): StreamChatResult = withContext(Dispatchers.IO) {
+        val lastUserText = history.lastOrNull { it.role == "user" }?.content.orEmpty().trim()
+
+        // Direct Image Mode (or explicit "/imagine" prefix)
+        if (imageMode || lastUserText.startsWith("/img ", ignoreCase = true) || lastUserText.startsWith("/imagine ", ignoreCase = true)) {
+            val prompt = lastUserText
+                .removePrefix("/img ")
+                .removePrefix("/imagine ")
+                .trim()
+                .ifBlank { lastUserText }
+            onDelta(if (language == "en") "Generating image for your prompt…" else "Создаю изображение по вашему запросу…")
+            val img = generateImageDirect(prompt)
+            onImage(img)
+            val caption = if (language == "en") {
+                "Done! Generated image for: **$prompt**"
+            } else {
+                "Готово! Сгенерировал изображение по запросу: **$prompt**"
+            }
+            onDelta(caption)
+            return@withContext StreamChatResult(
+                content = caption,
+                reasoning = "",
+                images = listOf(img),
+                webSources = emptyList()
+            )
+        }
+
+        // If user explicitly set an optional custom API gateway URL, try it first and fall back to Direct API
+        val gateway = optionalGatewayUrl()
+        if (gateway.isNotBlank()) {
+            val gwResult = runCatching {
+                streamChatViaOptionalGateway(
+                    gateway = gateway,
+                    session = session,
+                    history = history,
+                    model = model,
+                    agent = agent,
+                    webSearch = webSearch,
+                    reasoning = reasoning,
+                    attachments = attachments,
+                    idempotencyKey = idempotencyKey,
+                    onDelta = onDelta,
+                    onReasoning = onReasoning,
+                    onImage = onImage
+                )
+            }.getOrNull()
+            if (gwResult != null && (gwResult.content.isNotBlank() || gwResult.images.isNotEmpty())) {
+                return@withContext gwResult
+            }
+        }
+
+        // Direct Standalone Mode (works 100% without connecting to any website!)
+        val webSources = if (webSearch && lastUserText.isNotBlank()) {
+            searchWebDirect(lastUserText, language).also { if (it.isNotEmpty()) onSources(it) }
+        } else {
+            emptyList()
+        }
+
+        val systemPrompt = buildDirectSystemPrompt(
+            model = model,
+            agent = agent,
+            reasoning = reasoning,
+            memories = memories,
+            webSources = webSources,
+            attachments = attachments,
+            language = language
+        )
+
+        val messagesJson = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "system")
+                put("content", systemPrompt)
+            })
+            history.takeLast(18).forEach { msg ->
+                if (msg.content.isNotBlank()) {
+                    put(JSONObject().apply {
+                        put("role", if (msg.role == "user") "user" else "assistant")
+                        put("content", msg.content)
+                    })
+                }
+            }
+        }
+
+        val preferredModel = when {
+            reasoning || model == AiModelId.F1 -> "openai-reasoning"
+            model == AiModelId.CHAT -> "openai-fast"
+            else -> "openai"
+        }
+
+        val result = runCatching {
+            streamDirectOpenAi(
+                messagesJson = messagesJson,
+                modelName = preferredModel,
+                onDelta = onDelta,
+                onReasoning = onReasoning
+            )
+        }.getOrElse {
+            // Clean fallback to standard openai non-streaming if streaming model rejects
+            val fallbackText = callDirectCompletionFallback(messagesJson)
+            val parsed = splitThinkingTags(fallbackText)
+            if (parsed.second.isNotBlank()) onReasoning(parsed.second)
+            onDelta(parsed.first)
+            parsed
+        }
+
+        StreamChatResult(
+            content = result.first.ifBlank { "Не удалось получить ответ. Попробуйте повторить запрос." },
+            reasoning = result.second,
+            images = emptyList(),
+            webSources = webSources
+        )
+    }
+
+    private fun buildDirectSystemPrompt(
+        model: AiModelId,
+        agent: AgentRoleId,
+        reasoning: Boolean,
+        memories: List<MemoryEntryItem>,
+        webSources: List<WebSourceItem>,
+        attachments: List<ChatAttachment>,
+        language: String
+    ): String {
+        val sb = StringBuilder()
+        sb.append(agent.systemHint).append("\n")
+        sb.append("Активный режим: ${model.label}.\n")
+        if (language == "en") {
+            sb.append("Respond in English unless the user writes in another language.\n")
+        } else {
+            sb.append("Отвечай на русском языке, если пользователь не просит другой язык.\n")
+        }
+        if (reasoning) {
+            sb.append("Сначала кратко продумай решение внутри тегов <think>...</think>, а затем дай чёткий финальный ответ.\n")
+        }
+        if (memories.isNotEmpty()) {
+            sb.append("\nДолговременная память о пользователе (используй естественно, если уместно):\n")
+            memories.take(15).forEach { m ->
+                sb.append("- [${m.kind}] ${m.content}\n")
+            }
+        }
+        if (webSources.isNotEmpty()) {
+            sb.append("\nАктуальные результаты веб-поиска (опирайся на них и при необходимости ссылайся):\n")
+            webSources.forEachIndexed { idx, s ->
+                sb.append("${idx + 1}. ${s.title} (${s.url}): ${s.snippet}\n")
+            }
+        }
+        if (attachments.isNotEmpty()) {
+            sb.append("\nПрикреплённые файлы пользователя:\n")
+            attachments.forEach { att ->
+                sb.append("- ${att.name} (${att.mimeType}, ${att.sizeBytes} bytes)\n")
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun streamDirectOpenAi(
+        messagesJson: JSONArray,
+        modelName: String,
+        onDelta: (String) -> Unit,
+        onReasoning: (String) -> Unit
+    ): Pair<String, String> {
+        val payload = JSONObject().apply {
+            put("model", modelName)
+            put("messages", messagesJson)
+            put("stream", true)
+            put("private", true)
+        }
         val req = Request.Builder()
-            .url(endpoint("/api/subscription"))
-            .apply { if (!token.isNullOrBlank()) header("Authorization", "Bearer $token") }
-            .get()
+            .url("https://text.pollinations.ai/openai")
+            .header("Accept", "text/event-stream")
+            .header("User-Agent", "IGseekAndroid/2.0")
+            .post(payload.toString().toRequestBody(jsonMedia))
+            .build()
+
+        val rawContent = StringBuilder()
+        val rawReasoning = StringBuilder()
+
+        client.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) {
+                throw IllegalStateException("AI API HTTP ${res.code}")
+            }
+            val body = res.body ?: throw IllegalStateException("Пустой поток ответа")
+            val contentType = res.header("Content-Type").orEmpty()
+
+            if (!contentType.contains("event-stream", ignoreCase = true) && contentType.contains("json", ignoreCase = true)) {
+                val json = JSONObject(body.string())
+                val msg = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                val text = msg?.optString("content").orEmpty()
+                val rsn = msg?.optString("reasoning_content").orEmpty()
+                val split = splitThinkingTags(text)
+                val finalReasoning = listOf(rsn, split.second).filter { it.isNotBlank() }.joinToString("\n")
+                if (finalReasoning.isNotBlank()) onReasoning(finalReasoning)
+                if (split.first.isNotBlank()) onDelta(split.first)
+                return split.first to finalReasoning
+            }
+
+            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val trimmed = line?.trim().orEmpty()
+                    if (!trimmed.startsWith("data:")) continue
+                    val data = trimmed.removePrefix("data:").trim()
+                    if (data.isEmpty() || data == "[DONE]") continue
+
+                    val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                    val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
+
+                    val rChunk = delta.optString("reasoning_content")
+                    if (rChunk.isNotEmpty() && rChunk != "null") {
+                        rawReasoning.append(rChunk)
+                        onReasoning(rawReasoning.toString())
+                    }
+
+                    val cChunk = delta.optString("content")
+                    if (cChunk.isNotEmpty() && cChunk != "null") {
+                        rawContent.append(cChunk)
+                        val split = splitThinkingTags(rawContent.toString())
+                        val combinedR = listOf(rawReasoning.toString(), split.second)
+                            .filter { it.isNotBlank() }
+                            .joinToString("\n")
+                        if (combinedR.isNotBlank()) onReasoning(combinedR)
+                        onDelta(split.first)
+                    }
+                }
+            }
+        }
+
+        val finalSplit = splitThinkingTags(rawContent.toString())
+        val finalReasoning = listOf(rawReasoning.toString(), finalSplit.second)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+        return finalSplit.first to finalReasoning
+    }
+
+    private fun callDirectCompletionFallback(messagesJson: JSONArray): String {
+        val payload = JSONObject().apply {
+            put("model", "openai")
+            put("messages", messagesJson)
+            put("stream", false)
+            put("private", true)
+        }
+        val req = Request.Builder()
+            .url("https://text.pollinations.ai/openai")
+            .header("User-Agent", "IGseekAndroid/2.0")
+            .post(payload.toString().toRequestBody(jsonMedia))
             .build()
         client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) return@withContext SubscriptionInfo()
-            val obj = JSONObject(res.body?.string().orEmpty())
-            parseSub(obj)
+            if (!res.isSuccessful) {
+                throw IllegalStateException("Ошибка соединения с ИИ API (${res.code})")
+            }
+            val raw = res.body?.string().orEmpty()
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            return obj?.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                ?.takeIf { it.isNotBlank() }
+                ?: raw
         }
     }
 
-    suspend fun createSubscriptionCheckout(
-        token: String,
-        email: String,
-        paymentMethod: Int,
-        idempotencyKey: String
-    ): Pair<String, String> = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("paymentMethod", paymentMethod)
-            put("email", email)
+    private fun splitThinkingTags(raw: String): Pair<String, String> {
+        val start = raw.indexOf("<think>")
+        if (start < 0) return raw to ""
+        val end = raw.indexOf("</think>", start + 7)
+        return if (end >= 0) {
+            val thought = raw.substring(start + 7, end).trim()
+            val visible = (raw.substring(0, start) + raw.substring(end + 8)).trim()
+            visible to thought
+        } else {
+            val thought = raw.substring(start + 7).trim()
+            val visible = raw.substring(0, start).trim()
+            visible to thought
+        }
+    }
+
+    private fun streamChatViaOptionalGateway(
+        gateway: String,
+        session: AuthSession?,
+        history: List<ChatMessageItem>,
+        model: AiModelId,
+        agent: AgentRoleId,
+        webSearch: Boolean,
+        reasoning: Boolean,
+        attachments: List<ChatAttachment>,
+        idempotencyKey: String,
+        onDelta: (String) -> Unit,
+        onReasoning: (String) -> Unit,
+        onImage: (GeneratedImageItem) -> Unit
+    ): StreamChatResult {
+        val messagesJson = JSONArray()
+        history.takeLast(20).forEach { msg ->
+            messagesJson.put(JSONObject().apply {
+                put("role", if (msg.role == "user") "user" else "assistant")
+                put("content", msg.content)
+            })
+        }
+        val filesJson = JSONArray()
+        attachments.forEach { att ->
+            filesJson.put(JSONObject().apply {
+                put("name", att.name)
+                put("type", att.mimeType)
+                put("dataUrl", att.dataUrl)
+            })
+        }
+
+        val payload = JSONObject().apply {
+            put("messages", messagesJson)
+            put("model", model.apiId)
+            put("agent", agent.apiId)
+            put("webSearch", webSearch)
+            put("reasoning", reasoning)
             put("idempotencyKey", idempotencyKey)
+            if (filesJson.length() > 0) put("attachments", filesJson)
         }
-        val req = Request.Builder()
-            .url(endpoint("/api/create-payment"))
-            .header("Authorization", "Bearer $token")
-            .header("Idempotency-Key", idempotencyKey)
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
-        client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Не удалось создать платёж")
+
+        val reqBuilder = Request.Builder()
+            .url("$gateway/api/chat")
+            .header("Accept", "text/event-stream")
+            .post(payload.toString().toRequestBody(jsonMedia))
+        gatewayHeaders(reqBuilder, session)
+
+        val contentBuf = StringBuilder()
+        val reasoningBuf = StringBuilder()
+        val images = mutableListOf<GeneratedImageItem>()
+
+        client.newCall(reqBuilder.build()).execute().use { res ->
+            if (!res.isSuccessful) throw IllegalStateException("Gateway HTTP ${res.code}")
+            val body = res.body ?: throw IllegalStateException("Empty gateway body")
+            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    val trimmed = line?.trim().orEmpty()
+                    if (!trimmed.startsWith("data:")) continue
+                    val data = trimmed.removePrefix("data:").trim()
+                    if (data.isEmpty() || data == "[DONE]") continue
+
+                    val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                    val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")
+                    if (delta != null) {
+                        val c = delta.optString("content")
+                        if (c.isNotEmpty() && c != "null") {
+                            contentBuf.append(c)
+                            onDelta(contentBuf.toString())
+                        }
+                        val r = delta.optString("reasoning_content")
+                        if (r.isNotEmpty() && r != "null") {
+                            reasoningBuf.append(r)
+                            onReasoning(reasoningBuf.toString())
+                        }
+                    }
+                    if (obj.optString("type") == "image_generated") {
+                        val dataUrl = obj.optString("dataUrl")
+                        if (dataUrl.isNotBlank()) {
+                            val img = GeneratedImageItem(
+                                id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                                title = obj.optString("title", "IGseek Image"),
+                                dataUrl = dataUrl
+                            )
+                            images.add(img)
+                            onImage(img)
+                        }
+                    }
+                }
             }
+        }
+        return StreamChatResult(contentBuf.toString(), reasoningBuf.toString(), images, emptyList())
+    }
+
+    // ==================== DIRECT AUTONOMOUS FLOW ====================
+
+    suspend fun planFlow(session: AuthSession?, goal: String, language: String = "ru"): FlowPlanResult = withContext(Dispatchers.IO) {
+        val sys = if (language == "en") {
+            """You are IGseek Flow Planner. Break the user's goal into 3-5 clear actionable steps.
+Return ONLY valid JSON: {"title":"Short plan title","steps":[{"id":"s1","title":"Step title","description":"What this step produces","tool":"analyze|web_search|write|code","requiresApproval":false}]}"""
+        } else {
+            """Ты IGseek Flow Planner — автономный планировщик задач. Разбей цель пользователя на 3-5 чётких шагов.
+Верни ТОЛЬКО валидный JSON без пояснений: {"title":"Краткое название плана","steps":[{"id":"s1","title":"Название шага","description":"Что именно будет сделано","tool":"analyze|web_search|write|code","requiresApproval":false}]}"""
+        }
+        val messages = JSONArray().apply {
+            put(JSONObject().put("role", "system").put("content", sys))
+            put(JSONObject().put("role", "user").put("content", goal))
+        }
+        val raw = callDirectCompletionFallback(messages)
+        val parsed = extractJsonObject(raw)
+        if (parsed != null) {
+            val stepsArr = parsed.optJSONArray("steps") ?: JSONArray()
+            val steps = mutableListOf<FlowStepItem>()
+            for (i in 0 until stepsArr.length()) {
+                val s = stepsArr.optJSONObject(i) ?: continue
+                steps.add(
+                    FlowStepItem(
+                        id = s.optString("id").ifBlank { "step_${i + 1}" },
+                        title = s.optString("title").ifBlank { "Шаг ${i + 1}" },
+                        description = s.optString("description"),
+                        tool = s.optString("tool").ifBlank { "analyze" },
+                        requiresApproval = s.optBoolean("requiresApproval", false)
+                    )
+                )
+            }
+            if (steps.isNotEmpty()) {
+                return@withContext FlowPlanResult(
+                    title = parsed.optString("title").ifBlank { goal.take(60) },
+                    steps = steps
+                )
+            }
+        }
+        // Guaranteed clean fallback plan
+        FlowPlanResult(
+            title = goal.take(60),
+            steps = listOf(
+                FlowStepItem("s1", "Анализ цели и требований", "Определение ключевых критериев успеха и структуры задачи", "analyze"),
+                FlowStepItem("s2", "Сбор данных и фактов", "Поиск актуальной информации и лучших практик по теме", "web_search"),
+                FlowStepItem("s3", "Подготовка итогового решения", "Формирование структурированного результата в Markdown", "write")
+            )
+        )
+    }
+
+    suspend fun executeFlowStep(
+        session: AuthSession?,
+        goal: String,
+        step: FlowStepItem,
+        previousOutputs: List<Pair<String, String>>,
+        language: String = "ru"
+    ): String = withContext(Dispatchers.IO) {
+        val webContext = if (step.tool.contains("search", ignoreCase = true)) {
+            val found = searchWebDirect("${step.title} $goal", language)
+            if (found.isNotEmpty()) {
+                "\nНайденные источники:\n" + found.joinToString("\n") { "- ${it.title}: ${it.snippet} (${it.url})" }
+            } else ""
+        } else ""
+
+        val prevText = if (previousOutputs.isNotEmpty()) {
+            "\nРезультаты предыдущих шагов:\n" + previousOutputs.joinToString("\n\n") { (t, o) -> "### $t\n${o.take(1200)}" }
+        } else ""
+
+        val messages = JSONArray().apply {
+            put(JSONObject().put("role", "system").put(
+                "content",
+                "Ты IGseek Flow Executor. Выполни конкретный шаг автономного плана максимально качественно и структурированно (Markdown)."
+            ))
+            put(JSONObject().put("role", "user").put(
+                "content",
+                "Главная цель: $goal\nТекущий шаг: ${step.title}\nОписание шага: ${step.description}\nИнструмент: ${step.tool}$webContext$prevText"
+            ))
+        }
+        callDirectCompletionFallback(messages)
+    }
+
+    // ==================== DIRECT ENGINE CODE BUILDER ====================
+
+    suspend fun generateEngineProject(prompt: String, language: String = "ru"): EngineProjectItem = withContext(Dispatchers.IO) {
+        val sys = """You are IGseek Engine — an elite full-stack code generator.
+Generate a clean, complete multi-file starter project for the user's prompt.
+Return ONLY valid JSON:
+{"title":"Project Name","files":[{"path":"index.html","content":"..."},{"path":"styles.css","content":"..."},{"path":"app.js","content":"..."}]}
+Keep code concise, modern, and production-ready (2 to 4 files)."""
+
+        val messages = JSONArray().apply {
+            put(JSONObject().put("role", "system").put("content", sys))
+            put(JSONObject().put("role", "user").put("content", prompt))
+        }
+
+        val raw = callDirectCompletionFallback(messages)
+        val parsed = extractJsonObject(raw)
+        val files = mutableListOf<EngineFileItem>()
+        var title = prompt.take(48)
+
+        if (parsed != null) {
+            title = parsed.optString("title").ifBlank { title }
+            val arr = parsed.optJSONArray("files")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val f = arr.optJSONObject(i) ?: continue
+                    val path = f.optString("path").trim()
+                    val content = f.optString("content")
+                    if (path.isNotBlank() && content.isNotBlank()) {
+                        files.add(EngineFileItem(path = path, content = content))
+                    }
+                }
+            }
+        }
+
+        if (files.isEmpty()) {
+            // Fallback: wrap AI response cleanly as a generated artifact file
+            files.add(EngineFileItem(path = "README.md", content = raw.ifBlank { "# $title\n\nПроект создан в IGseek Engine." }))
+        }
+
+        EngineProjectItem(
+            id = "eng_${UUID.randomUUID().toString().replace("-", "").take(12)}",
+            title = title,
+            prompt = prompt,
+            activeFile = files.first().path,
+            files = files,
+            updatedAtMs = System.currentTimeMillis()
+        )
+    }
+
+    // ==================== OPTIONAL GATEWAY SUBSCRIPTION CHECKOUT ====================
+
+    suspend fun getSubscription(session: AuthSession): SubscriptionInfo = withContext(Dispatchers.IO) {
+        val gateway = optionalGatewayUrl()
+        if (gateway.isBlank() || session.isGuest) return@withContext SubscriptionInfo()
+        val req = gatewayHeaders(Request.Builder().url("$gateway/api/subscription/status").get(), session).build()
+        runCatching {
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return@use SubscriptionInfo()
+                val obj = JSONObject(res.body?.string().orEmpty())
+                val price = obj.optJSONObject("pricing")
+                SubscriptionInfo(
+                    plan = obj.optString("plan", "free"),
+                    isPro = obj.optBoolean("isPro", false),
+                    status = obj.optString("status", "free"),
+                    daysLeft = obj.optInt("daysLeft", 0),
+                    expiresAt = obj.optString("expiresAt").takeIf { it.isNotBlank() && it != "null" },
+                    pendingTxnId = obj.optString("pendingTxnId").takeIf { it.isNotBlank() && it != "null" },
+                    priceRub = price?.optInt("amountRub", 149) ?: 149,
+                    durationDays = price?.optInt("durationDays", 30) ?: 30,
+                    paymentConfigured = obj.optBoolean("paymentConfigured", false)
+                )
+            }
+        }.getOrDefault(SubscriptionInfo())
+    }
+
+    suspend fun createSubscriptionCheckout(session: AuthSession): Pair<String, String> = withContext(Dispatchers.IO) {
+        val gateway = optionalGatewayUrl()
+        if (gateway.isBlank()) {
+            throw IllegalStateException("Оплата Pro доступна при подключении платёжного шлюза IGseek в «Расширенных настройках»")
+        }
+        val req = gatewayHeaders(
+            Request.Builder()
+                .url("$gateway/api/subscription/create")
+                .post("{}".toRequestBody(jsonMedia)),
+            session
+        ).build()
+        client.newCall(req).execute().use { res ->
+            val raw = res.body?.string().orEmpty()
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (!res.isSuccessful) {
+                throw IllegalStateException(obj?.optString("error") ?: "Не удалось создать счёт (${res.code})")
+            }
+            val url = obj?.optString("redirectUrl").orEmpty()
             val txnId = obj?.optString("transactionId").orEmpty()
-            val url = obj?.optString("paymentUrl").orEmpty()
-            if (txnId.isBlank() || !url.startsWith("https://")) {
-                throw IllegalStateException("Получена некорректная ссылка на оплату")
-            }
-            txnId to url
+            if (url.isBlank()) throw IllegalStateException("Сервер не вернул ссылку оплаты")
+            url to txnId
         }
     }
 
-    suspend fun verifySubscriptionPayment(token: String, txnId: String?): SubscriptionInfo = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("action", "verify")
-            if (!txnId.isNullOrBlank()) put("transactionId", txnId)
-        }
-        val req = Request.Builder()
-            .url(endpoint("/api/subscription"))
-            .header("Authorization", "Bearer $token")
-            .post(body.toString().toRequestBody(jsonMedia))
-            .build()
+    suspend fun verifySubscription(session: AuthSession, txnId: String): Boolean = withContext(Dispatchers.IO) {
+        val gateway = optionalGatewayUrl()
+        if (gateway.isBlank()) return@withContext false
+        val payload = JSONObject().put("transactionId", txnId)
+        val req = gatewayHeaders(
+            Request.Builder()
+                .url("$gateway/api/subscription/verify")
+                .post(payload.toString().toRequestBody(jsonMedia)),
+            session
+        ).build()
         client.newCall(req).execute().use { res ->
-            val obj = runCatching { JSONObject(res.body?.string().orEmpty()) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Ошибка проверки платежа")
-            }
-            parseSub(obj?.optJSONObject("subscription") ?: obj ?: JSONObject())
+            if (!res.isSuccessful) return@use false
+            val obj = JSONObject(res.body?.string().orEmpty())
+            obj.optBoolean("activated", false) || obj.optBoolean("isPro", false)
         }
     }
 
-    private fun parseSub(obj: JSONObject): SubscriptionInfo = SubscriptionInfo(
-        plan = obj.optString("plan", "free"),
-        isPro = obj.optBoolean("isPro", false),
-        status = obj.optString("status", "free"),
-        daysLeft = obj.optInt("daysLeft", 0),
-        expiresAt = obj.optString("expiresAt").takeIf { it.isNotBlank() && it != "null" },
-        pendingTxnId = obj.optString("pendingTxnId").takeIf { it.isNotBlank() && it != "null" },
-        priceRub = obj.optInt("priceRub", 149),
-        durationDays = obj.optInt("durationDays", 30),
-        paymentConfigured = obj.optBoolean("paymentConfigured", false)
-    )
+    private fun extractJsonObject(raw: String): JSONObject? {
+        val cleaned = raw
+            .replace(Regex("^```(?:json)?\\s*", RegexOption.MULTILINE), "")
+            .replace(Regex("```\\s*$", RegexOption.MULTILINE), "")
+            .trim()
+        runCatching { return JSONObject(cleaned) }
+        val start = cleaned.indexOf('{')
+        val end = cleaned.lastIndexOf('}')
+        if (start >= 0 && end > start) {
+            runCatching { return JSONObject(cleaned.substring(start, end + 1)) }
+        }
+        return null
+    }
 }

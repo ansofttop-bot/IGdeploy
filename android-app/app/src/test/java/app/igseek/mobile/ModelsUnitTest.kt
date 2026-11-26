@@ -1,6 +1,7 @@
 package app.igseek.mobile
 
 import app.igseek.mobile.data.models.AccentPresetId
+import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.MobileLayoutPrefs
@@ -19,18 +20,23 @@ class ModelsUnitTest {
     }
 
     @Test
-    fun defaultLayoutContainsAllFiveTabs() {
+    fun defaultLayoutHasFourQuickBarTabsAndAllNineWorkspacesExist() {
         val prefs = MobileLayoutPrefs()
-        assertEquals(5, prefs.tabOrder.size)
+        assertEquals(4, prefs.tabOrder.size)
         assertEquals(IGseekTab.CHAT, prefs.tabOrder.first())
-        assertTrue(prefs.tabOrder.containsAll(IGseekTab.entries))
+        assertEquals(9, IGseekTab.entries.size)
+        assertTrue(IGseekTab.entries.contains(IGseekTab.SAVED))
+        assertTrue(IGseekTab.entries.contains(IGseekTab.ENGINE))
+        assertTrue(IGseekTab.entries.contains(IGseekTab.WAVE))
+        assertTrue(IGseekTab.entries.contains(IGseekTab.DOCS))
     }
 
     @Test
-    fun modelIdsMatchBackendContract() {
+    fun modelAndAgentIdsMatchWebsiteContract() {
         val ids = AiModelId.entries.map { it.apiId }
         assertTrue(ids.contains("instinct"))
         assertTrue(ids.contains("chat"))
         assertTrue(ids.contains("f1"))
+        assertEquals(6, AgentRoleId.entries.size)
     }
 }

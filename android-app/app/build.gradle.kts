@@ -21,7 +21,7 @@ val firebaseProjectId = (providers.gradleProperty("IGSEEK_FIREBASE_PROJECT_ID").
     ?: firebaseJson["projectId"]?.toString()
     ?: "").replace("\"", "")
 val defaultApiBaseUrl = (providers.gradleProperty("IGSEEK_API_BASE_URL").orNull
-    ?: "https://igeek-chat.lovable.app").replace("\"", "")
+    ?: "").replace("\"", "")
 
 android {
     namespace = "app.igseek.mobile"

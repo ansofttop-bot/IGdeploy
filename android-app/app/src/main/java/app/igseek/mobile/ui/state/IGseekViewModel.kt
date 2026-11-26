@@ -1,10 +1,10 @@
 package app.igseek.mobile.ui.state
 
 import android.app.Application
+import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.igseek.mobile.IGseekApplication
-import app.igseek.mobile.data.api.IGseekApiClient
 import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
@@ -12,53 +12,65 @@ import app.igseek.mobile.data.models.AuthSession
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.ChatThread
+import app.igseek.mobile.data.models.CloudSyncStatus
+import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.FlowTaskState
+import app.igseek.mobile.data.models.GeneratedImageItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
+import app.igseek.mobile.data.models.ProjectFolder
 import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 data class IGseekUiState(
     val session: AuthSession? = null,
-    val authLoading: Boolean = false,
+    val isAuthLoading: Boolean = false,
     val authError: String? = null,
-    val serverBaseUrl: String = "",
+    val needsAccentOnboarding: Boolean = false,
     val isOnline: Boolean = true,
-    val activeTab: IGseekTab = IGseekTab.CHAT,
+    val cloudSyncStatus: CloudSyncStatus = CloudSyncStatus.IDLE,
     val layoutPrefs: MobileLayoutPrefs = MobileLayoutPrefs(),
+    val serverBaseUrl: String = "",
+    val activeTab: IGseekTab = IGseekTab.CHAT,
+    val projects: List<ProjectFolder> = emptyList(),
+    val activeProjectId: String? = null,
     val chats: List<ChatThread> = emptyList(),
     val activeChatId: String = "",
     val messages: List<ChatMessageItem> = emptyList(),
+    val bookmarkedMessages: List<ChatMessageItem> = emptyList(),
+    val draftInput: String = "",
     val pendingAttachments: List<ChatAttachment> = emptyList(),
     val selectedModel: AiModelId = AiModelId.INSTINCT,
     val selectedAgent: AgentRoleId = AgentRoleId.UNIVERSAL,
     val webSearchEnabled: Boolean = false,
     val reasoningEnabled: Boolean = false,
+    val imageModeEnabled: Boolean = false,
     val isStreaming: Boolean = false,
-    val streamStatus: String? = null,
     val outboxCount: Int = 0,
-    val flowState: FlowTaskState = FlowTaskState(),
-    val libraryItems: List<LibraryFileItem> = emptyList(),
-    val libraryLoading: Boolean = false,
-    val libraryError: String? = null,
+    val flowTask: FlowTaskState = FlowTaskState(),
+    val libraryFiles: List<LibraryFileItem> = emptyList(),
+    val isLibraryLoading: Boolean = false,
     val memories: List<MemoryEntryItem> = emptyList(),
-    val memoryLoading: Boolean = false,
-    val memoryError: String? = null,
+    val isMemoriesLoading: Boolean = false,
+    val engineProjects: List<EngineProjectItem> = emptyList(),
+    val activeEngineProjectId: String? = null,
+    val isEngineGenerating: Boolean = false,
+    val engineError: String? = null,
     val subscription: SubscriptionInfo = SubscriptionInfo(),
-    val subscriptionLoading: Boolean = false,
     val checkoutUrlEvent: String? = null,
-    val toastMessage: String? = null,
-    val incomingShare: SharedIncomingPayload? = null
+    val toastMessage: String? = null
 )
 
 class IGseekViewModel(application: Application) : AndroidViewModel(application) {
@@ -66,126 +78,275 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     private val app = application as IGseekApplication
     private val store = app.localStore
     private val authApi = app.authApi
+    private val firestore = app.firestoreSync
     private val api = app.apiClient
+    private val network = app.networkMonitor
 
-    private val _state = MutableStateFlow(
-        IGseekUiState(
-            session = store.loadSession(),
-            serverBaseUrl = store.getServerBaseUrl(),
-            isOnline = app.networkMonitor.isOnline.value,
-            layoutPrefs = store.loadLayoutPrefs(),
-            libraryItems = store.loadCachedLibraryFiles(),
-            memories = store.loadCachedMemories(),
-            outboxCount = store.listOutbox().size
-        )
-    )
+    private val _state = MutableStateFlow(IGseekUiState())
     val state: StateFlow<IGseekUiState> = _state.asStateFlow()
 
-    private var activeStreamJob: Job? = null
-
     init {
-        initChats()
-        viewModelScope.launch {
-            app.networkMonitor.isOnline.collect { online ->
-                _state.update { it.copy(isOnline = online) }
-                if (online) flushOfflineOutbox()
-            }
+        bootstrap()
+        observeNetwork()
+    }
+
+    private fun newSafeId(prefix: String): String =
+        "${prefix}_${UUID.randomUUID().toString().replace("-", "").take(14)}"
+
+    private fun nowIso(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+
+    private fun bootstrap() {
+        val layout = store.loadLayoutPrefs()
+        val session = store.loadSession()
+        val projects = store.listProjects()
+        var chats = store.listChats()
+        if (chats.isEmpty()) {
+            val initial = ChatThread(
+                id = newSafeId("chat"),
+                title = "Новый чат",
+                updatedAtMs = System.currentTimeMillis()
+            )
+            store.upsertChat(initial)
+            chats = listOf(initial)
         }
-        if (_state.value.session != null) refreshAccountData()
-    }
+        val activeChatId = chats.first().id
+        val messages = store.listMessages(activeChatId)
+        val bookmarked = store.listBookmarkedMessages()
+        val cachedLibrary = store.loadCachedLibraryFiles()
+        val cachedMemories = store.loadCachedMemories()
+        val engineProjects = store.listEngineProjects()
+        val outbox = store.listOutbox()
 
-    private fun initChats() {
-        val existing = store.listChats()
-        if (existing.isEmpty()) {
-            val fresh = ChatThread("chat_${UUID.randomUUID().toString().take(8)}", "Новый чат", System.currentTimeMillis())
-            store.upsertChat(fresh)
-            _state.update { it.copy(chats = listOf(fresh), activeChatId = fresh.id, messages = emptyList()) }
-        } else {
-            val first = existing.first()
-            _state.update { it.copy(chats = existing, activeChatId = first.id, messages = store.listMessages(first.id)) }
-        }
-    }
-
-    fun selectTab(tab: IGseekTab) {
-        _state.update { it.copy(activeTab = tab) }
-        when (tab) {
-            IGseekTab.LIBRARY -> refreshLibrary()
-            IGseekTab.MEMORY -> refreshMemories()
-            IGseekTab.SETTINGS -> refreshSubscription()
-            else -> Unit
-        }
-    }
-
-    fun selectTabByKey(key: String?) {
-        val match = IGseekTab.entries.firstOrNull { it.key == key } ?: return
-        selectTab(match)
-    }
-
-    fun consumeToast() = _state.update { it.copy(toastMessage = null) }
-    fun consumeCheckoutUrl() = _state.update { it.copy(checkoutUrlEvent = null) }
-    fun onIncomingShare(payload: SharedIncomingPayload) = _state.update { it.copy(incomingShare = payload) }
-    fun dismissIncomingShare() = _state.update { it.copy(incomingShare = null) }
-
-    fun applyIncomingShareToChat(payload: SharedIncomingPayload) {
-        val att = payload.attachment
-        val sharedText = payload.text
         _state.update {
             it.copy(
-                incomingShare = null,
-                activeTab = IGseekTab.CHAT,
-                pendingAttachments = if (att != null) it.pendingAttachments + att else it.pendingAttachments
+                session = session,
+                layoutPrefs = layout,
+                serverBaseUrl = store.getServerBaseUrl(),
+                isOnline = network.isOnline.value,
+                cloudSyncStatus = when {
+                    session == null -> CloudSyncStatus.IDLE
+                    session.isGuest -> CloudSyncStatus.LOCAL_ONLY
+                    !network.isOnline.value -> CloudSyncStatus.OFFLINE
+                    else -> CloudSyncStatus.IDLE
+                },
+                projects = projects,
+                chats = chats,
+                activeChatId = activeChatId,
+                messages = messages,
+                bookmarkedMessages = bookmarked,
+                libraryFiles = cachedLibrary,
+                memories = cachedMemories,
+                engineProjects = engineProjects,
+                activeEngineProjectId = engineProjects.firstOrNull()?.id,
+                outboxCount = outbox.size
             )
         }
-        if (!sharedText.isNullOrBlank()) sendMessage(sharedText)
-        else _state.update { it.copy(toastMessage = "Вложение добавлено в чат") }
-    }
 
-    fun saveIncomingShareToLibrary(payload: SharedIncomingPayload) {
-        _state.update { it.copy(incomingShare = null, activeTab = IGseekTab.LIBRARY) }
-        val att = payload.attachment
-        val sharedText = payload.text
-        if (att != null) {
-            val rawB64 = att.dataUrl.substringAfter("base64,", "")
-            val bytes = runCatching { android.util.Base64.decode(rawB64, android.util.Base64.DEFAULT) }
-                .getOrElse { att.dataUrl.toByteArray() }
-            uploadToLibrary(att.name, att.mimeType, bytes, att.dataUrl)
-        } else if (!sharedText.isNullOrBlank()) {
-            uploadToLibrary("shared_note_${System.currentTimeMillis()}.txt", "text/plain", sharedText.toByteArray(Charsets.UTF_8), "")
+        if (session != null && !session.isGuest && network.isOnline.value) {
+            syncAllFromCloud()
         }
     }
+
+    private fun observeNetwork() {
+        viewModelScope.launch {
+            network.isOnline.collect { online ->
+                _state.update { st ->
+                    st.copy(
+                        isOnline = online,
+                        cloudSyncStatus = if (!online && st.session != null && !st.session.isGuest) {
+                            CloudSyncStatus.OFFLINE
+                        } else st.cloudSyncStatus
+                    )
+                }
+                if (online) {
+                    flushOfflineOutbox()
+                    val s = _state.value.session
+                    if (s != null && !s.isGuest) syncAllFromCloud()
+                }
+            }
+        }
+    }
+
+    private suspend fun getFreshSession(): AuthSession? {
+        val current = _state.value.session ?: return null
+        if (current.isGuest) return current
+        val refreshed = runCatching { authApi.refreshSession(current) }.getOrDefault(current)
+        if (refreshed != current) {
+            store.saveSession(refreshed)
+            _state.update { it.copy(session = refreshed) }
+        }
+        return refreshed
+    }
+
+    // ==================== CLOUD FIRESTORE SYNC ====================
+
+    fun syncAllFromCloud() {
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            if (session.isGuest) {
+                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY) }
+                return@launch
+            }
+            if (!_state.value.isOnline) {
+                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.OFFLINE) }
+                return@launch
+            }
+            _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.SYNCING) }
+
+            runCatching {
+                val profileDef = async { firestore.fetchProfile(session) }
+                val projectsDef = async { firestore.fetchProjects(session) }
+                val chatsDef = async { firestore.fetchChats(session) }
+                val memoriesDef = async { firestore.fetchMemories(session) }
+                val libraryDef = async { firestore.fetchLibraryFiles(session) }
+                val engineDef = async { firestore.fetchEngineProjects(session) }
+
+                val remoteProfile = profileDef.await()
+                val remoteProjects = projectsDef.await()
+                val remoteChats = chatsDef.await()
+                val remoteMemories = memoriesDef.await()
+                val remoteLibrary = libraryDef.await()
+                val remoteEngine = engineDef.await()
+
+                // Merge Projects
+                remoteProjects.forEach { store.upsertProject(it) }
+                val mergedProjects = store.listProjects()
+
+                // Merge Chats
+                remoteChats.forEach { store.upsertChat(it) }
+                var mergedChats = store.listChats()
+                if (mergedChats.isEmpty()) {
+                    val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
+                    store.upsertChat(fresh)
+                    mergedChats = listOf(fresh)
+                }
+
+                // Merge Memories
+                val mergedMemories = (remoteMemories + _state.value.memories)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.createdAt }
+                store.cacheMemories(mergedMemories)
+
+                // Merge Library
+                val mergedLibrary = (remoteLibrary + _state.value.libraryFiles)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.updatedAt }
+                store.cacheLibraryFiles(mergedLibrary)
+
+                // Merge Engine Projects
+                remoteEngine.forEach { store.upsertEngineProject(it) }
+                val mergedEngine = store.listEngineProjects()
+
+                // Optional gateway subscription fallback if configured
+                val sub = if (remoteProfile != null) {
+                    remoteProfile.subscription
+                } else {
+                    runCatching { api.getSubscription(session) }.getOrDefault(_state.value.subscription)
+                }
+
+                // Sync accent/theme/lang from cloud profile if present & local hasn't diverged
+                var updatedLayout = _state.value.layoutPrefs
+                if (remoteProfile != null) {
+                    val remoteAccent = remoteProfile.accent?.let { AccentPresetId.fromId(it) }
+                    val remoteDark = remoteProfile.theme?.let { it != "light" }
+                    val remoteLang = remoteProfile.lang?.takeIf { it == "ru" || it == "en" }
+                    updatedLayout = updatedLayout.copy(
+                        accent = remoteAccent ?: updatedLayout.accent,
+                        darkTheme = remoteDark ?: updatedLayout.darkTheme,
+                        language = remoteLang ?: updatedLayout.language
+                    )
+                    store.saveLayoutPrefs(updatedLayout)
+                }
+
+                val activeId = _state.value.activeChatId.takeIf { id -> mergedChats.any { it.id == id } }
+                    ?: mergedChats.first().id
+                var activeMessages = store.listMessages(activeId)
+                if (activeMessages.isEmpty()) {
+                    val remoteMsgs = firestore.fetchMessagesForChat(session, activeId)
+                    remoteMsgs.forEach { store.upsertMessage(it) }
+                    activeMessages = store.listMessages(activeId)
+                }
+
+                _state.update { st ->
+                    st.copy(
+                        cloudSyncStatus = CloudSyncStatus.SYNCED,
+                        layoutPrefs = updatedLayout,
+                        projects = mergedProjects,
+                        chats = mergedChats,
+                        activeChatId = activeId,
+                        messages = activeMessages,
+                        memories = mergedMemories,
+                        libraryFiles = mergedLibrary,
+                        engineProjects = mergedEngine,
+                        activeEngineProjectId = st.activeEngineProjectId ?: mergedEngine.firstOrNull()?.id,
+                        subscription = sub
+                    )
+                }
+            }.onFailure {
+                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.ERROR) }
+            }
+        }
+    }
+
+    // ==================== AUTH ====================
 
     fun signIn(email: String, password: String) {
         viewModelScope.launch {
-            _state.update { it.copy(authLoading = true, authError = null) }
-            try {
-                val session = authApi.signInWithEmail(email, password)
+            _state.update { it.copy(isAuthLoading = true, authError = null) }
+            runCatching {
+                authApi.signInWithEmail(email.trim(), password)
+            }.onSuccess { session ->
                 store.saveSession(session)
-                _state.update { it.copy(session = session, authLoading = false) }
-                refreshAccountData()
-            } catch (err: Throwable) {
-                _state.update { it.copy(authLoading = false, authError = err.message ?: "Ошибка входа") }
+                _state.update {
+                    it.copy(
+                        session = session,
+                        isAuthLoading = false,
+                        authError = null,
+                        needsAccentOnboarding = false
+                    )
+                }
+                syncAllFromCloud()
+            }.onFailure { err ->
+                _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка входа") }
             }
         }
     }
 
     fun signUp(email: String, password: String, displayName: String) {
         viewModelScope.launch {
-            _state.update { it.copy(authLoading = true, authError = null) }
-            try {
-                val session = authApi.signUpWithEmail(email, password, displayName)
+            _state.update { it.copy(isAuthLoading = true, authError = null) }
+            runCatching {
+                authApi.signUpWithEmail(email.trim(), password, displayName.trim())
+            }.onSuccess { session ->
                 store.saveSession(session)
-                _state.update { it.copy(session = session, authLoading = false) }
-                refreshAccountData()
-            } catch (err: Throwable) {
-                _state.update { it.copy(authLoading = false, authError = err.message ?: "Ошибка регистрации") }
+                _state.update {
+                    it.copy(
+                        session = session,
+                        isAuthLoading = false,
+                        authError = null,
+                        needsAccentOnboarding = true
+                    )
+                }
+                val lp = _state.value.layoutPrefs
+                viewModelScope.launch {
+                    firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+                }
+                syncAllFromCloud()
+            }.onFailure { err ->
+                _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка регистрации") }
             }
         }
     }
 
+    fun completeAccentOnboarding(accent: AccentPresetId) {
+        updateLayoutPrefs { it.copy(accent = accent) }
+        _state.update { it.copy(needsAccentOnboarding = false) }
+    }
+
     fun continueAsGuest() {
         val guest = AuthSession(
-            uid = "local_${UUID.randomUUID().toString().replace("-", "").take(20)}",
-            email = "",
+            uid = "local_guest",
+            email = "guest@igseek.local",
             displayName = "Гость",
             idToken = "",
             refreshToken = "",
@@ -193,471 +354,901 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             isGuest = true
         )
         store.saveSession(guest)
-        _state.update { it.copy(session = guest, authError = null) }
+        _state.update {
+            it.copy(
+                session = guest,
+                authError = null,
+                needsAccentOnboarding = false,
+                cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY
+            )
+        }
     }
 
     fun sendPasswordReset(email: String) {
         viewModelScope.launch {
-            try {
-                authApi.sendPasswordReset(email)
-                _state.update { it.copy(toastMessage = "Ссылка для сброса пароля отправлена на $email") }
-            } catch (err: Throwable) {
-                _state.update { it.copy(authError = err.message ?: "Не удалось отправить письмо") }
-            }
+            runCatching { authApi.sendPasswordReset(email.trim()) }
+                .onSuccess { showToast("Письмо для сброса пароля отправлено на $email") }
+                .onFailure { err -> showToast(err.message ?: "Ошибка отправки письма") }
         }
     }
 
     fun signOut() {
-        activeStreamJob?.cancel()
         store.clearSession()
         _state.update {
             it.copy(
                 session = null,
-                subscription = SubscriptionInfo(),
-                libraryItems = emptyList(),
-                memories = emptyList(),
-                toastMessage = "Вы вышли из аккаунта"
+                needsAccentOnboarding = false,
+                cloudSyncStatus = CloudSyncStatus.IDLE,
+                subscription = SubscriptionInfo()
             )
         }
     }
 
-    private suspend fun freshToken(): String? {
-        val cur = _state.value.session ?: return null
-        if (cur.isGuest) return null
-        val updated = runCatching { authApi.refreshSession(cur) }.getOrDefault(cur)
-        if (updated.idToken != cur.idToken) {
-            store.saveSession(updated)
-            _state.update { it.copy(session = updated) }
-        }
-        return updated.idToken.takeIf { it.isNotBlank() }
+    // ==================== NAVIGATION & LAYOUT ====================
+
+    fun selectTab(tab: IGseekTab) {
+        _state.update { it.copy(activeTab = tab) }
+        if (tab == IGseekTab.LIBRARY && _state.value.libraryFiles.isEmpty()) refreshLibrary()
+        if (tab == IGseekTab.MEMORY && _state.value.memories.isEmpty()) refreshMemories()
     }
 
-    fun refreshAccountData() {
-        refreshSubscription()
-        refreshLibrary()
-        refreshMemories()
-    }
-
-    fun createNewChat() {
-        val fresh = ChatThread("chat_${UUID.randomUUID().toString().take(8)}", "Новый чат", System.currentTimeMillis())
-        store.upsertChat(fresh)
-        _state.update {
-            it.copy(chats = store.listChats(), activeChatId = fresh.id, messages = emptyList(), pendingAttachments = emptyList())
-        }
-    }
-
-    fun openChat(chatId: String) {
-        activeStreamJob?.cancel()
-        _state.update {
-            it.copy(activeChatId = chatId, messages = store.listMessages(chatId), isStreaming = false, streamStatus = null)
-        }
-    }
-
-    fun deleteChat(chatId: String) {
-        store.deleteChat(chatId)
-        val remaining = store.listChats()
-        if (remaining.isEmpty()) createNewChat()
-        else {
-            val nextId = if (_state.value.activeChatId == chatId) remaining.first().id else _state.value.activeChatId
-            _state.update {
-                it.copy(chats = remaining, activeChatId = nextId, messages = store.listMessages(nextId), outboxCount = store.listOutbox().size)
-            }
-        }
-    }
-
-    fun setModel(model: AiModelId) = _state.update { it.copy(selectedModel = model) }
-    fun setAgent(agent: AgentRoleId) = _state.update { it.copy(selectedAgent = agent) }
-    fun toggleWebSearch() = _state.update { it.copy(webSearchEnabled = !it.webSearchEnabled) }
-    fun toggleReasoning() = _state.update { it.copy(reasoningEnabled = !it.reasoningEnabled) }
-    fun addAttachment(attachment: ChatAttachment) = _state.update { it.copy(pendingAttachments = (it.pendingAttachments + attachment).take(4)) }
-    fun removeAttachment(index: Int) = _state.update { it.copy(pendingAttachments = it.pendingAttachments.filterIndexed { i, _ -> i != index }) }
-
-    fun stopStreaming() {
-        activeStreamJob?.cancel()
-        activeStreamJob = null
-        _state.update { it.copy(isStreaming = false, streamStatus = null) }
-    }
-
-    fun sendMessage(rawText: String) {
-        val text = rawText.trim()
-        val attachments = _state.value.pendingAttachments
-        if (text.isEmpty() && attachments.isEmpty()) return
-
-        val chatId = _state.value.activeChatId.ifBlank {
-            createNewChat()
-            _state.value.activeChatId
-        }
-        val now = System.currentTimeMillis()
-        val userMsgId = "m_u_${UUID.randomUUID().toString().take(8)}"
-        val displayContent = text.ifBlank { "Проанализируй прикреплённые файлы" }
-        val isOnline = _state.value.isOnline
-
-        store.upsertMessage(
-            ChatMessageItem(
-                id = userMsgId,
-                chatId = chatId,
-                role = "user",
-                content = displayContent,
-                attachmentNames = attachments.map { it.name },
-                createdAtMs = now,
-                isQueuedOffline = !isOnline
-            )
-        )
-
-        val currentThread = _state.value.chats.firstOrNull { it.id == chatId }
-        val nextTitle = if (currentThread == null || currentThread.title == "Новый чат") displayContent.take(48) else currentThread.title
-        store.upsertChat(ChatThread(chatId, nextTitle, now))
-
-        val updatedMessages = store.listMessages(chatId)
-        _state.update { it.copy(chats = store.listChats(), messages = updatedMessages, pendingAttachments = emptyList()) }
-
-        val idemKey = "mob_${UUID.randomUUID().toString().replace("-", "").take(16)}"
-
-        if (!isOnline) {
-            store.enqueueOutbox(
-                OutboxQueuedMessage(
-                    id = "out_${UUID.randomUUID().toString().take(8)}",
-                    chatId = chatId,
-                    messageId = userMsgId,
-                    text = displayContent,
-                    modelId = _state.value.selectedModel.apiId,
-                    agentId = _state.value.selectedAgent.apiId,
-                    webSearch = _state.value.webSearchEnabled,
-                    reasoning = _state.value.reasoningEnabled,
-                    idempotencyKey = idemKey,
-                    createdAtMs = now
-                )
-            )
-            _state.update {
-                it.copy(outboxCount = store.listOutbox().size, toastMessage = "Нет сети — сообщение добавлено в офлайн-очередь")
-            }
-            return
-        }
-
-        launchStreamForChat(
-            chatId = chatId,
-            history = updatedMessages,
-            modelId = _state.value.selectedModel.apiId,
-            agentId = _state.value.selectedAgent.apiId,
-            webSearch = _state.value.webSearchEnabled,
-            reasoning = _state.value.reasoningEnabled,
-            attachments = attachments,
-            idempotencyKey = idemKey
-        )
-    }
-
-    private fun launchStreamForChat(
-        chatId: String,
-        history: List<ChatMessageItem>,
-        modelId: String,
-        agentId: String,
-        webSearch: Boolean,
-        reasoning: Boolean,
-        attachments: List<ChatAttachment>,
-        idempotencyKey: String
-    ) {
-        activeStreamJob?.cancel()
-        val assistantId = "m_a_${UUID.randomUUID().toString().take(8)}"
-        var assistantMsg = ChatMessageItem(id = assistantId, chatId = chatId, role = "assistant", content = "", createdAtMs = System.currentTimeMillis())
-        store.upsertMessage(assistantMsg)
-        _state.update { it.copy(messages = store.listMessages(chatId), isStreaming = true, streamStatus = "Подключение...") }
-
-        activeStreamJob = viewModelScope.launch {
-            try {
-                val token = freshToken()
-                api.streamChat(
-                    token = token,
-                    history = history,
-                    modelApiId = modelId,
-                    agentApiId = agentId,
-                    webSearch = webSearch,
-                    reasoning = reasoning,
-                    attachments = attachments,
-                    idempotencyKey = idempotencyKey,
-                    callbacks = IGseekApiClient.StreamCallbacks(
-                        onTextDelta = { chunk ->
-                            assistantMsg = assistantMsg.copy(content = assistantMsg.content + chunk)
-                            store.upsertMessage(assistantMsg)
-                            if (_state.value.activeChatId == chatId) {
-                                _state.update { st -> st.copy(messages = st.messages.map { if (it.id == assistantId) assistantMsg else it }, streamStatus = null) }
-                            }
-                        },
-                        onReasoningDelta = { chunk ->
-                            assistantMsg = assistantMsg.copy(reasoning = assistantMsg.reasoning + chunk)
-                            store.upsertMessage(assistantMsg)
-                            if (_state.value.activeChatId == chatId) {
-                                _state.update { st -> st.copy(messages = st.messages.map { if (it.id == assistantId) assistantMsg else it }, streamStatus = "Размышляю...") }
-                            }
-                        },
-                        onImageGenerated = { img ->
-                            assistantMsg = assistantMsg.copy(images = assistantMsg.images + img)
-                            store.upsertMessage(assistantMsg)
-                            if (_state.value.activeChatId == chatId) {
-                                _state.update { st -> st.copy(messages = st.messages.map { if (it.id == assistantId) assistantMsg else it }) }
-                            }
-                        },
-                        onStatus = { status -> _state.update { it.copy(streamStatus = status) } }
-                    )
-                )
-                if (assistantMsg.content.isBlank() && assistantMsg.images.isEmpty()) {
-                    assistantMsg = assistantMsg.copy(content = "Ответ получен без текста.")
-                    store.upsertMessage(assistantMsg)
-                }
-            } catch (err: Throwable) {
-                val errText = err.message ?: "Не удалось связаться с сервером IGseek"
-                assistantMsg = assistantMsg.copy(
-                    content = if (assistantMsg.content.isBlank()) "Ошибка сети: $errText" else assistantMsg.content + "\n\n[Ошибка: $errText]",
-                    isError = true
-                )
-                store.upsertMessage(assistantMsg)
-            } finally {
-                _state.update { it.copy(messages = store.listMessages(_state.value.activeChatId), isStreaming = false, streamStatus = null) }
-            }
-        }
-    }
-
-    private fun flushOfflineOutbox() {
-        val pending = store.listOutbox()
-        if (pending.isEmpty()) return
-        viewModelScope.launch {
-            val item = pending.first()
-            val targetMsg = store.listMessages(item.chatId).firstOrNull { it.id == item.messageId }
-            if (targetMsg != null) store.upsertMessage(targetMsg.copy(isQueuedOffline = false))
-            store.removeOutbox(item.id)
-            _state.update { it.copy(outboxCount = store.listOutbox().size) }
-            launchStreamForChat(
-                chatId = item.chatId,
-                history = store.listMessages(item.chatId),
-                modelId = item.modelId,
-                agentId = item.agentId,
-                webSearch = item.webSearch,
-                reasoning = item.reasoning,
-                attachments = emptyList(),
-                idempotencyKey = item.idempotencyKey
-            )
-        }
-    }
-
-    fun transcribeVoiceBase64(base64Audio: String, onResult: (String) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val text = api.transcribeAudio(base64Audio)
-                if (text.isNotBlank()) onResult(text)
-                else _state.update { it.copy(toastMessage = "Речь не распознана") }
-            } catch (err: Throwable) {
-                _state.update { it.copy(toastMessage = err.message ?: "Ошибка распознавания речи") }
-            }
-        }
-    }
-
-    fun planFlowGoal(goal: String) {
-        val clean = goal.trim()
-        if (clean.length < 3) return
-        viewModelScope.launch {
-            _state.update { it.copy(flowState = FlowTaskState(goal = clean, isPlanning = true)) }
-            try {
-                val (title, steps) = api.planFlow(freshToken(), clean, _state.value.selectedModel.apiId, _state.value.selectedAgent.apiId)
-                _state.update { it.copy(flowState = FlowTaskState(title = title, goal = clean, steps = steps)) }
-            } catch (err: Throwable) {
-                _state.update { it.copy(flowState = FlowTaskState(goal = clean, error = err.message ?: "Ошибка Flow")) }
-            }
-        }
-    }
-
-    fun runAllFlowSteps() {
-        val current = _state.value.flowState
-        if (current.steps.isEmpty() || current.isRunning) return
-        viewModelScope.launch {
-            _state.update { it.copy(flowState = it.flowState.copy(isRunning = true, error = null)) }
-            val token = freshToken()
-            val steps = current.steps.toMutableList()
-            for (i in steps.indices) {
-                if (steps[i].status == "done") continue
-                steps[i] = steps[i].copy(status = "running")
-                _state.update { it.copy(flowState = it.flowState.copy(steps = steps.toList())) }
-                try {
-                    val out = api.runFlowStep(token, current.goal, steps[i], steps.take(i), _state.value.selectedModel.apiId, _state.value.selectedAgent.apiId)
-                    steps[i] = steps[i].copy(status = "done", output = out)
-                } catch (err: Throwable) {
-                    steps[i] = steps[i].copy(status = "error", output = err.message ?: "Ошибка шага")
-                    _state.update { it.copy(flowState = it.flowState.copy(steps = steps.toList(), isRunning = false)) }
-                    return@launch
-                }
-                _state.update { it.copy(flowState = it.flowState.copy(steps = steps.toList())) }
-            }
-            _state.update { it.copy(flowState = it.flowState.copy(isRunning = false), toastMessage = "Задача Flow завершена") }
-        }
-    }
-
-    fun refreshLibrary() {
-        viewModelScope.launch {
-            val token = freshToken() ?: return@launch
-            _state.update { it.copy(libraryLoading = true, libraryError = null) }
-            try {
-                val items = api.listLibrary(token)
-                store.cacheLibraryFiles(items)
-                _state.update { it.copy(libraryItems = items, libraryLoading = false) }
-            } catch (err: Throwable) {
-                _state.update { it.copy(libraryLoading = false, libraryError = err.message ?: "Ошибка синхронизации Library") }
-            }
-        }
-    }
-
-    fun uploadToLibrary(name: String, mimeType: String, bytes: ByteArray, dataUrl: String) {
-        viewModelScope.launch {
-            val token = freshToken()
-            if (token == null) {
-                _state.update { it.copy(toastMessage = "Войдите в аккаунт для сохранения файлов в облако") }
-                return@launch
-            }
-            _state.update { it.copy(libraryLoading = true) }
-            try {
-                api.uploadLibraryFile(token, name, mimeType, bytes, dataUrl)
-                refreshLibrary()
-                _state.update { it.copy(toastMessage = "Файл «$name» сохранён в Library") }
-            } catch (err: Throwable) {
-                _state.update { it.copy(libraryLoading = false, toastMessage = err.message ?: "Ошибка загрузки файла") }
-            }
-        }
-    }
-
-    fun deleteFromLibrary(id: String) {
-        viewModelScope.launch {
-            val token = freshToken() ?: return@launch
-            try {
-                api.deleteLibraryFile(token, id)
-                val updated = _state.value.libraryItems.filterNot { it.id == id }
-                store.cacheLibraryFiles(updated)
-                _state.update { it.copy(libraryItems = updated, toastMessage = "Файл удалён") }
-            } catch (err: Throwable) {
-                _state.update { it.copy(toastMessage = err.message ?: "Не удалось удалить файл") }
-            }
-        }
-    }
-
-    fun refreshMemories() {
-        viewModelScope.launch {
-            val token = freshToken() ?: return@launch
-            _state.update { it.copy(memoryLoading = true, memoryError = null) }
-            try {
-                val items = api.listMemories(token)
-                store.cacheMemories(items)
-                _state.update { it.copy(memories = items, memoryLoading = false) }
-            } catch (err: Throwable) {
-                _state.update { it.copy(memoryLoading = false, memoryError = err.message ?: "Ошибка загрузки памяти") }
-            }
-        }
-    }
-
-    fun addMemory(content: String, kind: String) {
-        if (content.isBlank()) return
-        viewModelScope.launch {
-            val token = freshToken()
-            if (token == null) {
-                _state.update { it.copy(toastMessage = "Войдите в аккаунт для облачной памяти") }
-                return@launch
-            }
-            try {
-                val items = api.saveMemory(token, content, kind)
-                store.cacheMemories(items)
-                _state.update { it.copy(memories = items, toastMessage = "Запись добавлена в память") }
-            } catch (err: Throwable) {
-                _state.update { it.copy(toastMessage = err.message ?: "Ошибка сохранения") }
-            }
-        }
-    }
-
-    fun deleteMemory(id: String) {
-        viewModelScope.launch {
-            val token = freshToken() ?: return@launch
-            try {
-                api.deleteMemory(token, id)
-                val next = _state.value.memories.filterNot { it.id == id }
-                store.cacheMemories(next)
-                _state.update { it.copy(memories = next) }
-            } catch (err: Throwable) {
-                _state.update { it.copy(toastMessage = err.message ?: "Ошибка удаления") }
-            }
-        }
-    }
-
-    fun refreshSubscription() {
-        viewModelScope.launch {
-            _state.update { it.copy(subscriptionLoading = true) }
-            val info = runCatching { api.fetchSubscription(freshToken()) }.getOrDefault(SubscriptionInfo())
-            _state.update { it.copy(subscription = info, subscriptionLoading = false) }
-        }
-    }
-
-    fun startProCheckout(paymentMethod: Int) {
-        viewModelScope.launch {
-            val session = _state.value.session
-            val token = freshToken()
-            if (session == null || token == null) {
-                _state.update { it.copy(toastMessage = "Войдите в аккаунт для оформления Pro") }
-                return@launch
-            }
-            _state.update { it.copy(subscriptionLoading = true) }
-            try {
-                val bucket = System.currentTimeMillis() / (5 * 60_000L)
-                val idemKey = "and_${session.uid.take(12)}_m${paymentMethod}_b$bucket"
-                val (txnId, url) = api.createSubscriptionCheckout(token, session.email, paymentMethod, idemKey)
-                _state.update {
-                    it.copy(
-                        subscriptionLoading = false,
-                        subscription = it.subscription.copy(pendingTxnId = txnId, status = "pending"),
-                        checkoutUrlEvent = url
-                    )
-                }
-            } catch (err: Throwable) {
-                _state.update { it.copy(subscriptionLoading = false, toastMessage = err.message ?: "Ошибка оплаты") }
-            }
-        }
-    }
-
-    fun verifyPendingSubscription() {
-        viewModelScope.launch {
-            val token = freshToken() ?: return@launch
-            _state.update { it.copy(subscriptionLoading = true) }
-            try {
-                val updated = api.verifySubscriptionPayment(token, _state.value.subscription.pendingTxnId)
-                _state.update {
-                    it.copy(
-                        subscription = updated,
-                        subscriptionLoading = false,
-                        toastMessage = if (updated.isPro) "Подписка IGseek Pro активна!" else "Оплата пока не подтверждена"
-                    )
-                }
-            } catch (err: Throwable) {
-                _state.update { it.copy(subscriptionLoading = false, toastMessage = err.message ?: "Ошибка проверки") }
-            }
-        }
+    fun selectTabByKey(key: String) {
+        val tab = IGseekTab.entries.firstOrNull { it.key == key } ?: IGseekTab.CHAT
+        selectTab(tab)
     }
 
     fun updateLayoutPrefs(transform: (MobileLayoutPrefs) -> MobileLayoutPrefs) {
         val next = transform(_state.value.layoutPrefs)
         store.saveLayoutPrefs(next)
         _state.update { it.copy(layoutPrefs = next) }
-    }
-
-    fun setAccent(accent: AccentPresetId) = updateLayoutPrefs { it.copy(accent = accent) }
-
-    fun moveTabOrder(fromIndex: Int, toIndex: Int) {
-        val cur = _state.value.layoutPrefs.tabOrder.toMutableList()
-        if (fromIndex !in cur.indices || toIndex !in cur.indices) return
-        val item = cur.removeAt(fromIndex)
-        cur.add(toIndex, item)
-        updateLayoutPrefs { it.copy(tabOrder = cur) }
+        viewModelScope.launch {
+            val s = getFreshSession()
+            if (s != null && !s.isGuest && _state.value.isOnline) {
+                firestore.saveProfilePrefs(s, if (next.darkTheme) "dark" else "light", next.accent.id, next.language)
+            }
+        }
     }
 
     fun updateServerBaseUrl(url: String) {
-        val cleaned = url.trim().trimEnd('/')
-        if (!cleaned.startsWith("https://") && !cleaned.startsWith("http://")) {
-            _state.update { it.copy(toastMessage = "URL должен начинаться с https://") }
+        val clean = url.trim().trimEnd('/')
+        store.setServerBaseUrl(clean)
+        _state.update { it.copy(serverBaseUrl = clean) }
+        showToast(if (clean.isBlank()) "Включён прямой режим API" else "Шлюз API сохранён")
+    }
+
+    fun showToast(message: String) {
+        _state.update { it.copy(toastMessage = message) }
+    }
+
+    fun consumeToast() {
+        _state.update { it.copy(toastMessage = null) }
+    }
+
+    fun consumeCheckoutUrl() {
+        _state.update { it.copy(checkoutUrlEvent = null) }
+    }
+
+    // ==================== PROJECTS ====================
+
+    fun createProject(name: String) {
+        val clean = name.trim().take(80)
+        if (clean.isBlank()) return
+        val proj = ProjectFolder(newSafeId("proj"), clean, System.currentTimeMillis())
+        store.upsertProject(proj)
+        _state.update { it.copy(projects = store.listProjects(), activeProjectId = proj.id) }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncProject(it, proj) }
+        }
+    }
+
+    fun selectProject(projectId: String?) {
+        _state.update { it.copy(activeProjectId = projectId) }
+    }
+
+    fun deleteProject(projectId: String) {
+        store.deleteProject(projectId)
+        _state.update {
+            it.copy(
+                projects = store.listProjects(),
+                chats = store.listChats(),
+                activeProjectId = if (it.activeProjectId == projectId) null else it.activeProjectId
+            )
+        }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.deleteProject(it, projectId) }
+        }
+    }
+
+    // ==================== SHARE SHEET & VOICE ====================
+
+    fun onIncomingShare(payload: SharedIncomingPayload) {
+        _state.update { st ->
+            val combinedDraft = listOfNotNull(
+                st.draftInput.takeIf { it.isNotBlank() },
+                payload.text?.takeIf { it.isNotBlank() }
+            ).joinToString("\n\n")
+            val nextAttachments = if (payload.attachment != null) {
+                st.pendingAttachments + payload.attachment
+            } else st.pendingAttachments
+            st.copy(
+                activeTab = IGseekTab.CHAT,
+                draftInput = combinedDraft,
+                pendingAttachments = nextAttachments
+            )
+        }
+        showToast("Данные добавлены в чат IGseek")
+    }
+
+    fun appendVoiceTranscript(transcript: String) {
+        val clean = transcript.trim()
+        if (clean.isBlank()) return
+        _state.update { st ->
+            val next = if (st.draftInput.isBlank()) clean else "${st.draftInput.trimEnd()} $clean"
+            st.copy(draftInput = next)
+        }
+    }
+
+    // ==================== CHAT ====================
+
+    fun updateDraft(text: String) {
+        _state.update { it.copy(draftInput = text) }
+    }
+
+    fun setModel(model: AiModelId) {
+        _state.update { it.copy(selectedModel = model) }
+    }
+
+    fun setAgent(agent: AgentRoleId) {
+        _state.update { it.copy(selectedAgent = agent) }
+    }
+
+    fun toggleWebSearch() {
+        _state.update { it.copy(webSearchEnabled = !it.webSearchEnabled) }
+    }
+
+    fun toggleReasoning() {
+        _state.update { it.copy(reasoningEnabled = !it.reasoningEnabled) }
+    }
+
+    fun toggleImageMode() {
+        _state.update { it.copy(imageModeEnabled = !it.imageModeEnabled) }
+    }
+
+    fun addAttachment(attachment: ChatAttachment) {
+        _state.update { it.copy(pendingAttachments = (it.pendingAttachments + attachment).take(4)) }
+    }
+
+    fun removeAttachment(name: String) {
+        _state.update { it.copy(pendingAttachments = it.pendingAttachments.filterNot { a -> a.name == name }) }
+    }
+
+    fun createNewChat() {
+        val projectId = _state.value.activeProjectId
+        val chat = ChatThread(
+            id = newSafeId("chat"),
+            title = "Новый чат",
+            updatedAtMs = System.currentTimeMillis(),
+            projectId = projectId
+        )
+        store.upsertChat(chat)
+        _state.update {
+            it.copy(
+                chats = store.listChats(),
+                activeChatId = chat.id,
+                messages = emptyList(),
+                activeTab = IGseekTab.CHAT
+            )
+        }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncChat(it, chat) }
+        }
+    }
+
+    fun selectChat(chatId: String) {
+        val localMsgs = store.listMessages(chatId)
+        _state.update {
+            it.copy(
+                activeChatId = chatId,
+                messages = localMsgs,
+                activeTab = IGseekTab.CHAT
+            )
+        }
+        if (localMsgs.isEmpty() && _state.value.isOnline) {
+            viewModelScope.launch {
+                val session = getFreshSession() ?: return@launch
+                if (session.isGuest) return@launch
+                val remoteMsgs = firestore.fetchMessagesForChat(session, chatId)
+                if (remoteMsgs.isNotEmpty()) {
+                    remoteMsgs.forEach { store.upsertMessage(it) }
+                    if (_state.value.activeChatId == chatId) {
+                        _state.update { it.copy(messages = store.listMessages(chatId)) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun toggleSaveChat(chatId: String) {
+        val chat = _state.value.chats.firstOrNull { it.id == chatId } ?: return
+        val updated = chat.copy(isSaved = !chat.isSaved, updatedAtMs = System.currentTimeMillis())
+        store.upsertChat(updated)
+        _state.update { it.copy(chats = store.listChats()) }
+        showToast(if (updated.isSaved) "Чат добавлен в Сохранённое" else "Убрано из Сохранённого")
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncChat(it, updated) }
+        }
+    }
+
+    fun toggleBookmarkMessage(messageId: String) {
+        val current = _state.value.messages.firstOrNull { it.id == messageId }
+            ?: _state.value.bookmarkedMessages.firstOrNull { it.id == messageId }
+            ?: return
+        val updated = current.copy(isBookmarked = !current.isBookmarked)
+        store.upsertMessage(updated)
+        _state.update { st ->
+            st.copy(
+                messages = if (st.activeChatId == updated.chatId) store.listMessages(st.activeChatId) else st.messages,
+                bookmarkedMessages = store.listBookmarkedMessages()
+            )
+        }
+        showToast(if (updated.isBookmarked) "Сообщение сохранено" else "Удалено из сохранённых")
+    }
+
+    fun deleteChat(chatId: String) {
+        store.deleteChat(chatId)
+        var chats = store.listChats()
+        if (chats.isEmpty()) {
+            val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
+            store.upsertChat(fresh)
+            chats = listOf(fresh)
+        }
+        val nextActive = if (_state.value.activeChatId == chatId) chats.first().id else _state.value.activeChatId
+        _state.update {
+            it.copy(
+                chats = chats,
+                activeChatId = nextActive,
+                messages = store.listMessages(nextActive),
+                bookmarkedMessages = store.listBookmarkedMessages()
+            )
+        }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.deleteChat(it, chatId) }
+        }
+    }
+
+    fun startPromptInChat(prompt: String) {
+        _state.update { it.copy(activeTab = IGseekTab.CHAT, draftInput = prompt) }
+        sendMessage(prompt)
+    }
+
+    fun regenerateLastReply() {
+        val st = _state.value
+        if (st.isStreaming) return
+        val lastUser = st.messages.lastOrNull { it.role == "user" } ?: return
+        val lastMsg = st.messages.lastOrNull()
+        if (lastMsg != null && lastMsg.role == "assistant") {
+            store.deleteMessage(lastMsg.id)
+        }
+        val updatedHistory = store.listMessages(st.activeChatId)
+        _state.update { it.copy(messages = updatedHistory) }
+        executeChatStream(
+            chatId = st.activeChatId,
+            history = updatedHistory,
+            model = st.selectedModel,
+            agent = st.selectedAgent,
+            webSearch = st.webSearchEnabled,
+            reasoning = st.reasoningEnabled,
+            imageMode = st.imageModeEnabled,
+            attachments = emptyList(),
+            idempotencyKey = UUID.randomUUID().toString()
+        )
+    }
+
+    fun sendMessage(overrideText: String? = null) {
+        val st = _state.value
+        val text = (overrideText ?: st.draftInput).trim()
+        val attachments = st.pendingAttachments
+        if ((text.isBlank() && attachments.isEmpty()) || st.isStreaming) return
+
+        val chatId = st.activeChatId.ifBlank { newSafeId("chat") }
+        val userMsgId = newSafeId("msg")
+        val now = System.currentTimeMillis()
+
+        val userMsg = ChatMessageItem(
+            id = userMsgId,
+            chatId = chatId,
+            role = "user",
+            content = text.ifBlank { "Проанализируй прикреплённые файлы" },
+            attachmentNames = attachments.map { it.name },
+            createdAtMs = now,
+            isQueuedOffline = !st.isOnline
+        )
+        store.upsertMessage(userMsg)
+
+        val currentChat = st.chats.firstOrNull { it.id == chatId }
+        val newTitle = if (currentChat == null || currentChat.title == "Новый чат") {
+            userMsg.content.replace("\n", " ").take(44).ifBlank { "Новый чат" }
+        } else currentChat.title
+        val updatedChat = ChatThread(
+            id = chatId,
+            title = newTitle,
+            updatedAtMs = now,
+            isSaved = currentChat?.isSaved ?: false,
+            projectId = currentChat?.projectId ?: st.activeProjectId
+        )
+        store.upsertChat(updatedChat)
+
+        val history = store.listMessages(chatId)
+        _state.update {
+            it.copy(
+                draftInput = "",
+                pendingAttachments = emptyList(),
+                chats = store.listChats(),
+                activeChatId = chatId,
+                messages = history
+            )
+        }
+
+        // Sync chat + user message to Firestore in background
+        viewModelScope.launch {
+            getFreshSession()?.let { s ->
+                firestore.syncChat(s, updatedChat)
+                firestore.syncMessage(s, userMsg, history.size)
+            }
+        }
+
+        if (!st.isOnline) {
+            val queued = OutboxQueuedMessage(
+                id = newSafeId("out"),
+                chatId = chatId,
+                messageId = userMsgId,
+                text = userMsg.content,
+                modelId = st.selectedModel.apiId,
+                agentId = st.selectedAgent.apiId,
+                webSearch = st.webSearchEnabled,
+                reasoning = st.reasoningEnabled,
+                imageMode = st.imageModeEnabled,
+                idempotencyKey = UUID.randomUUID().toString(),
+                createdAtMs = now
+            )
+            store.enqueueOutbox(queued)
+            _state.update { it.copy(outboxCount = store.listOutbox().size) }
+            showToast("Оффлайн: сообщение в очереди, отправится при появлении сети")
             return
         }
-        store.setServerBaseUrl(cleaned)
-        _state.update { it.copy(serverBaseUrl = cleaned, toastMessage = "Сервер API обновлён") }
-        refreshAccountData()
+
+        executeChatStream(
+            chatId = chatId,
+            history = history,
+            model = st.selectedModel,
+            agent = st.selectedAgent,
+            webSearch = st.webSearchEnabled,
+            reasoning = st.reasoningEnabled,
+            imageMode = st.imageModeEnabled,
+            attachments = attachments,
+            idempotencyKey = UUID.randomUUID().toString()
+        )
+    }
+
+    private fun executeChatStream(
+        chatId: String,
+        history: List<ChatMessageItem>,
+        model: AiModelId,
+        agent: AgentRoleId,
+        webSearch: Boolean,
+        reasoning: Boolean,
+        imageMode: Boolean,
+        attachments: List<ChatAttachment>,
+        idempotencyKey: String
+    ) {
+        viewModelScope.launch {
+            val assistantId = newSafeId("msg")
+            var assistantMsg = ChatMessageItem(
+                id = assistantId,
+                chatId = chatId,
+                role = "assistant",
+                content = "",
+                createdAtMs = System.currentTimeMillis() + 1L
+            )
+            store.upsertMessage(assistantMsg)
+            _state.update {
+                it.copy(
+                    isStreaming = true,
+                    messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
+                )
+            }
+
+            val session = getFreshSession()
+            val memories = _state.value.memories
+            val language = _state.value.layoutPrefs.language
+
+            runCatching {
+                api.streamChat(
+                    session = session,
+                    history = history,
+                    model = model,
+                    agent = agent,
+                    webSearch = webSearch,
+                    reasoning = reasoning,
+                    imageMode = imageMode,
+                    memories = memories,
+                    language = language,
+                    attachments = attachments,
+                    idempotencyKey = idempotencyKey,
+                    onDelta = { fullText ->
+                        assistantMsg = assistantMsg.copy(content = fullText)
+                        updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onReasoning = { fullReasoning ->
+                        assistantMsg = assistantMsg.copy(reasoning = fullReasoning)
+                        updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onImage = { img ->
+                        assistantMsg = assistantMsg.copy(images = assistantMsg.images + img)
+                        updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onSources = { sources ->
+                        assistantMsg = assistantMsg.copy(webSources = sources)
+                        updateStreamingMessageInUi(assistantMsg)
+                    }
+                )
+            }.onSuccess { result ->
+                assistantMsg = assistantMsg.copy(
+                    content = result.content.ifBlank { assistantMsg.content.ifBlank { "Готово." } },
+                    reasoning = result.reasoning.ifBlank { assistantMsg.reasoning },
+                    images = result.images.ifEmpty { assistantMsg.images },
+                    webSources = result.webSources.ifEmpty { assistantMsg.webSources },
+                    isError = false
+                )
+                store.upsertMessage(assistantMsg)
+                // Auto-save generated images into Library
+                assistantMsg.images.forEach { img ->
+                    saveGeneratedImageToLibrary(img, silent = true)
+                }
+                val finalMsgs = store.listMessages(chatId)
+                _state.update {
+                    it.copy(
+                        isStreaming = false,
+                        imageModeEnabled = false,
+                        messages = if (it.activeChatId == chatId) finalMsgs else it.messages
+                    )
+                }
+                if (session != null && !session.isGuest) {
+                    firestore.syncMessage(session, assistantMsg, finalMsgs.size)
+                }
+            }.onFailure { err ->
+                assistantMsg = assistantMsg.copy(
+                    content = "Ошибка запроса: ${err.message ?: "проверьте подключение к интернету"}",
+                    isError = true
+                )
+                store.upsertMessage(assistantMsg)
+                _state.update {
+                    it.copy(
+                        isStreaming = false,
+                        messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
+                    )
+                }
+            }
+        }
+    }
+
+    private fun updateStreamingMessageInUi(msg: ChatMessageItem) {
+        _state.update { st ->
+            if (st.activeChatId != msg.chatId) return@update st
+            val updated = st.messages.map { if (it.id == msg.id) msg else it }
+            st.copy(messages = if (updated.any { it.id == msg.id }) updated else updated + msg)
+        }
+    }
+
+    fun saveGeneratedImageToLibrary(img: GeneratedImageItem, silent: Boolean = false) {
+        val item = LibraryFileItem(
+            id = "lib_${img.id}",
+            name = "${img.title.take(40).ifBlank { "IGseek Image" }}.jpg",
+            type = "image",
+            mimeType = "image/jpeg",
+            sizeBytes = img.dataUrl.length.toLong(),
+            source = "chat",
+            chatTitle = "IGseek Image",
+            updatedAt = nowIso(),
+            dataUrl = img.dataUrl
+        )
+        val merged = (listOf(item) + _state.value.libraryFiles).distinctBy { it.id }
+        store.cacheLibraryFiles(merged)
+        _state.update { it.copy(libraryFiles = merged) }
+        if (!silent) showToast("Изображение сохранено в Library")
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncLibraryFile(it, item) }
+        }
+    }
+
+    private fun flushOfflineOutbox() {
+        viewModelScope.launch {
+            val queued = store.listOutbox()
+            if (queued.isEmpty()) return@launch
+            for (item in queued) {
+                if (!_state.value.isOnline) break
+                val msgs = store.listMessages(item.chatId)
+                msgs.firstOrNull { it.id == item.messageId }?.let { orig ->
+                    store.upsertMessage(orig.copy(isQueuedOffline = false))
+                }
+                val model = AiModelId.entries.firstOrNull { it.apiId == item.modelId } ?: AiModelId.INSTINCT
+                val agent = AgentRoleId.entries.firstOrNull { it.apiId == item.agentId } ?: AgentRoleId.UNIVERSAL
+                store.removeOutbox(item.id)
+                _state.update { it.copy(outboxCount = store.listOutbox().size) }
+                executeChatStream(
+                    chatId = item.chatId,
+                    history = store.listMessages(item.chatId),
+                    model = model,
+                    agent = agent,
+                    webSearch = item.webSearch,
+                    reasoning = item.reasoning,
+                    imageMode = item.imageMode,
+                    attachments = emptyList(),
+                    idempotencyKey = item.idempotencyKey
+                )
+            }
+        }
+    }
+
+    // ==================== FLOW ====================
+
+    fun planFlow(goal: String) {
+        val clean = goal.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            _state.update { it.copy(flowTask = FlowTaskState(goal = clean, isPlanning = true)) }
+            val session = getFreshSession()
+            runCatching {
+                api.planFlow(session, clean, _state.value.layoutPrefs.language)
+            }.onSuccess { plan ->
+                _state.update {
+                    it.copy(
+                        flowTask = FlowTaskState(
+                            title = plan.title,
+                            goal = clean,
+                            steps = plan.steps,
+                            isPlanning = false
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(flowTask = it.flowTask.copy(isPlanning = false, error = err.message ?: "Ошибка планирования"))
+                }
+            }
+        }
+    }
+
+    fun runFlow() {
+        val current = _state.value.flowTask
+        if (current.steps.isEmpty() || current.isRunning) return
+        viewModelScope.launch {
+            _state.update { it.copy(flowTask = it.flowTask.copy(isRunning = true, error = null)) }
+            val session = getFreshSession()
+            val outputs = mutableListOf<Pair<String, String>>()
+            val lang = _state.value.layoutPrefs.language
+
+            for (index in current.steps.indices) {
+                val step = _state.value.flowTask.steps[index]
+                updateFlowStep(index) { it.copy(status = "running") }
+                val res = runCatching {
+                    api.executeFlowStep(session, current.goal, step, outputs, lang)
+                }
+                if (res.isSuccess) {
+                    val out = res.getOrDefault("")
+                    outputs.add(step.title to out)
+                    updateFlowStep(index) { it.copy(status = "done", output = out) }
+                } else {
+                    updateFlowStep(index) {
+                        it.copy(status = "error", output = res.exceptionOrNull()?.message ?: "Ошибка шага")
+                    }
+                    _state.update { it.copy(flowTask = it.flowTask.copy(isRunning = false)) }
+                    return@launch
+                }
+            }
+            _state.update { it.copy(flowTask = it.flowTask.copy(isRunning = false)) }
+            showToast("Flow выполнен!")
+        }
+    }
+
+    fun saveFlowResultToLibrary() {
+        val task = _state.value.flowTask
+        if (task.steps.isEmpty()) return
+        val md = buildString {
+            append("# ${task.title.ifBlank { "IGseek Flow" }}\n\n")
+            append("**Цель:** ${task.goal}\n\n")
+            task.steps.forEachIndexed { idx, s ->
+                append("## ${idx + 1}. ${s.title}\n")
+                if (s.output.isNotBlank()) append("${s.output}\n\n") else append("${s.description}\n\n")
+            }
+        }
+        val item = LibraryFileItem(
+            id = newSafeId("lib"),
+            name = "${task.title.take(40).ifBlank { "flow_result" }}.md",
+            type = "markdown",
+            mimeType = "text/markdown",
+            sizeBytes = md.toByteArray().size.toLong(),
+            source = "flow",
+            chatTitle = task.title.ifBlank { "Flow" },
+            updatedAt = nowIso(),
+            content = md
+        )
+        val merged = listOf(item) + _state.value.libraryFiles
+        store.cacheLibraryFiles(merged)
+        _state.update { it.copy(libraryFiles = merged) }
+        showToast("Отчёт Flow сохранён в Library")
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncLibraryFile(it, item) }
+        }
+    }
+
+    fun resetFlow() {
+        _state.update { it.copy(flowTask = FlowTaskState()) }
+    }
+
+    private fun updateFlowStep(index: Int, transform: (app.igseek.mobile.data.models.FlowStepItem) -> app.igseek.mobile.data.models.FlowStepItem) {
+        _state.update { st ->
+            val updated = st.flowTask.steps.mapIndexed { idx, s -> if (idx == index) transform(s) else s }
+            st.copy(flowTask = st.flowTask.copy(steps = updated))
+        }
+    }
+
+    // ==================== ENGINE ====================
+
+    fun generateEngineProject(prompt: String) {
+        val clean = prompt.trim()
+        if (clean.isBlank() || _state.value.isEngineGenerating) return
+        viewModelScope.launch {
+            _state.update { it.copy(isEngineGenerating = true, engineError = null) }
+            runCatching {
+                api.generateEngineProject(clean, _state.value.layoutPrefs.language)
+            }.onSuccess { project ->
+                store.upsertEngineProject(project)
+                val all = store.listEngineProjects()
+                _state.update {
+                    it.copy(
+                        engineProjects = all,
+                        activeEngineProjectId = project.id,
+                        isEngineGenerating = false
+                    )
+                }
+                showToast("Проект «${project.title}» создан в Engine")
+                getFreshSession()?.let { firestore.syncEngineProject(it, project) }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(isEngineGenerating = false, engineError = err.message ?: "Ошибка генерации проекта")
+                }
+            }
+        }
+    }
+
+    fun selectEngineProject(id: String) {
+        _state.update { it.copy(activeEngineProjectId = id) }
+    }
+
+    fun selectEngineFile(path: String) {
+        val activeId = _state.value.activeEngineProjectId ?: return
+        val proj = _state.value.engineProjects.firstOrNull { it.id == activeId } ?: return
+        val updated = proj.copy(activeFile = path)
+        store.upsertEngineProject(updated)
+        _state.update { it.copy(engineProjects = store.listEngineProjects()) }
+    }
+
+    fun deleteEngineProject(id: String) {
+        store.deleteEngineProject(id)
+        val remaining = store.listEngineProjects()
+        _state.update {
+            it.copy(
+                engineProjects = remaining,
+                activeEngineProjectId = if (it.activeEngineProjectId == id) remaining.firstOrNull()?.id else it.activeEngineProjectId
+            )
+        }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.deleteEngineProject(it, id) }
+        }
+    }
+
+    fun saveEngineProjectToLibrary(project: EngineProjectItem) {
+        val bundle = buildString {
+            append("# ${project.title}\n\n")
+            project.files.forEach { f ->
+                append("## ${f.path}\n```\n${f.content}\n```\n\n")
+            }
+        }
+        val item = LibraryFileItem(
+            id = newSafeId("lib"),
+            name = "${project.title.take(36)}.md",
+            type = "code",
+            mimeType = "text/markdown",
+            sizeBytes = bundle.toByteArray().size.toLong(),
+            source = "engine",
+            chatTitle = project.title,
+            updatedAt = nowIso(),
+            content = bundle
+        )
+        val merged = listOf(item) + _state.value.libraryFiles
+        store.cacheLibraryFiles(merged)
+        _state.update { it.copy(libraryFiles = merged) }
+        showToast("Код проекта сохранён в Library")
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncLibraryFile(it, item) }
+        }
+    }
+
+    // ==================== LIBRARY ====================
+
+    fun refreshLibrary() {
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            if (session.isGuest || !_state.value.isOnline) return@launch
+            _state.update { it.copy(isLibraryLoading = true) }
+            runCatching { firestore.fetchLibraryFiles(session) }
+                .onSuccess { remote ->
+                    val merged = (remote + _state.value.libraryFiles).distinctBy { it.id }
+                    store.cacheLibraryFiles(merged)
+                    _state.update { it.copy(libraryFiles = merged, isLibraryLoading = false) }
+                }
+                .onFailure {
+                    _state.update { it.copy(isLibraryLoading = false) }
+                }
+        }
+    }
+
+    fun uploadToLibrary(attachment: ChatAttachment) {
+        val isImage = attachment.mimeType.startsWith("image/")
+        val decodedText = if (!isImage && attachment.dataUrl.contains("base64,")) {
+            runCatching {
+                val b64 = attachment.dataUrl.substringAfter("base64,")
+                String(Base64.decode(b64, Base64.DEFAULT)).take(80_000)
+            }.getOrNull()
+        } else null
+
+        val item = LibraryFileItem(
+            id = newSafeId("lib"),
+            name = attachment.name,
+            type = if (isImage) "image" else "doc",
+            mimeType = attachment.mimeType,
+            sizeBytes = attachment.sizeBytes,
+            source = "upload",
+            chatTitle = "Загрузка",
+            updatedAt = nowIso(),
+            content = decodedText,
+            dataUrl = if (isImage) attachment.dataUrl else null
+        )
+        val merged = listOf(item) + _state.value.libraryFiles
+        store.cacheLibraryFiles(merged)
+        _state.update { it.copy(libraryFiles = merged) }
+        showToast("Файл «${attachment.name}» добавлен в Library")
+
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncLibraryFile(it, item) }
+        }
+    }
+
+    fun attachLibraryFileToChat(item: LibraryFileItem) {
+        val dataUrl = item.dataUrl ?: run {
+            val bytes = (item.content ?: item.name).toByteArray()
+            "data:${item.mimeType};base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+        }
+        addAttachment(
+            ChatAttachment(
+                name = item.name,
+                mimeType = item.mimeType,
+                dataUrl = dataUrl,
+                sizeBytes = item.sizeBytes
+            )
+        )
+        selectTab(IGseekTab.CHAT)
+        showToast("«${item.name}» прикреплён к чату")
+    }
+
+    fun deleteLibraryFile(id: String) {
+        val next = _state.value.libraryFiles.filterNot { it.id == id }
+        store.cacheLibraryFiles(next)
+        _state.update { it.copy(libraryFiles = next) }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.deleteLibraryFile(it, id) }
+        }
+    }
+
+    // ==================== MEMORY ====================
+
+    fun refreshMemories() {
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            if (session.isGuest || !_state.value.isOnline) return@launch
+            _state.update { it.copy(isMemoriesLoading = true) }
+            runCatching { firestore.fetchMemories(session) }
+                .onSuccess { remote ->
+                    val merged = (remote + _state.value.memories).distinctBy { it.id }
+                    store.cacheMemories(merged)
+                    _state.update { it.copy(memories = merged, isMemoriesLoading = false) }
+                }
+                .onFailure {
+                    _state.update { it.copy(isMemoriesLoading = false) }
+                }
+        }
+    }
+
+    fun addMemory(content: String, kind: String) {
+        val clean = content.trim()
+        if (clean.isBlank()) return
+        val entry = MemoryEntryItem(
+            id = newSafeId("mem"),
+            content = clean,
+            kind = kind.ifBlank { "other" },
+            createdAt = nowIso()
+        )
+        val merged = listOf(entry) + _state.value.memories
+        store.cacheMemories(merged)
+        _state.update { it.copy(memories = merged) }
+        showToast("Факт сохранён в память")
+
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.syncMemory(it, entry) }
+        }
+    }
+
+    fun deleteMemory(id: String) {
+        val next = _state.value.memories.filterNot { it.id == id }
+        store.cacheMemories(next)
+        _state.update { it.copy(memories = next) }
+        viewModelScope.launch {
+            getFreshSession()?.let { firestore.deleteMemory(it, id) }
+        }
+    }
+
+    // ==================== SUBSCRIPTION ====================
+
+    fun refreshSubscription() {
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            if (session.isGuest) return@launch
+            val fromFirestore = firestore.fetchProfile(session)?.subscription
+            if (fromFirestore != null) {
+                _state.update { it.copy(subscription = fromFirestore) }
+            }
+            if (_state.value.serverBaseUrl.isNotBlank()) {
+                runCatching { api.getSubscription(session) }
+                    .onSuccess { sub -> _state.update { it.copy(subscription = sub) } }
+            }
+        }
+    }
+
+    fun startProCheckout() {
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            if (session.isGuest) {
+                showToast("Войдите в аккаунт IGseek для оформления Pro")
+                return@launch
+            }
+            runCatching { api.createSubscriptionCheckout(session) }
+                .onSuccess { (url, txnId) ->
+                    _state.update {
+                        it.copy(
+                            checkoutUrlEvent = url,
+                            subscription = it.subscription.copy(pendingTxnId = txnId)
+                        )
+                    }
+                }
+                .onFailure { err -> showToast(err.message ?: "Ошибка оплаты") }
+        }
+    }
+
+    fun verifyPendingPayment() {
+        val txnId = _state.value.subscription.pendingTxnId ?: return
+        viewModelScope.launch {
+            val session = getFreshSession() ?: return@launch
+            runCatching { api.verifySubscription(session, txnId) }
+                .onSuccess { activated ->
+                    if (activated) {
+                        showToast("Подписка IGseek Pro активирована!")
+                        refreshSubscription()
+                    } else {
+                        showToast("Платёж ещё обрабатывается")
+                    }
+                }
+                .onFailure { err -> showToast(err.message ?: "Ошибка проверки") }
+        }
     }
 }

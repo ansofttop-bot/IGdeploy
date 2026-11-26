@@ -2,6 +2,7 @@ package app.igseek.mobile
 
 import android.app.Application
 import app.igseek.mobile.data.api.FirebaseAuthApi
+import app.igseek.mobile.data.api.FirestoreSyncClient
 import app.igseek.mobile.data.api.IGseekApiClient
 import app.igseek.mobile.data.local.LocalStore
 import app.igseek.mobile.data.network.NetworkMonitor
@@ -18,6 +19,8 @@ class IGseekApplication : Application() {
         private set
     lateinit var authApi: FirebaseAuthApi
         private set
+    lateinit var firestoreSync: FirestoreSyncClient
+        private set
     lateinit var apiClient: IGseekApiClient
         private set
 
@@ -33,6 +36,7 @@ class IGseekApplication : Application() {
         localStore = LocalStore(this)
         networkMonitor = NetworkMonitor(this)
         authApi = FirebaseAuthApi(okHttpClient)
+        firestoreSync = FirestoreSyncClient(okHttpClient)
         apiClient = IGseekApiClient(okHttpClient) { localStore.getServerBaseUrl() }
     }
 }

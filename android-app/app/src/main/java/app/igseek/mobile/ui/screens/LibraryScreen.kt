@@ -6,8 +6,8 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -19,39 +19,31 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Create
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,26 +54,38 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.LibraryFileItem
+import app.igseek.mobile.ui.components.IGseekFoxLogo
+import app.igseek.mobile.ui.components.IGseekGlassCard
+import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.IGseekMarkdownText
 import app.igseek.mobile.ui.state.IGseekUiState
+import app.igseek.mobile.ui.state.IGseekViewModel
+import app.igseek.mobile.ui.theme.LocalIGseekPalette
+import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     state: IGseekUiState,
-    onRefresh: () -> Unit,
-    onUpload: (String, String, ByteArray, String) -> Unit,
-    onDelete: (String) -> Unit
+    viewModel: IGseekViewModel,
+    onOpenDrawer: () -> Unit
 ) {
+    val palette = LocalIGseekPalette.current
     val context = LocalContext.current
-    var query by remember { mutableStateOf("") }
-    var filterType by remember { mutableStateOf("all") }
+    val clipboard = LocalClipboardManager.current
+    val isEn = state.layoutPrefs.language == "en"
+
+    var searchQuery by remember { mutableStateOf("") }
+    var filterCategory by remember { mutableStateOf("all") }
     var previewItem by remember { mutableStateOf<LibraryFileItem?>(null) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             runCatching {
                 val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
@@ -91,174 +95,267 @@ fun LibraryScreen(
                     if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
                 }
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
+                if (bytes.size > 6 * 1024 * 1024) {
+                    viewModel.showToast("Файл больше 6 МБ")
+                    return@runCatching
+                }
                 val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                onUpload(name, mime, bytes, "data:$mime;base64,$b64")
+                viewModel.uploadToLibrary(ChatAttachment(name, mime, "data:$mime;base64,$b64", bytes.size.toLong()))
             }
         }
     }
 
-    val filtered = remember(state.libraryItems, query, filterType) {
-        state.libraryItems.filter { item ->
-            (filterType == "all" || item.type == filterType) &&
-                (query.isBlank() || item.name.contains(query, ignoreCase = true))
+    val filtered = remember(state.libraryFiles, searchQuery, filterCategory) {
+        state.libraryFiles.filter { item ->
+            val matchQuery = searchQuery.isBlank() ||
+                item.name.contains(searchQuery, ignoreCase = true) ||
+                item.chatTitle.contains(searchQuery, ignoreCase = true)
+            val matchCat = when (filterCategory) {
+                "images" -> item.type == "image" || item.mimeType.startsWith("image/")
+                "docs" -> item.type == "doc" || item.type == "markdown"
+                "code" -> item.type == "code" || item.source == "engine"
+                else -> true
+            }
+            matchQuery && matchCat
         }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            Column {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.AutoMirrored.Rounded.List, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Text("Library", style = MaterialTheme.typography.titleMedium)
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, contentDescription = "Обновить") }
-                    }
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-            }
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = { picker.launch("*/*") },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = "Загрузить файл")
-            }
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("Поиск по файлам...") },
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf("all" to "Все", "image" to "Фото", "doc" to "Документы", "artifact" to "Артефакты").forEach { (key, label) ->
-                    FilterChip(selected = filterType == key, onClick = { filterType = key }, label = { Text(label) })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onOpenDrawer) {
+                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
                 }
-            }
-
-            val libraryError = state.libraryError
-            if (state.libraryLoading) {
-                Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (!libraryError.isNullOrBlank()) {
-                Text(libraryError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-            } else if (filtered.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                IGseekFoxLogo(size = 20.dp)
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Library", style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
                     Text(
-                        text = if (state.session?.isGuest == true) "Войдите в аккаунт для облачного хранилища Library" else "Файлов пока нет. Нажмите кнопку загрузки справа внизу.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "${state.libraryFiles.size} файлов · Облако + локально",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted
                     )
                 }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
-                    items(filtered, key = { it.id }) { item ->
-                        LibraryRowCard(item = item, onClick = { previewItem = item }, onDelete = { onDelete(item.id) })
+            }
+            Row {
+                IconButton(onClick = { viewModel.refreshLibrary() }) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = palette.textMuted)
+                }
+                IconButton(onClick = { uploadPicker.launch("*/*") }) {
+                    Icon(Icons.Rounded.Add, contentDescription = "Upload", tint = palette.brand)
+                }
+            }
+        }
+
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text(if (isEn) "Search files…" else "Поиск в Library…", color = palette.textMuted) },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = palette.textMuted) },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = palette.brand,
+                    unfocusedBorderColor = palette.glassBorder,
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    "all" to if (isEn) "All" else "Все",
+                    "images" to if (isEn) "Images" else "Фото",
+                    "docs" to if (isEn) "Docs" else "Документы",
+                    "code" to if (isEn) "Code" else "Код"
+                ).forEach { (key, label) ->
+                    IGseekGlassChip(
+                        label = label,
+                        selected = filterCategory == key,
+                        onClick = { filterCategory = key }
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        if (state.isLibraryLoading && state.libraryFiles.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = palette.brand)
+            }
+        } else if (filtered.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IGseekFoxLogo(size = 44.dp, showGlow = true)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = if (isEn) "Library is empty" else "В Library пока нет файлов",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textPrimary
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (isEn) "Upload files, save Flow reports, Engine code or generated images." else "Загружайте файлы кнопкой «+», сохраняйте отчёты Flow, код Engine и сгенерированные фото.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textMuted
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(filtered, key = { it.id }) { item ->
+                    IGseekGlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { previewItem = item },
+                        shape = RoundedCornerShape(16.dp),
+                        contentPadding = 13.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = palette.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = "${item.source.uppercase(Locale.US)} · ${formatFileSize(item.sizeBytes)} · ${item.chatTitle}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IGseekGlassChip(
+                                label = "В чат",
+                                selected = false,
+                                onClick = { viewModel.attachLibraryFileToChat(item) }
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            IconButton(
+                                onClick = { viewModel.deleteLibraryFile(item.id) },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = palette.textMuted, modifier = Modifier.size(18.dp))
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    previewItem?.let { item ->
+    val activePreview = previewItem
+    if (activePreview != null) {
+        val dataUrl = activePreview.dataUrl
+        val contentText = activePreview.content
+        val bmp = remember(dataUrl) {
+            if (!dataUrl.isNullOrBlank()) {
+                runCatching {
+                    val b64 = dataUrl.substringAfter("base64,", "")
+                    val bytes = Base64.decode(b64, Base64.DEFAULT)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }.getOrNull()
+            } else null
+        }
+
         AlertDialog(
             onDismissRequest = { previewItem = null },
-            title = { Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            containerColor = palette.surfaceElevated,
+            title = {
+                Text(
+                    text = activePreview.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
             text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val bitmap = remember(item.dataUrl) {
-                        runCatching {
-                            val b64 = item.dataUrl?.substringAfter("base64,", "") ?: ""
-                            if (b64.isBlank()) return@runCatching null
-                            val bytes = Base64.decode(b64, Base64.DEFAULT)
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                        }.getOrNull()
-                    }
-                    if (bitmap != null) {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (bmp != null) {
                         Image(
-                            bitmap = bitmap,
-                            contentDescription = item.name,
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = activePreview.name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(12.dp))
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(260.dp)
+                                .clip(RoundedCornerShape(12.dp))
                         )
-                    }
-                    val itemContent = item.content
-                    if (!itemContent.isNullOrBlank()) {
-                        Text(itemContent, style = MaterialTheme.typography.bodyMedium)
-                    } else if (bitmap == null) {
+                    } else if (!contentText.isNullOrBlank()) {
+                        IGseekMarkdownText(markdown = contentText.take(6000))
+                    } else {
                         Text(
-                            text = "Тип: ${item.mimeType}\nРазмер: ${formatSize(item.sizeBytes)}\nИсточник: ${item.source}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "Предпросмотр недоступен (${activePreview.mimeType})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textMuted
                         )
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { previewItem = null }) { Text("Закрыть") } }
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.attachLibraryFileToChat(activePreview)
+                        previewItem = null
+                    }
+                ) {
+                    Text("Прикрепить в чат", color = palette.brand)
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (!contentText.isNullOrBlank()) {
+                        TextButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(contentText))
+                                viewModel.showToast("Скопировано")
+                            }
+                        ) {
+                            Text("Копировать", color = palette.textSecondary)
+                        }
+                    }
+                    TextButton(onClick = { previewItem = null }) {
+                        Text("Закрыть", color = palette.textMuted)
+                    }
+                }
+            }
         )
     }
 }
 
-@Composable
-private fun LibraryRowCard(item: LibraryFileItem, onClick: () -> Unit, onDelete: () -> Unit) {
-    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                val icon = when (item.type) {
-                    "image" -> Icons.Rounded.Star
-                    "artifact" -> Icons.Rounded.Create
-                    else -> Icons.Rounded.Info
-                }
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(2.dp))
-                Text("${item.type.uppercase()} • ${formatSize(item.sizeBytes)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Rounded.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-private fun formatSize(bytes: Long): String {
-    if (bytes <= 0L) return "—"
-    return when {
-        bytes < 1024 -> "$bytes Б"
-        bytes < 1024 * 1024 -> "${bytes / 1024} КБ"
-        else -> String.format(java.util.Locale.US, "%.1f МБ", bytes / (1024.0 * 1024.0))
-    }
+private fun formatFileSize(bytes: Long): String = when {
+    bytes <= 0L -> "—"
+    bytes < 1024L -> "$bytes B"
+    bytes < 1024L * 1024L -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+    else -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
 }

@@ -12,16 +12,20 @@ import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AuthSession
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.ChatThread
+import app.igseek.mobile.data.models.EngineFileItem
+import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.GeneratedImageItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
+import app.igseek.mobile.data.models.ProjectFolder
+import app.igseek.mobile.data.models.WebSourceItem
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 1) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 2) {
 
     private val prefs: SharedPreferences = createSecurePrefs(context)
 
@@ -45,10 +49,21 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
             CREATE TABLE IF NOT EXISTS chats (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                updated_at_ms INTEGER NOT NULL
+                updated_at_ms INTEGER NOT NULL,
+                is_saved INTEGER NOT NULL DEFAULT 0,
+                project_id TEXT
             )
             """.trimIndent()
         )
@@ -61,10 +76,12 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 content TEXT NOT NULL,
                 reasoning TEXT NOT NULL,
                 images_json TEXT NOT NULL,
+                sources_json TEXT NOT NULL DEFAULT '[]',
                 attachments_json TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 is_queued_offline INTEGER NOT NULL,
-                is_error INTEGER NOT NULL
+                is_error INTEGER NOT NULL,
+                is_bookmarked INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -79,8 +96,21 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 agent_id TEXT NOT NULL,
                 web_search INTEGER NOT NULL,
                 reasoning INTEGER NOT NULL,
+                image_mode INTEGER NOT NULL DEFAULT 0,
                 idempotency_key TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS engine_projects (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                active_file TEXT NOT NULL,
+                files_json TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
             )
             """.trimIndent()
         )
@@ -95,14 +125,22 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Initial v1 schema
+        if (oldVersion < 2) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS engine_projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL, active_file TEXT NOT NULL, files_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)")
+            runCatching { db.execSQL("ALTER TABLE chats ADD COLUMN is_saved INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE chats ADD COLUMN project_id TEXT") }
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'") }
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0") }
+            runCatching { db.execSQL("ALTER TABLE outbox ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0") }
+        }
     }
 
-    // ==================== SERVER & SESSION ====================
+    // ==================== OPTIONAL GATEWAY & SESSION ====================
 
     fun getServerBaseUrl(): String {
-        return prefs.getString("server_base_url", null)?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.DEFAULT_API_BASE_URL
+        return prefs.getString("server_base_url", null)?.trim()?.trimEnd('/')
+            ?: BuildConfig.DEFAULT_API_BASE_URL.trim().trimEnd('/')
     }
 
     fun setServerBaseUrl(url: String) {
@@ -149,8 +187,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         val obj = JSONObject().apply {
             put("darkTheme", layout.darkTheme)
             put("accent", layout.accent.id)
+            put("language", layout.language)
             put("compactDensity", layout.compactDensity)
             put("showQuickPrompts", layout.showQuickPrompts)
+            put("showBottomBar", layout.showBottomBar)
             put("biometricLockEnabled", layout.biometricLockEnabled)
             put("hapticsEnabled", layout.hapticsEnabled)
             put("tabOrder", tabs)
@@ -172,17 +212,46 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                     }
                 }
             }
-            IGseekTab.entries.forEach { if (it !in parsedTabs) parsedTabs.add(it) }
+            val defaultBar = listOf(IGseekTab.CHAT, IGseekTab.FLOW, IGseekTab.LIBRARY, IGseekTab.ENGINE)
+            val effectiveTabs = if (parsedTabs.size >= 2) parsedTabs.take(5) else defaultBar
             MobileLayoutPrefs(
                 darkTheme = o.optBoolean("darkTheme", true),
                 accent = AccentPresetId.fromId(o.optString("accent")),
+                language = o.optString("language", "ru").ifBlank { "ru" },
                 compactDensity = o.optBoolean("compactDensity", false),
                 showQuickPrompts = o.optBoolean("showQuickPrompts", true),
+                showBottomBar = o.optBoolean("showBottomBar", true),
                 biometricLockEnabled = o.optBoolean("biometricLockEnabled", false),
                 hapticsEnabled = o.optBoolean("hapticsEnabled", true),
-                tabOrder = parsedTabs
+                tabOrder = effectiveTabs
             )
         }.getOrDefault(MobileLayoutPrefs())
+    }
+
+    // ==================== PROJECTS ====================
+
+    fun upsertProject(project: ProjectFolder) {
+        val cv = ContentValues().apply {
+            put("id", project.id)
+            put("name", project.name)
+            put("updated_at_ms", project.updatedAtMs)
+        }
+        writableDatabase.insertWithOnConflict("projects", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun listProjects(): List<ProjectFolder> {
+        val out = mutableListOf<ProjectFolder>()
+        readableDatabase.rawQuery("SELECT id, name, updated_at_ms FROM projects ORDER BY updated_at_ms DESC", null).use { c ->
+            while (c.moveToNext()) {
+                out.add(ProjectFolder(c.getString(0), c.getString(1), c.getLong(2)))
+            }
+        }
+        return out
+    }
+
+    fun deleteProject(projectId: String) {
+        writableDatabase.execSQL("UPDATE chats SET project_id = NULL WHERE project_id = ?", arrayOf(projectId))
+        writableDatabase.delete("projects", "id = ?", arrayOf(projectId))
     }
 
     // ==================== CHATS & MESSAGES ====================
@@ -192,15 +261,28 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("id", chat.id)
             put("title", chat.title)
             put("updated_at_ms", chat.updatedAtMs)
+            put("is_saved", if (chat.isSaved) 1 else 0)
+            if (chat.projectId != null) put("project_id", chat.projectId) else putNull("project_id")
         }
         writableDatabase.insertWithOnConflict("chats", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     fun listChats(): List<ChatThread> {
         val out = mutableListOf<ChatThread>()
-        readableDatabase.rawQuery("SELECT id, title, updated_at_ms FROM chats ORDER BY updated_at_ms DESC", null).use { c ->
+        readableDatabase.rawQuery(
+            "SELECT id, title, updated_at_ms, is_saved, project_id FROM chats ORDER BY updated_at_ms DESC",
+            null
+        ).use { c ->
             while (c.moveToNext()) {
-                out.add(ChatThread(c.getString(0), c.getString(1), c.getLong(2)))
+                out.add(
+                    ChatThread(
+                        id = c.getString(0),
+                        title = c.getString(1),
+                        updatedAtMs = c.getLong(2),
+                        isSaved = c.getInt(3) == 1,
+                        projectId = if (c.isNull(4)) null else c.getString(4)
+                    )
+                )
             }
         }
         return out
@@ -222,6 +304,15 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 })
             }
         }.toString()
+        val sourcesJson = JSONArray().apply {
+            msg.webSources.forEach { s ->
+                put(JSONObject().apply {
+                    put("title", s.title)
+                    put("url", s.url)
+                    put("snippet", s.snippet)
+                })
+            }
+        }.toString()
         val attJson = JSONArray().apply { msg.attachmentNames.forEach { put(it) } }.toString()
 
         val cv = ContentValues().apply {
@@ -231,10 +322,12 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("content", msg.content)
             put("reasoning", msg.reasoning)
             put("images_json", imgsJson)
+            put("sources_json", sourcesJson)
             put("attachments_json", attJson)
             put("created_at_ms", msg.createdAtMs)
             put("is_queued_offline", if (msg.isQueuedOffline) 1 else 0)
             put("is_error", if (msg.isError) 1 else 0)
+            put("is_bookmarked", if (msg.isBookmarked) 1 else 0)
         }
         writableDatabase.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -242,40 +335,125 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listMessages(chatId: String): List<ChatMessageItem> {
         val out = mutableListOf<ChatMessageItem>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, role, content, reasoning, images_json, attachments_json, created_at_ms, is_queued_offline, is_error FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
             arrayOf(chatId)
         ).use { c ->
             while (c.moveToNext()) {
-                val imgs = mutableListOf<GeneratedImageItem>()
+                out.add(readMessageCursor(c))
+            }
+        }
+        return out
+    }
+
+    fun listBookmarkedMessages(): List<ChatMessageItem> {
+        val out = mutableListOf<ChatMessageItem>()
+        readableDatabase.rawQuery(
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked FROM messages WHERE is_bookmarked = 1 ORDER BY created_at_ms DESC",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                out.add(readMessageCursor(c))
+            }
+        }
+        return out
+    }
+
+    fun deleteMessage(messageId: String) {
+        writableDatabase.delete("messages", "id = ?", arrayOf(messageId))
+    }
+
+    private fun readMessageCursor(c: android.database.Cursor): ChatMessageItem {
+        val imgs = mutableListOf<GeneratedImageItem>()
+        runCatching {
+            val arr = JSONArray(c.getString(5))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                imgs.add(GeneratedImageItem(o.optString("id"), o.optString("title"), o.optString("dataUrl")))
+            }
+        }
+        val sources = mutableListOf<WebSourceItem>()
+        runCatching {
+            val arr = JSONArray(c.getString(6))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                sources.add(WebSourceItem(o.optString("title"), o.optString("url"), o.optString("snippet")))
+            }
+        }
+        val atts = mutableListOf<String>()
+        runCatching {
+            val arr = JSONArray(c.getString(7))
+            for (i in 0 until arr.length()) atts.add(arr.optString(i))
+        }
+        return ChatMessageItem(
+            id = c.getString(0),
+            chatId = c.getString(1),
+            role = c.getString(2),
+            content = c.getString(3),
+            reasoning = c.getString(4),
+            images = imgs,
+            webSources = sources,
+            attachmentNames = atts,
+            createdAtMs = c.getLong(8),
+            isQueuedOffline = c.getInt(9) == 1,
+            isError = c.getInt(10) == 1,
+            isBookmarked = c.getInt(11) == 1
+        )
+    }
+
+    // ==================== ENGINE PROJECTS ====================
+
+    fun upsertEngineProject(project: EngineProjectItem) {
+        val filesJson = JSONArray().apply {
+            project.files.forEach { f ->
+                put(JSONObject().apply {
+                    put("path", f.path)
+                    put("content", f.content)
+                })
+            }
+        }.toString()
+        val cv = ContentValues().apply {
+            put("id", project.id)
+            put("title", project.title)
+            put("prompt", project.prompt)
+            put("active_file", project.activeFile)
+            put("files_json", filesJson)
+            put("updated_at_ms", project.updatedAtMs)
+        }
+        writableDatabase.insertWithOnConflict("engine_projects", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun listEngineProjects(): List<EngineProjectItem> {
+        val out = mutableListOf<EngineProjectItem>()
+        readableDatabase.rawQuery(
+            "SELECT id, title, prompt, active_file, files_json, updated_at_ms FROM engine_projects ORDER BY updated_at_ms DESC",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                val files = mutableListOf<EngineFileItem>()
                 runCatching {
-                    val arr = JSONArray(c.getString(5))
+                    val arr = JSONArray(c.getString(4))
                     for (i in 0 until arr.length()) {
                         val o = arr.getJSONObject(i)
-                        imgs.add(GeneratedImageItem(o.optString("id"), o.optString("title"), o.optString("dataUrl")))
+                        files.add(EngineFileItem(o.optString("path"), o.optString("content")))
                     }
                 }
-                val atts = mutableListOf<String>()
-                runCatching {
-                    val arr = JSONArray(c.getString(6))
-                    for (i in 0 until arr.length()) atts.add(arr.optString(i))
-                }
                 out.add(
-                    ChatMessageItem(
+                    EngineProjectItem(
                         id = c.getString(0),
-                        chatId = c.getString(1),
-                        role = c.getString(2),
-                        content = c.getString(3),
-                        reasoning = c.getString(4),
-                        images = imgs,
-                        attachmentNames = atts,
-                        createdAtMs = c.getLong(7),
-                        isQueuedOffline = c.getInt(8) == 1,
-                        isError = c.getInt(9) == 1
+                        title = c.getString(1),
+                        prompt = c.getString(2),
+                        activeFile = c.getString(3),
+                        files = files,
+                        updatedAtMs = c.getLong(5)
                     )
                 )
             }
         }
         return out
+    }
+
+    fun deleteEngineProject(id: String) {
+        writableDatabase.delete("engine_projects", "id = ?", arrayOf(id))
     }
 
     // ==================== OFFLINE OUTBOX ====================
@@ -290,6 +468,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("agent_id", item.agentId)
             put("web_search", if (item.webSearch) 1 else 0)
             put("reasoning", if (item.reasoning) 1 else 0)
+            put("image_mode", if (item.imageMode) 1 else 0)
             put("idempotency_key", item.idempotencyKey)
             put("created_at_ms", item.createdAtMs)
         }
@@ -299,7 +478,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listOutbox(): List<OutboxQueuedMessage> {
         val out = mutableListOf<OutboxQueuedMessage>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, message_id, text, model_id, agent_id, web_search, reasoning, idempotency_key, created_at_ms FROM outbox ORDER BY created_at_ms ASC",
+            "SELECT id, chat_id, message_id, text, model_id, agent_id, web_search, reasoning, image_mode, idempotency_key, created_at_ms FROM outbox ORDER BY created_at_ms ASC",
             null
         ).use { c ->
             while (c.moveToNext()) {
@@ -313,8 +492,9 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                         agentId = c.getString(5),
                         webSearch = c.getInt(6) == 1,
                         reasoning = c.getInt(7) == 1,
-                        idempotencyKey = c.getString(8),
-                        createdAtMs = c.getLong(9)
+                        imageMode = c.getInt(8) == 1,
+                        idempotencyKey = c.getString(9),
+                        createdAtMs = c.getLong(10)
                     )
                 )
             }
@@ -344,18 +524,19 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
 
     fun cacheLibraryFiles(items: List<LibraryFileItem>) {
         val arr = JSONArray()
-        items.take(150).forEach { it ->
+        items.take(150).forEach { item ->
             arr.put(JSONObject().apply {
-                put("id", it.id)
-                put("name", it.name)
-                put("type", it.type)
-                put("mimeType", it.mimeType)
-                put("sizeBytes", it.sizeBytes)
-                put("source", it.source)
-                put("chatTitle", it.chatTitle)
-                put("updatedAt", it.updatedAt)
-                if (it.content != null && it.content.length <= 20_000) put("content", it.content)
-                if (it.downloadUrl != null) put("downloadUrl", it.downloadUrl)
+                put("id", item.id)
+                put("name", item.name)
+                put("type", item.type)
+                put("mimeType", item.mimeType)
+                put("sizeBytes", item.sizeBytes)
+                put("source", item.source)
+                put("chatTitle", item.chatTitle)
+                put("updatedAt", item.updatedAt)
+                if (item.content != null && item.content.length <= 80_000) put("content", item.content)
+                if (item.dataUrl != null && item.dataUrl.length <= 240_000) put("dataUrl", item.dataUrl)
+                if (item.downloadUrl != null) put("downloadUrl", item.downloadUrl)
             })
         }
         putCache("library_files", arr.toString())
@@ -377,6 +558,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                     chatTitle = o.optString("chatTitle", "Library"),
                     updatedAt = o.optString("updatedAt"),
                     content = o.optString("content").takeIf { it.isNotBlank() },
+                    dataUrl = o.optString("dataUrl").takeIf { it.isNotBlank() },
                     downloadUrl = o.optString("downloadUrl").takeIf { it.isNotBlank() }
                 )
             }

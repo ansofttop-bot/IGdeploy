@@ -1,11 +1,17 @@
 package app.igseek.mobile.data.models
 
-enum class IGseekTab(val key: String, val labelRu: String) {
-    CHAT("chat", "Чат"),
-    FLOW("flow", "Flow"),
-    LIBRARY("library", "Library"),
-    MEMORY("memory", "Память"),
-    SETTINGS("settings", "Ещё")
+enum class IGseekTab(val key: String, val labelRu: String, val labelEn: String) {
+    CHAT("chat", "Чат", "Chat"),
+    FLOW("flow", "Flow", "Flow"),
+    LIBRARY("library", "Library", "Library"),
+    SAVED("saved", "Сохранённое", "Saved"),
+    ENGINE("engine", "Engine", "Engine"),
+    WAVE("wave", "Wave", "Wave"),
+    DOCS("docs", "Документация", "Docs"),
+    MEMORY("memory", "Память", "Memory"),
+    SETTINGS("settings", "Настройки", "Settings");
+
+    fun label(lang: String): String = if (lang == "en") labelEn else labelRu
 }
 
 enum class AccentPresetId(val id: String, val title: String) {
@@ -25,19 +31,60 @@ enum class AccentPresetId(val id: String, val title: String) {
     }
 }
 
-enum class AiModelId(val apiId: String, val label: String) {
-    INSTINCT("instinct", "IGseek 4.0 instinct"),
-    CHAT("chat", "IGseek 3.2 chat"),
-    F1("f1", "IGseek F1")
+enum class AiModelId(val apiId: String, val label: String, val badge: String) {
+    INSTINCT("instinct", "IGseek 4.0 instinct", "Default"),
+    CHAT("chat", "IGseek 3.2 chat", "Fast"),
+    F1("f1", "IGseek F1", "Reasoning")
 }
 
-enum class AgentRoleId(val apiId: String, val label: String) {
-    UNIVERSAL("universal", "Универсал"),
-    CODER("coder", "Кодер"),
-    HACKER("hacker", "Кибер"),
-    MENTOR("mentor", "Ментор"),
-    PSY("psy", "Психолог"),
-    CREATIVE("creative", "Креатив")
+enum class AgentRoleId(val apiId: String, val labelRu: String, val labelEn: String, val systemHint: String) {
+    UNIVERSAL(
+        "universal",
+        "Универсал",
+        "Universal",
+        "Ты IGseek — точный, умный и дружелюбный ИИ-ассистент. Отвечай структурированно, ясно и по делу, используя Markdown."
+    ),
+    CODER(
+        "coder",
+        "Кодер",
+        "Coder",
+        "Ты IGseek Coder — senior software engineer. Пиши чистый, производственный код с объяснением архитектуры и edge cases."
+    ),
+    HACKER(
+        "hacker",
+        "Кибер",
+        "Security",
+        "Ты IGseek Security — эксперт по информационной безопасности и DevSecOps. Помогай с защитой, аудитом и безопасной архитектурой."
+    ),
+    MENTOR(
+        "mentor",
+        "Ментор",
+        "Mentor",
+        "Ты IGseek Mentor — наставник и преподаватель. Объясняй сложные темы шаг за шагом с наглядными примерами."
+    ),
+    PSY(
+        "psy",
+        "Психолог",
+        "Coach",
+        "Ты IGseek Coach — внимательный и эмпатичный собеседник. Помогай разбирать мысли спокойно, бережно и конструктивно."
+    ),
+    CREATIVE(
+        "creative",
+        "Креатив",
+        "Creative",
+        "Ты IGseek Creative — сильный копирайтер, сценарист и концепт-дизайнер. Предлагай яркие, нестандартные и выразительные идеи."
+    );
+
+    fun label(lang: String): String = if (lang == "en") labelEn else labelRu
+}
+
+enum class CloudSyncStatus {
+    IDLE,
+    SYNCING,
+    SYNCED,
+    OFFLINE,
+    LOCAL_ONLY,
+    ERROR
 }
 
 data class AuthSession(
@@ -50,16 +97,30 @@ data class AuthSession(
     val isGuest: Boolean = false
 )
 
+data class ProjectFolder(
+    val id: String,
+    val name: String,
+    val updatedAtMs: Long
+)
+
 data class ChatThread(
     val id: String,
     val title: String,
-    val updatedAtMs: Long
+    val updatedAtMs: Long,
+    val isSaved: Boolean = false,
+    val projectId: String? = null
 )
 
 data class GeneratedImageItem(
     val id: String,
     val title: String,
     val dataUrl: String
+)
+
+data class WebSourceItem(
+    val title: String,
+    val url: String,
+    val snippet: String = ""
 )
 
 data class ChatAttachment(
@@ -76,10 +137,12 @@ data class ChatMessageItem(
     val content: String,
     val reasoning: String = "",
     val images: List<GeneratedImageItem> = emptyList(),
+    val webSources: List<WebSourceItem> = emptyList(),
     val attachmentNames: List<String> = emptyList(),
     val createdAtMs: Long = System.currentTimeMillis(),
     val isQueuedOffline: Boolean = false,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val isBookmarked: Boolean = false
 )
 
 data class OutboxQueuedMessage(
@@ -91,6 +154,7 @@ data class OutboxQueuedMessage(
     val agentId: String,
     val webSearch: Boolean,
     val reasoning: Boolean,
+    val imageMode: Boolean = false,
     val idempotencyKey: String,
     val createdAtMs: Long
 )
@@ -112,6 +176,20 @@ data class FlowTaskState(
     val isPlanning: Boolean = false,
     val isRunning: Boolean = false,
     val error: String? = null
+)
+
+data class EngineFileItem(
+    val path: String,
+    val content: String
+)
+
+data class EngineProjectItem(
+    val id: String,
+    val title: String,
+    val prompt: String = "",
+    val activeFile: String = "",
+    val files: List<EngineFileItem> = emptyList(),
+    val updatedAtMs: Long = System.currentTimeMillis()
 )
 
 data class LibraryFileItem(
@@ -150,16 +228,17 @@ data class SubscriptionInfo(
 data class MobileLayoutPrefs(
     val darkTheme: Boolean = true,
     val accent: AccentPresetId = AccentPresetId.DEFAULT,
+    val language: String = "ru",
     val compactDensity: Boolean = false,
     val showQuickPrompts: Boolean = true,
+    val showBottomBar: Boolean = true,
     val biometricLockEnabled: Boolean = false,
     val hapticsEnabled: Boolean = true,
     val tabOrder: List<IGseekTab> = listOf(
         IGseekTab.CHAT,
         IGseekTab.FLOW,
         IGseekTab.LIBRARY,
-        IGseekTab.MEMORY,
-        IGseekTab.SETTINGS
+        IGseekTab.ENGINE
     )
 )
 

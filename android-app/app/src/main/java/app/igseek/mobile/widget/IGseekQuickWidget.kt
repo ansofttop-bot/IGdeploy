@@ -20,7 +20,7 @@ class IGseekQuickWidget : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_igseek_quick)
             views.setOnClickPendingIntent(R.id.widget_btn_chat, buildLaunchIntent(context, "chat", 101))
             views.setOnClickPendingIntent(R.id.widget_btn_flow, buildLaunchIntent(context, "flow", 102))
-            views.setOnClickPendingIntent(R.id.widget_btn_library, buildLaunchIntent(context, "library", 103))
+            views.setOnClickPendingIntent(R.id.widget_btn_library, buildLaunchIntent(context, "engine", 103))
             appWidgetManager.updateAppWidget(widgetId, views)
         }
     }

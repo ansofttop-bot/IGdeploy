@@ -12,7 +12,6 @@ import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.browser.customtabs.CustomTabsIntent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,12 +19,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
@@ -73,16 +68,18 @@ class MainActivity : FragmentActivity() {
 
             IGseekTheme(darkTheme = state.layoutPrefs.darkTheme, accent = state.layoutPrefs.accent) {
                 if (!isUnlocked) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                            Icon(Icons.Rounded.Lock, contentDescription = "Разблокировка", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(64.dp))
-                            Spacer(Modifier.height(16.dp))
-                            Text("IGseek защищён биометрией", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-                            Spacer(Modifier.height(14.dp))
-                            Button(onClick = { promptBiometricUnlock() }, shape = RoundedCornerShape(14.dp)) { Text("Разблокировать") }
+                    app.igseek.mobile.ui.components.IGseekCanvas {
+                        Box(
+                            modifier = Modifier.fillMaxSize().padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                app.igseek.mobile.ui.components.IGseekFoxLogo(size = 68.dp, showGlow = true)
+                                Spacer(Modifier.height(16.dp))
+                                Text("IGseek защищён биометрией", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
+                                Spacer(Modifier.height(14.dp))
+                                Button(onClick = { promptBiometricUnlock() }, shape = RoundedCornerShape(14.dp)) { Text("Разблокировать") }
+                            }
                         }
                     }
                 } else {

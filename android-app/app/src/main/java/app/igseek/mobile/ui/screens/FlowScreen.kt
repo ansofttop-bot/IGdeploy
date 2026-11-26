@@ -1,6 +1,7 @@
 package app.igseek.mobile.ui.screens
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,26 +12,29 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,131 +42,292 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import app.igseek.mobile.data.models.FlowStepItem
+import app.igseek.mobile.ui.components.IGseekFoxLogo
+import app.igseek.mobile.ui.components.IGseekGlassCard
+import app.igseek.mobile.ui.components.IGseekMarkdownText
 import app.igseek.mobile.ui.state.IGseekUiState
+import app.igseek.mobile.ui.state.IGseekViewModel
+import app.igseek.mobile.ui.theme.LocalIGseekPalette
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FlowScreen(
     state: IGseekUiState,
-    onPlanGoal: (String) -> Unit,
-    onRunAllSteps: () -> Unit
+    viewModel: IGseekViewModel,
+    onOpenDrawer: () -> Unit
 ) {
-    var goalInput by remember { mutableStateOf(state.flowState.goal) }
-    val flow = state.flowState
+    val palette = LocalIGseekPalette.current
+    val task = state.flowTask
+    val taskError = task.error
+    val isEn = state.layoutPrefs.language == "en"
+    var goalInput by remember { mutableStateOf(task.goal) }
 
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        TopAppBar(
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Build, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("IGseek Flow", style = MaterialTheme.typography.titleMedium)
-                }
-            }
+    val quickScenarios = if (isEn) {
+        listOf(
+            "Launch plan for an indie SaaS with pricing & positioning",
+            "Competitive analysis report for a mobile AI productivity app",
+            "Structured 30-day learning roadmap for Rust & backend systems"
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    } else {
+        listOf(
+            "План запуска стартапа с позиционированием и монетизацией",
+            "Аналитический отчёт по трендам рынка мобильных ИИ-приложений",
+            "Пошаговая программа изучения системной архитектуры на 30 дней"
+        )
+    }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        // Slim Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            item {
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Автономное планирование задачи", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "Опишите цель — IGseek разобьёт её на шаги и выполнит их последовательно.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        OutlinedTextField(
-                            value = goalInput,
-                            onValueChange = { goalInput = it },
-                            placeholder = { Text("Например: Собери план запуска Telegram-бота на Node.js") },
-                            minLines = 2,
-                            maxLines = 4,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        Button(
-                            onClick = { onPlanGoal(goalInput) },
-                            enabled = !flow.isPlanning && !flow.isRunning && goalInput.trim().length >= 3,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            if (flow.isPlanning) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                            } else {
-                                Text("Построить план Flow")
-                            }
-                        }
-                    }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onOpenDrawer) {
+                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                }
+                IGseekFoxLogo(size = 20.dp)
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("IGseek Flow", style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
+                    Text(
+                        text = if (isEn) "Autonomous multi-step agent" else "Автономное выполнение задач",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted
+                    )
                 }
             }
 
-            val flowError = flow.error
-            if (!flowError.isNullOrBlank()) {
-                item {
-                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f), modifier = Modifier.fillMaxWidth()) {
-                        Text(flowError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
-                    }
-                }
-            }
-
-            if (flow.steps.isNotEmpty()) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(flow.title.ifBlank { "План выполнения" }, style = MaterialTheme.typography.titleMedium)
-                            Text("Шагов: ${flow.steps.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Button(onClick = onRunAllSteps, enabled = !flow.isRunning, shape = RoundedCornerShape(12.dp)) {
-                            if (flow.isRunning) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                            } else {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Text("Запустить")
-                            }
-                        }
-                    }
-                }
-
-                itemsIndexed(flow.steps, key = { _, step -> step.id }) { index, step ->
-                    FlowStepCard(index = index + 1, step = step)
+            if (task.steps.isNotEmpty()) {
+                IconButton(onClick = {
+                    goalInput = ""
+                    viewModel.resetFlow()
+                }) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = "Reset", tint = palette.textMuted)
                 }
             }
         }
-    }
-}
 
-@Composable
-private fun FlowStepCard(index: Int, step: FlowStepItem) {
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                when (step.status) {
-                    "done" -> Icon(Icons.Rounded.CheckCircle, contentDescription = "Готово", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                    "running" -> CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    "error" -> Icon(Icons.Rounded.Warning, contentDescription = "Ошибка", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
-                    else -> Icon(Icons.Rounded.Info, contentDescription = "Ожидает", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Goal Composer Card
+            item {
+                IGseekGlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    contentPadding = 16.dp
+                ) {
+                    Text(
+                        text = if (isEn) "Describe your goal" else "Опишите цель задачи",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textPrimary
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = goalInput,
+                        onValueChange = { goalInput = it },
+                        placeholder = {
+                            Text(
+                                text = if (isEn) "Example: Research competitors and draft a GTM strategy" else "Например: Проанализируй конкурентов и составь план запуска продукта",
+                                color = palette.textMuted
+                            )
+                        },
+                        minLines = 3,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = palette.brand,
+                            unfocusedBorderColor = palette.glassBorder,
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.brand
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = { viewModel.planFlow(goalInput) },
+                            enabled = goalInput.isNotBlank() && !task.isPlanning && !task.isRunning,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.brand,
+                                contentColor = palette.brandOn
+                            ),
+                            modifier = Modifier.weight(1f).height(46.dp)
+                        ) {
+                            if (task.isPlanning) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.brandOn)
+                            } else {
+                                Icon(Icons.Rounded.Star, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (isEn) "Build Plan" else "Составить план", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        if (task.steps.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { viewModel.runFlow() },
+                                enabled = !task.isRunning && !task.isPlanning,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, palette.brandBorder),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.brand),
+                                modifier = Modifier.weight(1f).height(46.dp)
+                            ) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (task.isRunning) "Выполняется…" else "Запустить")
+                            }
+                        }
+                    }
                 }
-                Text("$index. ${step.title}", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), modifier = Modifier.weight(1f))
             }
-            if (step.description.isNotBlank()) {
-                Text(step.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            if (!taskError.isNullOrBlank()) {
+                item {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = taskError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
             }
-            if (step.output.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-                    Text(step.output, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
+
+            // Quick Flow Scenarios when empty
+            if (task.steps.isEmpty()) {
+                item {
+                    Text(
+                        text = if (isEn) "QUICK SCENARIOS" else "БЫСТРЫЕ СЦЕНАРИИ",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted,
+                        modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+                    )
+                }
+                itemsIndexed(quickScenarios) { _, scenario ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(15.dp))
+                            .clickable {
+                                goalInput = scenario
+                                viewModel.planFlow(scenario)
+                            },
+                        shape = RoundedCornerShape(15.dp),
+                        color = palette.glassBg,
+                        border = BorderStroke(1.dp, palette.glassBorder)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = scenario,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            } else {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = task.title.ifBlank { "План выполнения" },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (task.steps.any { it.status == "done" }) {
+                            OutlinedButton(
+                                onClick = { viewModel.saveFlowResultToLibrary() },
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, palette.glassBorder),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text("В Library", style = MaterialTheme.typography.labelSmall, color = palette.textPrimary)
+                            }
+                        }
+                    }
+                }
+
+                itemsIndexed(task.steps, key = { _, s -> s.id }) { idx, step ->
+                    IGseekGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        highlighted = step.status == "running",
+                        contentPadding = 14.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${idx + 1}. ${step.title}",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = palette.textPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            when (step.status) {
+                                "done" -> Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                                "running" -> CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.brand)
+                                "error" -> Icon(Icons.Rounded.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                else -> Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = palette.chipBg,
+                                    border = BorderStroke(1.dp, palette.glassBorder)
+                                ) {
+                                    Text(
+                                        text = step.tool,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textMuted,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                        if (step.description.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = step.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textMuted
+                            )
+                        }
+                        if (step.output.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            IGseekMarkdownText(markdown = step.output)
+                        }
+                    }
                 }
             }
         }
