@@ -21,8 +21,8 @@ import { isChinaSensitive } from "../../lib/sensitive-topics";
 import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/apimira-image";
 import {
   buildReferenceAwarePollinationsPrompt,
-  callGeminiFreeChatStream,
-} from "../../lib/gemini-free";
+  callGroqFreeChatStream,
+} from "../../lib/groq-free";
 import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithPollinations } from "../../lib/pollinations-image";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
@@ -661,7 +661,7 @@ async function streamFallbackToClient(
   let lastStatus = 0;
 
   if (useFreeModels) {
-    upstream = await callGeminiFreeChatStream({
+    upstream = await callGroqFreeChatStream({
       messages,
       reasoning: false,
       maxTokens: 4096,
@@ -1754,7 +1754,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
               let lastErr: unknown = null;
 
               if (useFreeModels) {
-                const geminiAttempts: Array<{
+                const groqAttempts: Array<{
                   msgs: ChatMessage[];
                   useTools: typeof activeTools | null;
                 }> =
@@ -1765,8 +1765,8 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       ]
                     : [{ msgs: messages, useTools: null }];
 
-                for (let idx = 0; idx < geminiAttempts.length; idx += 1) {
-                  const att = geminiAttempts[idx];
+                for (let idx = 0; idx < groqAttempts.length; idx += 1) {
+                  const att = groqAttempts[idx];
                   if (streamClosed || streamAbort.signal.aborted) break;
                   try {
                     const apiMsgs = toApiMessages(att.msgs);
@@ -1785,20 +1785,20 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                       return outcome;
                     }
-                    lastErr = new Error("Gemini Free returned an empty response");
-                  } catch (geminiErr) {
-                    if (streamAbort.signal.aborted || (geminiErr as Error)?.name === "AbortError") {
-                      throw geminiErr;
+                    lastErr = new Error("Groq Qwen 3.8 Free returned an empty response");
+                  } catch (groqErr) {
+                    if (streamAbort.signal.aborted || (groqErr as Error)?.name === "AbortError") {
+                      throw groqErr;
                     }
-                    lastErr = geminiErr;
-                    const errText = geminiErr instanceof Error ? geminiErr.message : String(geminiErr);
-                    console.warn("[chat] Free tier Gemini attempt failed:", errText);
-                    if (/(429|401|403|API_KEY|rate limit|quota|timeout|aborted)/i.test(errText)) {
+                    lastErr = groqErr;
+                    const errText = groqErr instanceof Error ? groqErr.message : String(groqErr);
+                    console.warn("[chat] Free tier Groq Qwen 3.8 attempt failed:", errText);
+                    if (/(429|401|403|API_KEY|GROQ_API_KEY|rate limit|quota|timeout|aborted)/i.test(errText)) {
                       break;
                     }
                   }
                 }
-                throw lastErr instanceof Error ? lastErr : new Error("gemini_free_unavailable");
+                throw lastErr instanceof Error ? lastErr : new Error("groq_free_unavailable");
               }
 
               if (!deepseekKey && !apimiraKey) {

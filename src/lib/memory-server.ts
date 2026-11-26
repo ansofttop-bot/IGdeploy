@@ -11,7 +11,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callGeminiFreeText } from "./gemini-free";
+import { callGroqFreeText } from "./groq-free";
 import { verifyFirebaseIdToken } from "./auth-server";
 
 export type MemoryAttachment = {
@@ -623,7 +623,7 @@ export async function analyzeAndUpdateMemory(
     let rawRaw = "";
     if (useFreeModel) {
       rawRaw =
-        (await callGeminiFreeText({
+        (await callGroqFreeText({
           messages: [
             { role: "system", content: ANALYZER_SYSTEM },
             { role: "user", content: analysisPrompt },

@@ -10,11 +10,11 @@ import {
   type UiModel,
 } from "./deepseek-models";
 import {
-  GEMINI_FREE_MODEL,
-  callGeminiFreeChatStream,
-  callGeminiFreeText,
-  resolveGeminiFreeModel,
-} from "./gemini-free";
+  GROQ_FREE_MODEL,
+  callGroqFreeChatStream,
+  callGroqFreeText,
+  resolveGroqFreeModel,
+} from "./groq-free";
 
 export type AiTier = "free" | "pro";
 
@@ -92,7 +92,7 @@ export interface RoutedStreamResult {
 
 /**
  * Tier-isolated AI streaming router:
- * - Free tier: strictly Google Gemini (`gemini-4-hydrogen`) for text, tools, and attachments.
+ * - Free tier: strictly Qwen 3.8 (`qwen/qwen3.8-27b`) via Groq for text, tools, and attachments.
  *   NEVER touches paid DeepSeek / ApiMira keys.
  * - Pro tier: strictly DeepSeek (< V4.0) via Direct DeepSeek -> ApiMira DeepSeek fallback chain.
  */
@@ -102,17 +102,18 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
   const resolvedModelId = params.modelId ?? params.model ?? "instinct";
 
   if (params.tier === "free") {
-    const modelUsed = resolveGeminiFreeModel();
-    const res = await callGeminiFreeChatStream({
+    const modelUsed = resolveGroqFreeModel();
+    const res = await callGroqFreeChatStream({
       messages: params.messages,
       tools: params.tools as any,
       reasoning: Boolean(params.reasoning),
+      temperature,
       maxTokens,
       signal: params.signal,
     });
     return {
       response: res,
-      providerId: "gemini-free",
+      providerId: "groq-free",
       modelUsed,
       tier: "free",
     };
@@ -221,13 +222,14 @@ export async function routeTextCompletion(params: {
 
   if (params.tier === "free") {
     const text =
-      (await callGeminiFreeText({
+      (await callGroqFreeText({
         messages: params.messages,
         maxTokens,
+        temperature,
         jsonMode: params.jsonMode,
       })) || "";
-    if (!text) throw new Error("Gemini Free text provider unavailable");
-    return { text, providerId: "gemini-free" };
+    if (!text) throw new Error("Groq Qwen 3.8 Free text provider unavailable");
+    return { text, providerId: "groq-free" };
   }
 
   const directKey = (process.env.DEEPSEEK_API_KEY || "").trim();
@@ -325,7 +327,7 @@ export function getAiRouterHealthSummary() {
     }
   }
   return {
-    freeProvider: `gemini-free (${GEMINI_FREE_MODEL})`,
+    freeProvider: `groq-free (${GROQ_FREE_MODEL})`,
     proProvider: "deepseek (<4.0) + apimira",
     openCircuits,
   };

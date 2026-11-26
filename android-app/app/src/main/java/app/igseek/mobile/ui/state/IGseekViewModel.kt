@@ -26,6 +26,8 @@ import app.igseek.mobile.data.models.OutboxQueuedMessage
 import app.igseek.mobile.data.models.ProjectFolder
 import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -73,7 +75,8 @@ data class IGseekUiState(
     val isEngineGenerating: Boolean = false,
     val engineError: String? = null,
     val subscription: SubscriptionInfo = SubscriptionInfo(),
-    val checkoutUrlEvent: String? = null,
+    val isRedeemingKey: Boolean = false,
+    val keyRedeemError: String? = null,
     val toastMessage: String? = null
 )
 
@@ -88,6 +91,9 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _state = MutableStateFlow(IGseekUiState())
     val state: StateFlow<IGseekUiState> = _state.asStateFlow()
+
+    private var activeStreamJob: Job? = null
+    private var activeStreamingMessage: ChatMessageItem? = null
 
     init {
         bootstrap()
@@ -585,8 +591,8 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         _state.update { it.copy(toastMessage = null) }
     }
 
-    fun consumeCheckoutUrl() {
-        _state.update { it.copy(checkoutUrlEvent = null) }
+    fun clearKeyRedeemError() {
+        _state.update { it.copy(keyRedeemError = null) }
     }
 
     // ==================== PROJECTS ====================
@@ -891,6 +897,29 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    fun stopStreaming() {
+        api.cancelActiveStream()
+        activeStreamJob?.cancel()
+        activeStreamJob = null
+        val partial = activeStreamingMessage
+        activeStreamingMessage = null
+        if (partial != null) {
+            if (partial.content.isBlank() && partial.images.isEmpty() && partial.reasoning.isBlank()) {
+                store.deleteMessage(partial.id)
+            } else {
+                store.upsertMessage(partial.copy(isError = false))
+            }
+        }
+        val activeId = _state.value.activeChatId
+        _state.update {
+            it.copy(
+                isStreaming = false,
+                imageModeEnabled = false,
+                messages = if (activeId.isNotBlank()) store.listMessages(activeId) else it.messages
+            )
+        }
+    }
+
     private fun executeChatStream(
         chatId: String,
         history: List<ChatMessageItem>,
@@ -902,7 +931,8 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         attachments: List<ChatAttachment>,
         idempotencyKey: String
     ) {
-        viewModelScope.launch {
+        activeStreamJob?.cancel()
+        val job = viewModelScope.launch {
             val assistantId = newSafeId("msg")
             var assistantMsg = ChatMessageItem(
                 id = assistantId,
@@ -911,6 +941,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 content = "",
                 createdAtMs = System.currentTimeMillis() + 1L
             )
+            activeStreamingMessage = assistantMsg
             store.upsertMessage(assistantMsg)
             _state.update {
                 it.copy(
@@ -938,22 +969,27 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     idempotencyKey = idempotencyKey,
                     onDelta = { fullText ->
                         assistantMsg = assistantMsg.copy(content = fullText)
+                        activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
                     },
                     onReasoning = { fullReasoning ->
                         assistantMsg = assistantMsg.copy(reasoning = fullReasoning)
+                        activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
                     },
                     onImage = { img ->
                         assistantMsg = assistantMsg.copy(images = assistantMsg.images + img)
+                        activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
                     },
                     onSources = { sources ->
                         assistantMsg = assistantMsg.copy(webSources = sources)
+                        activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
                     }
                 )
             }.onSuccess { result ->
+                activeStreamingMessage = null
                 assistantMsg = assistantMsg.copy(
                     content = result.content.ifBlank { assistantMsg.content.ifBlank { "Готово." } },
                     reasoning = result.reasoning.ifBlank { assistantMsg.reasoning },
@@ -978,6 +1014,25 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     firestore.syncMessage(session, assistantMsg, finalMsgs.size)
                 }
             }.onFailure { err ->
+                activeStreamingMessage = null
+                val isCanceled = err is CancellationException ||
+                    err.message?.contains("Canceled", ignoreCase = true) == true ||
+                    err.message?.contains("Socket closed", ignoreCase = true) == true
+                if (isCanceled) {
+                    if (assistantMsg.content.isBlank() && assistantMsg.images.isEmpty() && assistantMsg.reasoning.isBlank()) {
+                        store.deleteMessage(assistantMsg.id)
+                    } else {
+                        store.upsertMessage(assistantMsg.copy(isError = false))
+                    }
+                    _state.update {
+                        it.copy(
+                            isStreaming = false,
+                            imageModeEnabled = false,
+                            messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
+                        )
+                    }
+                    return@onFailure
+                }
                 assistantMsg = assistantMsg.copy(
                     content = "Ошибка запроса: ${err.message ?: "проверьте подключение к интернету"}",
                     isError = true
@@ -991,6 +1046,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+        activeStreamJob = job
     }
 
     private fun updateStreamingMessageInUi(msg: ChatMessageItem) {
@@ -1362,12 +1418,12 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     // ==================== SUBSCRIPTION ====================
 
     fun openProSheet() {
-        _state.update { it.copy(showProSheet = true) }
+        _state.update { it.copy(showProSheet = true, keyRedeemError = null) }
         refreshSubscription()
     }
 
     fun closeProSheet() {
-        _state.update { it.copy(showProSheet = false) }
+        _state.update { it.copy(showProSheet = false, keyRedeemError = null) }
     }
 
     fun refreshSubscription() {
@@ -1387,41 +1443,40 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun startProCheckout(paymentMethod: Int = 2) {
+    fun redeemLicenseKey(rawKey: String, onSuccess: () -> Unit = {}) {
+        val clean = rawKey.trim()
+        if (clean.isBlank()) {
+            _state.update { it.copy(keyRedeemError = "Введите ключ формата IGSK-XXXX-XXXX-XXXX.") }
+            return
+        }
+        if (_state.value.isRedeemingKey) return
         viewModelScope.launch {
-            val session = getFreshSession() ?: return@launch
-            if (session.isGuest) {
-                showToast("Войдите в аккаунт IGseek для оформления Pro")
+            val session = getFreshSession()
+            if (session == null || session.isGuest || session.idToken.isBlank()) {
+                val msg = "Войдите в аккаунт IGseek (через Google), чтобы активировать ключ Pro."
+                _state.update { it.copy(keyRedeemError = msg) }
+                showToast(msg)
                 return@launch
             }
-            runCatching { api.createSubscriptionCheckout(session, paymentMethod) }
-                .onSuccess { (url, txnId) ->
+            _state.update { it.copy(isRedeemingKey = true, keyRedeemError = null) }
+            runCatching { api.redeemLicenseKey(session, clean) }
+                .onSuccess { sub ->
                     _state.update {
                         it.copy(
-                            checkoutUrlEvent = url,
-                            subscription = it.subscription.copy(pendingTxnId = txnId)
+                            isRedeemingKey = false,
+                            keyRedeemError = null,
+                            subscription = sub,
+                            showProSheet = false
                         )
                     }
+                    showToast("Ключ активирован — IGseek Pro подключён на 30 дней!")
+                    onSuccess()
                 }
-                .onFailure { err -> showToast(err.message ?: "Ошибка оплаты") }
-        }
-    }
-
-    fun verifyPendingPayment() {
-        val txnId = _state.value.subscription.pendingTxnId ?: return
-        viewModelScope.launch {
-            val session = getFreshSession() ?: return@launch
-            runCatching { api.verifySubscription(session, txnId) }
-                .onSuccess { activated ->
-                    if (activated) {
-                        showToast("Подписка IGseek Pro активирована!")
-                        _state.update { it.copy(showProSheet = false) }
-                        refreshSubscription()
-                    } else {
-                        showToast("Платёж ещё обрабатывается")
-                    }
+                .onFailure { err ->
+                    val msg = err.message ?: "Не удалось активировать ключ"
+                    _state.update { it.copy(isRedeemingKey = false, keyRedeemError = msg) }
+                    showToast(msg)
                 }
-                .onFailure { err -> showToast(err.message ?: "Ошибка проверки") }
         }
     }
 }

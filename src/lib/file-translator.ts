@@ -19,7 +19,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callGeminiFreeText } from "./gemini-free";
+import { callGroqFreeText } from "./groq-free";
 
 export type FileTranslatorArgs = {
   filename?: string;
@@ -272,11 +272,11 @@ ${sanitizeTextForApi(payload.extractedContent).slice(0, 72_000)}`;
   ];
 
   if (ctx.useFreeModel) {
-    const geminiText = await callGeminiFreeText({
+    const groqText = await callGroqFreeText({
       messages: apiMessages,
       maxTokens: 3000,
     });
-    if (geminiText) return sanitizeTextForApi(geminiText);
+    if (groqText) return sanitizeTextForApi(groqText);
     return sanitizeTextForApi(payload.extractedContent).slice(0, 16_000);
   }
 

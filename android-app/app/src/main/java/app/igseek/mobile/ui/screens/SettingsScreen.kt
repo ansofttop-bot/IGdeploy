@@ -233,9 +233,9 @@ fun SettingsScreen(
                                     }
                                 } else {
                                     if (isEn) {
-                                        "Expanded model access, priority Flow & Engine, enhanced image generation · ${sub.priceRub} ₽ / ${sub.durationDays}d"
+                                        "Expanded model access, priority Flow & Engine, enhanced image generation · ${sub.durationDays} days per key"
                                     } else {
-                                        "Расширенный доступ к моделям, приоритетная обработка Flow и Engine, улучшенная генерация изображений · ${sub.priceRub} ₽ / ${sub.durationDays} дней"
+                                        "Расширенный доступ к моделям, приоритетная обработка Flow и Engine, улучшенная генерация изображений · ${sub.durationDays} дней по ключу"
                                     }
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -244,47 +244,32 @@ fun SettingsScreen(
                         }
                     }
 
-                    if (!sub.isPro) {
-                        Spacer(Modifier.height(14.dp))
-                        Button(
-                            onClick = { viewModel.openProSheet() },
-                            shape = RoundedCornerShape(50),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.brand,
-                                contentColor = palette.brandOn
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(44.dp)
-                        ) {
-                            Icon(
-                                imageVector = LucideIcons.Crown,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(7.dp))
-                            Text(
-                                text = if (isEn) "Upgrade to Pro (${sub.priceRub} ₽)" else "Подключить IGseek Pro (${sub.priceRub} ₽)",
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                        val pendingTxn = sub.pendingTxnId
-                        if (!pendingTxn.isNullOrBlank()) {
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = { viewModel.verifyPendingPayment() },
-                                shape = RoundedCornerShape(50),
-                                border = BorderStroke(1.dp, palette.glassBorder),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(42.dp)
-                            ) {
-                                Text(
-                                    text = if (isEn) "Verify payment status" else "Проверить статус оплаты",
-                                    color = palette.textPrimary
-                                )
-                            }
-                        }
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { viewModel.openProSheet() },
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.brand,
+                            contentColor = palette.brandOn
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = LucideIcons.Crown,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = if (sub.isPro) {
+                                if (isEn) "Extend Pro with a key" else "Продлить Pro по ключу"
+                            } else {
+                                if (isEn) "Activate Pro key" else "Активировать ключ Pro"
+                            },
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }

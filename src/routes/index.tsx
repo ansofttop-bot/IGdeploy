@@ -52,6 +52,18 @@ const LANDING_LANGUAGES: { code: LangCode; native: string }[] = [
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    try {
+      if (window.sessionStorage.getItem("igseek:mobile_auth_pending") === "1") {
+        const state = window.sessionStorage.getItem("igseek:mobile_auth_state") || "";
+        throw redirect({
+          to: "/login",
+          search: { next: "", mobile_auth: "1", state },
+          replace: true,
+        });
+      }
+    } catch (e) {
+      if (e && typeof e === "object" && "to" in e) throw e;
+    }
     const { data } = await firebaseClient.auth.getSession();
     if (data.session?.user) {
       try {

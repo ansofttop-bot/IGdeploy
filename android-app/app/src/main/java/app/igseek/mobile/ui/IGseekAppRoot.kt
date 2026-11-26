@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -26,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -513,7 +516,7 @@ private fun IGseekSidebarDrawer(
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                text = "${state.subscription.priceRub} ₽",
+                                text = if (isEn) "Key" else "По ключу",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textMuted
                             )
@@ -652,7 +655,8 @@ private fun ProSubscriptionSheet(
 ) {
     val palette = LocalIGseekPalette.current
     val sub = state.subscription
-    var paymentMethod by remember { mutableStateOf(2) } // 2 = СБП, 11 = Карта
+    val isEn = state.layoutPrefs.language == "en"
+    var licenseKey by remember { mutableStateOf("") }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -663,6 +667,7 @@ private fun ProSubscriptionSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -682,11 +687,24 @@ private fun ProSubscriptionSheet(
                 Column {
                     Text("IGseek Pro", style = MaterialTheme.typography.titleLarge, color = palette.textPrimary)
                     Text(
-                        text = "${sub.priceRub} ₽ / ${sub.durationDays} дней",
+                        text = if (isEn) "Activation key · ${sub.durationDays} days" else "Активация по ключу · ${sub.durationDays} дней",
                         style = MaterialTheme.typography.labelMedium,
                         color = palette.textMuted
                     )
                 }
+            }
+
+            if (sub.isPro) {
+                Text(
+                    text = if (sub.daysLeft > 3650) {
+                        if (isEn) "IGseek Pro is active permanently." else "Подписка IGseek Pro активна бессрочно."
+                    } else {
+                        if (isEn) "Active · Days remaining: ${sub.daysLeft}" else "Подписка активна · Осталось дней: ${sub.daysLeft}"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.brand,
+                    fontWeight = FontWeight.Medium
+                )
             }
 
             IGseekGlassCard(
@@ -694,11 +712,19 @@ private fun ProSubscriptionSheet(
                 shape = RoundedCornerShape(18.dp),
                 contentPadding = 14.dp
             ) {
-                val perks = listOf(
-                    "Продвинутый уровень моделей без жёстких лимитов",
-                    "Улучшенная генерация изображений и быстрый веб-поиск",
-                    "Приоритетная работа Flow и Engine"
-                )
+                val perks = if (isEn) {
+                    listOf(
+                        "More advanced models & deep reasoning across all tabs",
+                        "High-quality image generation & reference photo editing",
+                        "Priority Flow & Engine processing · 30 days per key"
+                    )
+                } else {
+                    listOf(
+                        "Продвинутый уровень моделей и глубокое рассуждение",
+                        "Высококачественная генерация и редактирование фото",
+                        "Приоритетная работа Flow и Engine · 30 дней по ключу"
+                    )
+                }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     perks.forEach { perk ->
                         Row(
@@ -712,57 +738,86 @@ private fun ProSubscriptionSheet(
                 }
             }
 
-            if (!sub.isPro) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IGseekGlassChip(
-                        label = "СБП (QR)",
-                        selected = paymentMethod == 2,
-                        onClick = { paymentMethod = 2 },
-                        modifier = Modifier.weight(1f)
+            OutlinedTextField(
+                value = licenseKey,
+                onValueChange = { raw ->
+                    licenseKey = raw.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' || it == '-' }.take(24)
+                    if (state.keyRedeemError != null) viewModel.clearKeyRedeemError()
+                },
+                label = {
+                    Text(
+                        if (sub.isPro) {
+                            if (isEn) "Extension key (+30 days)" else "Ключ продления (+30 дней)"
+                        } else {
+                            if (isEn) "License key" else "Ключ активации"
+                        }
                     )
-                    IGseekGlassChip(
-                        label = "Банковская карта",
-                        selected = paymentMethod == 11,
-                        onClick = { paymentMethod = 11 },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                },
+                placeholder = { Text("IGSK-XXXX-XXXX-XXXX", color = palette.textMuted) },
+                singleLine = true,
+                enabled = !state.isRedeemingKey,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = palette.brand,
+                    unfocusedBorderColor = palette.glassBorder,
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.brand
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
 
-                Button(
-                    onClick = { viewModel.startProCheckout(paymentMethod) },
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = palette.brand,
-                        contentColor = palette.brandOn
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(48.dp)
-                ) {
-                    Icon(LucideIcons.CreditCard, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Перейти к оплате · ${sub.priceRub} ₽", fontWeight = FontWeight.SemiBold)
-                }
-
-                val pendingTxn = sub.pendingTxnId
-                if (!pendingTxn.isNullOrBlank()) {
-                    OutlinedButton(
-                        onClick = { viewModel.verifyPendingPayment() },
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, palette.glassBorder),
-                        modifier = Modifier.fillMaxWidth().height(44.dp)
-                    ) {
-                        Text("Проверить статус оплаты", color = palette.textPrimary)
-                    }
-                }
-            } else {
+            val err = state.keyRedeemError
+            if (!err.isNullOrBlank()) {
                 Text(
-                    text = if (sub.daysLeft > 3650) "Подписка IGseek Pro активна бессрочно." else "Подписка активна · Осталось дней: ${sub.daysLeft}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = palette.brand
+                    text = err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.danger
                 )
             }
+
+            Button(
+                onClick = { viewModel.redeemLicenseKey(licenseKey) { licenseKey = "" } },
+                enabled = !state.isRedeemingKey && licenseKey.isNotBlank(),
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = palette.brand,
+                    contentColor = palette.brandOn
+                ),
+                modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+                if (state.isRedeemingKey) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = palette.brandOn
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isEn) "Activating…" else "Активация…", fontWeight = FontWeight.SemiBold)
+                } else {
+                    Icon(LucideIcons.Crown, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (sub.isPro) {
+                            if (isEn) "Extend Pro (+30 days)" else "Продлить Pro (+30 дней)"
+                        } else {
+                            if (isEn) "Activate key" else "Активировать ключ"
+                        },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            Text(
+                text = if (isEn) {
+                    "Each key is single-use: activates 30 days of Pro and becomes permanently invalid."
+                } else {
+                    "Ключ одноразовый: активирует 30 дней IGseek Pro и после использования деактивируется."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.textMuted
+            )
             Spacer(Modifier.height(10.dp))
         }
     }

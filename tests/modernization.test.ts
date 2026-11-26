@@ -19,6 +19,7 @@ import {
   recordProviderSuccess,
   resetAiCircuitBreakers,
 } from "../src/lib/ai-router";
+import { GROQ_FREE_MODEL } from "../src/lib/groq-free";
 import {
   APIMIRA_DEEPSEEK_CHAT,
   APIMIRA_DEEPSEEK_F1,
@@ -37,7 +38,20 @@ import {
   recordProHourlyImageGeneration,
   resetProHourlyImageTracker,
 } from "../src/lib/photo-limits-server";
-import { signSubscriptionProof, verifySubscriptionProof } from "../src/lib/subscription-server";
+import {
+  PRO_LICENSE_KEY_HASHES,
+  hashLicenseKey,
+  isValidLicenseKeyFormat,
+  normalizeLicenseKey,
+} from "../src/lib/license-keys";
+import {
+  LicenseKeyError,
+  PRO_DURATION_DAYS,
+  redeemLicenseKey,
+  resetLocalLicenseKeyTestState,
+  signSubscriptionProof,
+  verifySubscriptionProof,
+} from "../src/lib/subscription-server";
 
 function signTestJwt(
   payload: Record<string, unknown>,
@@ -170,6 +184,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
     {
       PATH: "/usr/bin:/bin",
       DEEPSEEK_API_KEY: "sk-secret",
+      GROQ_API_KEY: "gsk-secret",
       PLATEGA_SECRET_KEY: "platega-secret",
       POSTGRES_URL: "postgres://user:pass@host/db",
       S3_SECRET_ACCESS_KEY: "s3-secret",
@@ -180,6 +195,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
   );
 
   assert.equal(env.DEEPSEEK_API_KEY, undefined);
+  assert.equal(env.GROQ_API_KEY, undefined);
   assert.equal(env.PLATEGA_SECRET_KEY, undefined);
   assert.equal(env.POSTGRES_URL, undefined);
   assert.equal(env.S3_SECRET_ACCESS_KEY, undefined);
@@ -190,7 +206,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
   assert.equal(isWithinDirectory("/tmp/ws-evil/file.txt", "/tmp/ws"), false);
 });
 
-test("AI Router & DeepSeek < V4.0: circuit breaker works and Pro models stay strictly below V4.0", () => {
+test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses Qwen 3.8 via Groq, and Pro models stay strictly below V4.0", () => {
   resetAiCircuitBreakers();
   recordProviderFailure("deepseek-direct", 402, 1000);
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), true);
@@ -198,8 +214,10 @@ test("AI Router & DeepSeek < V4.0: circuit breaker works and Pro models stay str
   recordProviderSuccess("deepseek-direct");
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), false);
 
+  assert.equal(GROQ_FREE_MODEL, "qwen/qwen3.8-27b");
   const summary = getAiRouterHealthSummary();
   assert.ok(summary && typeof summary === "object");
+  assert.match(summary.freeProvider, /groq-free.*qwen\/qwen3\.8-27b/i);
 
   const allProDeepSeekModels = [
     DEEPSEEK_DIRECT_INSTINCT,
@@ -257,11 +275,64 @@ test("Subscription HMAC Proof: bound strictly to owner UID and rejects tampering
     plan: "pro",
     startedAt,
     expiresAt,
-    txnId: "txn_test_1",
+    txnId: "key_test_1",
   });
   assert.equal(verifySubscriptionProof(proof, "uid_owner_1")?.expiresAt, expiresAt);
   assert.equal(verifySubscriptionProof(proof, "uid_attacker_2"), null);
   assert.equal(verifySubscriptionProof(`${proof}x`, "uid_owner_1"), null);
+});
+
+test("License Keys: contains 45 unique SHA-256 hashes, activates 30-day Pro once, then permanently dies", async () => {
+  assert.equal(PRO_LICENSE_KEY_HASHES.size, 45);
+  for (const h of PRO_LICENSE_KEY_HASHES) {
+    assert.match(h, /^[a-f0-9]{64}$/);
+  }
+
+  // Normalization & format check
+  const testKey = "IGSK-ABCD-EFGH-2345";
+  assert.equal(normalizeLicenseKey("  igskabcdefgh2345 "), testKey);
+  assert.equal(isValidLicenseKeyFormat(testKey), true);
+  assert.equal(isValidLicenseKeyFormat("IGSK-0000-1111-OOOO"), false);
+
+  const testHash = hashLicenseKey(testKey);
+  resetLocalLicenseKeyTestState(testHash);
+
+  const allowedOverride = new Set([testHash]);
+  const user1 = { id: "user_buyer_1", client: null, token: "fake.jwt.token", isJwt: true };
+  const user2 = { id: "user_buyer_2", client: null, token: "fake.jwt.token", isJwt: true };
+
+  // First activation succeeds -> 30 days of Pro
+  const first = await redeemLicenseKey(user1, "  igsk-abcd-efgh-2345  ", {
+    skipFirestore: true,
+    extraAllowedHashes: allowedOverride,
+  });
+  assert.equal(first.redeemed, true);
+  assert.equal(first.subscription.isPro, true);
+  assert.equal(first.subscription.plan, "pro");
+  assert.equal(first.subscription.durationDays, PRO_DURATION_DAYS);
+  assert.equal(first.subscription.daysLeft, 30);
+
+  // Second attempt by ANY user fails permanently with 409 (key is dead!)
+  await assert.rejects(
+    () =>
+      redeemLicenseKey(user2, testKey, {
+        skipFirestore: true,
+        extraAllowedHashes: allowedOverride,
+      }),
+    (err: unknown) => err instanceof LicenseKeyError && err.status === 409,
+  );
+
+  // Unknown key fails with 400
+  await assert.rejects(
+    () =>
+      redeemLicenseKey(user2, "IGSK-ZZZZ-YYYY-9999", {
+        skipFirestore: true,
+        extraAllowedHashes: allowedOverride,
+      }),
+    (err: unknown) => err instanceof LicenseKeyError && err.status === 400,
+  );
+
+  resetLocalLicenseKeyTestState(testHash);
 });
 
 test("PostgreSQL Migrations: UP and DOWN SQL files contain strict RLS and rollback", () => {

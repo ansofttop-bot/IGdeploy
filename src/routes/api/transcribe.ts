@@ -1,4 +1,4 @@
-import { GEMINI_FREE_MODEL, getGeminiServerClient } from "../../lib/gemini-free";
+import { GROQ_BASE_URL, getGroqApiKey } from "../../lib/groq-free";
 
 const MAX_AUDIO_BASE64_LEN = 12 * 1024 * 1024; // ~9 MB raw audio
 
@@ -14,18 +14,29 @@ const ALLOWED_AUDIO_MIME_PREFIXES = [
   "audio/flac",
 ];
 
-function normalizeAudioMimeType(raw?: string): string {
+function normalizeAudioMimeType(raw?: string): { mimeType: string; ext: string } {
   const cleaned = String(raw || "")
     .split(";")[0]
     .trim()
     .toLowerCase();
   if (ALLOWED_AUDIO_MIME_PREFIXES.includes(cleaned)) {
-    return cleaned === "audio/x-wav" ? "audio/wav" : cleaned;
+    const mimeType = cleaned === "audio/x-wav" ? "audio/wav" : cleaned;
+    const extMap: Record<string, string> = {
+      "audio/webm": "webm",
+      "audio/ogg": "ogg",
+      "audio/mp4": "m4a",
+      "audio/mpeg": "mp3",
+      "audio/mp3": "mp3",
+      "audio/wav": "wav",
+      "audio/aac": "m4a",
+      "audio/flac": "flac",
+    };
+    return { mimeType, ext: extMap[mimeType] || "webm" };
   }
-  return "audio/webm";
+  return { mimeType: "audio/webm", ext: "webm" };
 }
 
-const DEFAULT_TRANSCRIBE_MODELS = ["gemini-3.5-transcribe", GEMINI_FREE_MODEL];
+const DEFAULT_GROQ_TRANSCRIBE_MODELS = ["whisper-large-v3-turbo", "whisper-large-v3"];
 const TRANSCRIBE_WINDOW_MS = 5 * 60_000;
 const TRANSCRIBE_MAX_REQ_PER_WINDOW = 25;
 const transcribeRateBuckets = new Map<string, number[]>();
@@ -66,56 +77,58 @@ export async function handleTranscribePost(req: Request): Promise<Response> {
       return Response.json({ error: "Audio recording is too large" }, { status: 413 });
     }
 
-    const base64Data = rawBase64.includes(",") ? rawBase64.split(",").pop()!.trim() : rawBase64;
-    const mimeType = normalizeAudioMimeType(body?.mimeType);
-    const langHint = typeof body?.lang === "string" ? body.lang.trim().slice(0, 16) : "";
-
-    const ai = getGeminiServerClient();
-    if (!ai) {
+    const apiKey = getGroqApiKey();
+    if (!apiKey) {
       return Response.json(
-        { error: "Server speech transcription is not configured" },
+        { error: "Server speech transcription is not configured (GROQ_API_KEY missing)" },
         { status: 503 },
       );
     }
 
-    const prompt = langHint
-      ? `Transcribe this spoken audio verbatim (expected language: ${langHint}, or preserve whatever language is actually spoken). Return ONLY the exact transcribed text with proper punctuation, no timestamps, no quotes, and no extra commentary. If there is no intelligible speech, return an empty string.`
-      : "Transcribe this spoken audio verbatim in the language spoken. Return ONLY the exact transcribed text with proper punctuation, no timestamps, no quotes, and no extra commentary. If there is no intelligible speech, return an empty string.";
+    const base64Data = rawBase64.includes(",") ? rawBase64.split(",").pop()!.trim() : rawBase64;
+    const { mimeType, ext } = normalizeAudioMimeType(body?.mimeType);
+    const langHint = typeof body?.lang === "string" ? body.lang.trim().split("-")[0].slice(0, 8) : "";
+    const audioBytes = Buffer.from(base64Data, "base64");
 
-    const configuredModel = (process.env.GEMINI_TRANSCRIBE_MODEL || "").trim();
+    const configuredModel = (process.env.GROQ_TRANSCRIBE_MODEL || "").trim();
     const candidateModels = configuredModel
-      ? [configuredModel, ...DEFAULT_TRANSCRIBE_MODELS.filter((m) => m !== configuredModel)]
-      : DEFAULT_TRANSCRIBE_MODELS;
+      ? [configuredModel, ...DEFAULT_GROQ_TRANSCRIBE_MODELS.filter((m) => m !== configuredModel)]
+      : DEFAULT_GROQ_TRANSCRIBE_MODELS;
 
-    let lastErr: any = null;
+    let lastErr: Error | null = null;
     for (let i = 0; i < candidateModels.length; i++) {
       const model = candidateModels[i];
       try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Data,
-                },
-              },
-              { text: prompt },
-            ],
+        const form = new FormData();
+        const blob = new Blob([audioBytes], { type: mimeType });
+        form.append("file", blob, `voice.${ext}`);
+        form.append("model", model);
+        form.append("response_format", "json");
+        if (langHint && /^[a-z]{2}$/i.test(langHint)) {
+          form.append("language", langHint.toLowerCase());
+        }
+
+        const res = await fetch(`${GROQ_BASE_URL}/audio/transcriptions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
           },
+          body: form,
+          signal: AbortSignal.timeout(30_000),
         });
-        const text = (response.text ?? "").trim();
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          throw new Error(`Groq Whisper HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const data = (await res.json()) as { text?: string };
+        const text = (data?.text ?? "").trim();
         return Response.json({ text });
       } catch (err: any) {
-        lastErr = err;
-        const status = Number(err?.status ?? err?.code ?? 0);
-        const message = String(err?.message || "");
-        const isModelUnavailable =
-          status === 404 ||
-          /not found|is not supported|unsupported model|NOT_FOUND/i.test(message);
-        if (!isModelUnavailable || i === candidateModels.length - 1) {
-          throw err;
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        if (i === candidateModels.length - 1) {
+          throw lastErr;
         }
       }
     }

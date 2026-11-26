@@ -222,10 +222,8 @@ data class SubscriptionInfo(
     val status: String = "free",
     val daysLeft: Int = 0,
     val expiresAt: String? = null,
-    val pendingTxnId: String? = null,
-    val priceRub: Int = 149,
-    val durationDays: Int = 30,
-    val paymentConfigured: Boolean = false
+    val lastKeyId: String? = null,
+    val durationDays: Int = 30
 )
 
 data class MobileLayoutPrefs(

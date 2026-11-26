@@ -212,9 +212,8 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
                         status = if (isPro) "active" else status,
                         daysLeft = if (lifetime) 9999 else daysLeft,
                         expiresAt = expiresAt,
-                        priceRub = 149,
-                        durationDays = 30,
-                        paymentConfigured = false
+                        lastKeyId = optStr(fields, "subscription_txn_id") ?: optStr(fields, "subscriptionTxnId"),
+                        durationDays = 30
                     )
                 )
             }

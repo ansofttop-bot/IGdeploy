@@ -82,14 +82,6 @@ class MainActivity : FragmentActivity() {
                 controller.isAppearanceLightNavigationBars = !isDark
             }
 
-            LaunchedEffect(state.checkoutUrlEvent) {
-                val url = state.checkoutUrlEvent
-                if (!url.isNullOrBlank()) {
-                    openCustomTab(url)
-                    viewModel.consumeCheckoutUrl()
-                }
-            }
-
             IGseekTheme(darkTheme = isDark, accent = state.layoutPrefs.accent) {
                 if (!isUnlocked) {
                     IGseekCanvas {
@@ -197,6 +189,9 @@ class MainActivity : FragmentActivity() {
         // app.igseek.mobile://auth#firebase_id_token=...&refresh_token=...&uid=...&email=...&name=...&state=...
         val dataUri = intent.data
         if (dataUri != null && dataUri.scheme == "app.igseek.mobile" && dataUri.host == "auth") {
+            // Clear intent data immediately so config changes or activity resume never re-trigger this deep link
+            intent.data = null
+            setIntent(intent)
             val fragment = dataUri.fragment.orEmpty()
             val query = dataUri.encodedQuery.orEmpty()
             val combined = if (fragment.isNotBlank()) fragment else query

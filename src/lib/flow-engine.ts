@@ -19,7 +19,7 @@ import {
   resolveEffectiveTemperature,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callGeminiFreeText } from "./gemini-free";
+import { callGroqFreeText } from "./groq-free";
 import { routeTextCompletion } from "./ai-router";
 
 export type FlowModelId = "instinct" | "chat" | "f1";
@@ -264,7 +264,7 @@ Rules:
 
   if (context.useFreeModel) {
     try {
-      const freeText = await callGeminiFreeText({
+      const freeText = await callGroqFreeText({
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
@@ -281,7 +281,7 @@ Rules:
         }
       }
     } catch (e) {
-      console.warn("Gemini Free planning failed:", e);
+      console.warn("Groq Qwen 3.8 Free planning failed:", e);
     }
     const slug = sanitizeLibraryFilename(goal.slice(0, 28)).replace(/\.[^.]+$/, "") || "flow_report";
     return {

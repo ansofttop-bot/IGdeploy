@@ -40,6 +40,19 @@ function buildAndroidAuthDeepLink(params: {
   return `app.igseek.mobile://auth#${hash}`;
 }
 
+const MOBILE_AUTH_STORAGE_KEY = "igseek:mobile_auth_pending";
+const MOBILE_AUTH_STATE_KEY = "igseek:mobile_auth_state";
+
+function isMobileBridgeSession(searchMobileAuth?: string): boolean {
+  if (searchMobileAuth === "1") return true;
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(MOBILE_AUTH_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export const Route = createFileRoute("/login")({
   ssr: false,
   head: () => ({
@@ -58,7 +71,16 @@ export const Route = createFileRoute("/login")({
     state: typeof s.state === "string" ? s.state : "",
   }),
   beforeLoad: async ({ search }) => {
-    if (search.mobile_auth === "1") return;
+    if (typeof window !== "undefined" && search.mobile_auth === "1") {
+      try {
+        window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
+        if (search.state) {
+          window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, search.state);
+        }
+      } catch {}
+      return;
+    }
+    if (isMobileBridgeSession(search.mobile_auth)) return;
     const { data } = await firebaseClient.auth.getSession();
     if (data.session) {
       const target = isSafeNext(search.next) ? search.next : "/app";
@@ -74,8 +96,20 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
   const [error, setError] = useState<string | null>(null);
   const [deepLink, setDeepLink] = useState<string | null>(null);
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
+  const [resolvedState] = useState<string>(() => {
+    if (oauthState) return oauthState;
+    if (typeof window !== "undefined") {
+      try {
+        return window.sessionStorage.getItem(MOBILE_AUTH_STATE_KEY) || "";
+      } catch {}
+    }
+    return "";
+  });
 
-  const handoffUser = async (user: NonNullable<typeof auth.currentUser>) => {
+  const handoffUser = async (
+    user: NonNullable<typeof auth.currentUser>,
+    autoOpenApp: boolean,
+  ) => {
     const idToken = await user.getIdToken(true);
     const refreshToken = (user as any).refreshToken || "";
     const email = user.email || "";
@@ -86,23 +120,41 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
       uid: user.uid,
       email,
       name,
-      state: oauthState,
+      state: resolvedState,
     });
     setSignedInEmail(email || name);
     setDeepLink(link);
     setBusy(false);
-    window.location.href = link;
+    if (autoOpenApp) {
+      try {
+        window.sessionStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
+        window.sessionStorage.removeItem(MOBILE_AUTH_STATE_KEY);
+      } catch {}
+      window.location.assign(link);
+    }
   };
 
   useEffect(() => {
     let active = true;
+    try {
+      window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
+      if (oauthState) {
+        window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, oauthState);
+      }
+    } catch {}
+
     (async () => {
       try {
         const redirectRes = await getRedirectResult(auth).catch(() => null);
         if (!active) return;
-        const user = redirectRes?.user || auth.currentUser;
-        if (user) {
-          await handoffUser(user);
+        if (redirectRes?.user) {
+          // User just returned from Google redirect flow -> auto-handoff once
+          await handoffUser(redirectRes.user, true);
+          return;
+        }
+        if (auth.currentUser) {
+          // Existing browser session -> prepare deep link button WITHOUT auto-looping
+          await handoffUser(auth.currentUser, false);
           return;
         }
       } catch (err: any) {
@@ -120,6 +172,13 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
     setBusy(true);
     setError(null);
     try {
+      window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
+      if (resolvedState) {
+        window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, resolvedState);
+      }
+    } catch {}
+
+    try {
       if (forceAccountPicker && auth.currentUser) {
         await signOut(auth).catch(() => {});
         setDeepLink(null);
@@ -128,7 +187,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
       googleProvider.setCustomParameters({ prompt: "select_account" });
       try {
         const cred = await signInWithPopup(auth, googleProvider);
-        await handoffUser(cred.user);
+        await handoffUser(cred.user, true);
       } catch (popupErr: any) {
         const code = popupErr?.code || "";
         if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment") {
@@ -168,6 +227,12 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
           </div>
           <a
             href={deepLink}
+            onClick={() => {
+              try {
+                window.sessionStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
+                window.sessionStorage.removeItem(MOBILE_AUTH_STATE_KEY);
+              } catch {}
+            }}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground text-background text-sm font-semibold hover:opacity-90 transition-opacity"
           >
             <span>{t("Open IGseek app")}</span>
@@ -201,6 +266,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
 
 function LoginPage() {
   const { next, mobile_auth, state } = Route.useSearch();
+  const isMobileBridge = isMobileBridgeSession(mobile_auth);
   const safeNext = isSafeNext(next) ? next : "/app";
   const navigate = useNavigate();
   const [theme, setTheme] = useTheme();
@@ -272,7 +338,7 @@ function LoginPage() {
         }}
       />
 
-      {mobile_auth === "1" ? (
+      {isMobileBridge ? (
         <MobileGoogleAuthBridge oauthState={state} />
       ) : (
         <AuthCard

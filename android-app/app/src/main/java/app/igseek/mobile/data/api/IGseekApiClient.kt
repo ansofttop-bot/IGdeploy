@@ -1,6 +1,7 @@
 package app.igseek.mobile.data.api
 
 import android.util.Base64
+import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
 import app.igseek.mobile.data.models.AuthSession
@@ -14,8 +15,12 @@ import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.SubscriptionInfo
 import app.igseek.mobile.data.models.WebSourceItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,6 +50,14 @@ class IGseekApiClient(
     private val baseUrlProvider: () -> String
 ) {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    @Volatile
+    private var activeChatCall: Call? = null
+
+    fun cancelActiveStream() {
+        runCatching { activeChatCall?.cancel() }
+        activeChatCall = null
+    }
 
     private fun optionalGatewayUrl(): String = baseUrlProvider().trim().trimEnd('/')
 
@@ -284,14 +297,17 @@ class IGseekApiClient(
             else -> "openai"
         }
 
-        val result = runCatching {
+        val result = try {
             streamDirectOpenAi(
                 messagesJson = messagesJson,
                 modelName = preferredModel,
                 onDelta = onDelta,
                 onReasoning = onReasoning
             )
-        }.getOrElse {
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (err: Throwable) {
+            currentCoroutineContext().ensureActive()
             // Clean fallback to standard openai non-streaming if streaming model rejects
             val fallbackText = callDirectCompletionFallback(messagesJson)
             val parsed = splitThinkingTags(fallbackText)
@@ -371,53 +387,62 @@ class IGseekApiClient(
         val rawContent = StringBuilder()
         val rawReasoning = StringBuilder()
 
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) {
-                throw IllegalStateException("AI API HTTP ${res.code}")
-            }
-            val body = res.body ?: throw IllegalStateException("Пустой поток ответа")
-            val contentType = res.header("Content-Type").orEmpty()
+        val call = client.newCall(req)
+        activeChatCall = call
+        try {
+            call.execute().use { res ->
+                if (!res.isSuccessful) {
+                    throw IllegalStateException("AI API HTTP ${res.code}")
+                }
+                val body = res.body ?: throw IllegalStateException("Пустой поток ответа")
+                val contentType = res.header("Content-Type").orEmpty()
 
-            if (!contentType.contains("event-stream", ignoreCase = true) && contentType.contains("json", ignoreCase = true)) {
-                val json = JSONObject(body.string())
-                val msg = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
-                val text = msg?.optString("content").orEmpty()
-                val rsn = msg?.optString("reasoning_content").orEmpty()
-                val split = splitThinkingTags(text)
-                val finalReasoning = listOf(rsn, split.second).filter { it.isNotBlank() }.joinToString("\n")
-                if (finalReasoning.isNotBlank()) onReasoning(finalReasoning)
-                if (split.first.isNotBlank()) onDelta(split.first)
-                return split.first to finalReasoning
-            }
+                if (!contentType.contains("event-stream", ignoreCase = true) && contentType.contains("json", ignoreCase = true)) {
+                    val json = JSONObject(body.string())
+                    val msg = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                    val text = msg?.optString("content").orEmpty()
+                    val rsn = msg?.optString("reasoning_content").orEmpty()
+                    val split = splitThinkingTags(text)
+                    val finalReasoning = listOf(rsn, split.second).filter { it.isNotBlank() }.joinToString("\n")
+                    if (finalReasoning.isNotBlank()) onReasoning(finalReasoning)
+                    if (split.first.isNotBlank()) onDelta(split.first)
+                    return split.first to finalReasoning
+                }
 
-            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val trimmed = line?.trim().orEmpty()
-                    if (!trimmed.startsWith("data:")) continue
-                    val data = trimmed.removePrefix("data:").trim()
-                    if (data.isEmpty() || data == "[DONE]") continue
+                BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        if (call.isCanceled()) break
+                        val trimmed = line?.trim().orEmpty()
+                        if (!trimmed.startsWith("data:")) continue
+                        val data = trimmed.removePrefix("data:").trim()
+                        if (data.isEmpty() || data == "[DONE]") continue
 
-                    val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
-                    val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
+                        val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                        val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta") ?: continue
 
-                    val rChunk = delta.optString("reasoning_content")
-                    if (rChunk.isNotEmpty() && rChunk != "null") {
-                        rawReasoning.append(rChunk)
-                        onReasoning(rawReasoning.toString())
-                    }
+                        val rChunk = delta.optString("reasoning_content")
+                        if (rChunk.isNotEmpty() && rChunk != "null") {
+                            rawReasoning.append(rChunk)
+                            onReasoning(rawReasoning.toString())
+                        }
 
-                    val cChunk = delta.optString("content")
-                    if (cChunk.isNotEmpty() && cChunk != "null") {
-                        rawContent.append(cChunk)
-                        val split = splitThinkingTags(rawContent.toString())
-                        val combinedR = listOf(rawReasoning.toString(), split.second)
-                            .filter { it.isNotBlank() }
-                            .joinToString("\n")
-                        if (combinedR.isNotBlank()) onReasoning(combinedR)
-                        onDelta(split.first)
+                        val cChunk = delta.optString("content")
+                        if (cChunk.isNotEmpty() && cChunk != "null") {
+                            rawContent.append(cChunk)
+                            val split = splitThinkingTags(rawContent.toString())
+                            val combinedR = listOf(rawReasoning.toString(), split.second)
+                                .filter { it.isNotBlank() }
+                                .joinToString("\n")
+                            if (combinedR.isNotBlank()) onReasoning(combinedR)
+                            onDelta(split.first)
+                        }
                     }
                 }
+            }
+        } finally {
+            if (activeChatCall === call) {
+                activeChatCall = null
             }
         }
 
@@ -517,44 +542,53 @@ class IGseekApiClient(
         val reasoningBuf = StringBuilder()
         val images = mutableListOf<GeneratedImageItem>()
 
-        client.newCall(reqBuilder.build()).execute().use { res ->
-            if (!res.isSuccessful) throw IllegalStateException("Gateway HTTP ${res.code}")
-            val body = res.body ?: throw IllegalStateException("Empty gateway body")
-            BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    val trimmed = line?.trim().orEmpty()
-                    if (!trimmed.startsWith("data:")) continue
-                    val data = trimmed.removePrefix("data:").trim()
-                    if (data.isEmpty() || data == "[DONE]") continue
+        val call = client.newCall(reqBuilder.build())
+        activeChatCall = call
+        try {
+            call.execute().use { res ->
+                if (!res.isSuccessful) throw IllegalStateException("Gateway HTTP ${res.code}")
+                val body = res.body ?: throw IllegalStateException("Empty gateway body")
+                BufferedReader(InputStreamReader(body.byteStream())).use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        if (call.isCanceled()) break
+                        val trimmed = line?.trim().orEmpty()
+                        if (!trimmed.startsWith("data:")) continue
+                        val data = trimmed.removePrefix("data:").trim()
+                        if (data.isEmpty() || data == "[DONE]") continue
 
-                    val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
-                    val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")
-                    if (delta != null) {
-                        val c = delta.optString("content")
-                        if (c.isNotEmpty() && c != "null") {
-                            contentBuf.append(c)
-                            onDelta(contentBuf.toString())
+                        val obj = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                        val delta = obj.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")
+                        if (delta != null) {
+                            val c = delta.optString("content")
+                            if (c.isNotEmpty() && c != "null") {
+                                contentBuf.append(c)
+                                onDelta(contentBuf.toString())
+                            }
+                            val r = delta.optString("reasoning_content")
+                            if (r.isNotEmpty() && r != "null") {
+                                reasoningBuf.append(r)
+                                onReasoning(reasoningBuf.toString())
+                            }
                         }
-                        val r = delta.optString("reasoning_content")
-                        if (r.isNotEmpty() && r != "null") {
-                            reasoningBuf.append(r)
-                            onReasoning(reasoningBuf.toString())
-                        }
-                    }
-                    if (obj.optString("type") == "image_generated") {
-                        val dataUrl = obj.optString("dataUrl")
-                        if (dataUrl.isNotBlank()) {
-                            val img = GeneratedImageItem(
-                                id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
-                                title = obj.optString("title", "IGseek Image"),
-                                dataUrl = dataUrl
-                            )
-                            images.add(img)
-                            onImage(img)
+                        if (obj.optString("type") == "image_generated") {
+                            val dataUrl = obj.optString("dataUrl")
+                            if (dataUrl.isNotBlank()) {
+                                val img = GeneratedImageItem(
+                                    id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                                    title = obj.optString("title", "IGseek Image"),
+                                    dataUrl = dataUrl
+                                )
+                                images.add(img)
+                                onImage(img)
+                            }
                         }
                     }
                 }
+            }
+        } finally {
+            if (activeChatCall === call) {
+                activeChatCall = null
             }
         }
         return StreamChatResult(contentBuf.toString(), reasoningBuf.toString(), images, emptyList())
@@ -689,75 +723,42 @@ Keep code concise, modern, and production-ready (2 to 4 files)."""
         )
     }
 
-    // ==================== SUBSCRIPTION CHECKOUT (EXISTING PLATEGA FLOW) ====================
+    // ==================== SUBSCRIPTION LICENSE KEY REDEMPTION ====================
 
-    private fun paymentGatewayUrl(): String {
+    private fun subscriptionGatewayUrl(): String {
         val configured = optionalGatewayUrl()
-        return configured.ifBlank { "https://igeek-chat.lovable.app" }
+        if (configured.isNotBlank()) return configured
+        return BuildConfig.DEFAULT_AUTH_BRIDGE_URL.trim().trimEnd('/')
+            .ifBlank { "https://igeek-chat.lovable.app" }
     }
+
+    private fun parseSubscriptionJson(obj: JSONObject): SubscriptionInfo = SubscriptionInfo(
+        plan = obj.optString("plan", "free"),
+        isPro = obj.optBoolean("isPro", false),
+        status = obj.optString("status", "free"),
+        daysLeft = obj.optInt("daysLeft", 0),
+        expiresAt = obj.optString("expiresAt").takeIf { it.isNotBlank() && it != "null" },
+        lastKeyId = obj.optString("lastKeyId").takeIf { it.isNotBlank() && it != "null" },
+        durationDays = obj.optInt("durationDays", 30)
+    )
 
     suspend fun getSubscription(session: AuthSession): SubscriptionInfo = withContext(Dispatchers.IO) {
         if (session.isGuest || session.idToken.isBlank()) return@withContext SubscriptionInfo()
-        val gateway = paymentGatewayUrl()
+        val gateway = subscriptionGatewayUrl()
         val req = gatewayHeaders(Request.Builder().url("$gateway/api/subscription").get(), session).build()
         runCatching {
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return@use SubscriptionInfo()
-                val obj = JSONObject(res.body?.string().orEmpty())
-                SubscriptionInfo(
-                    plan = obj.optString("plan", "free"),
-                    isPro = obj.optBoolean("isPro", false),
-                    status = obj.optString("status", "free"),
-                    daysLeft = obj.optInt("daysLeft", 0),
-                    expiresAt = obj.optString("expiresAt").takeIf { it.isNotBlank() && it != "null" },
-                    pendingTxnId = obj.optString("pendingTxnId").takeIf { it.isNotBlank() && it != "null" },
-                    priceRub = obj.optInt("priceRub", 149),
-                    durationDays = obj.optInt("durationDays", 30),
-                    paymentConfigured = obj.optBoolean("paymentConfigured", true)
-                )
+                parseSubscriptionJson(JSONObject(res.body?.string().orEmpty()))
             }
         }.getOrDefault(SubscriptionInfo())
     }
 
-    suspend fun createSubscriptionCheckout(
-        session: AuthSession,
-        paymentMethod: Int = 2
-    ): Pair<String, String> = withContext(Dispatchers.IO) {
-        val gateway = paymentGatewayUrl()
-        val bucket = System.currentTimeMillis() / (5 * 60_000L)
-        val idempotencyKey = "and_${session.uid.take(12)}_m${paymentMethod}_b$bucket"
+    suspend fun redeemLicenseKey(session: AuthSession, rawKey: String): SubscriptionInfo = withContext(Dispatchers.IO) {
+        val gateway = subscriptionGatewayUrl()
         val payload = JSONObject().apply {
-            put("paymentMethod", paymentMethod)
-            put("email", session.email)
-            put("returnUrl", "$gateway/app")
-            put("failedUrl", "$gateway/app")
-            put("idempotencyKey", idempotencyKey)
-        }
-        val req = gatewayHeaders(
-            Request.Builder()
-                .url("$gateway/api/create-payment")
-                .header("Idempotency-Key", idempotencyKey)
-                .post(payload.toString().toRequestBody(jsonMedia)),
-            session
-        ).build()
-        client.newCall(req).execute().use { res ->
-            val raw = res.body?.string().orEmpty()
-            val obj = runCatching { JSONObject(raw) }.getOrNull()
-            if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error")?.ifBlank { null } ?: "Не удалось создать платёж (${res.code})")
-            }
-            val url = obj?.optString("paymentUrl")?.ifBlank { obj.optString("redirectUrl") }.orEmpty()
-            val txnId = obj?.optString("transactionId").orEmpty()
-            if (url.isBlank()) throw IllegalStateException("Сервер не вернул ссылку оплаты")
-            url to txnId
-        }
-    }
-
-    suspend fun verifySubscription(session: AuthSession, txnId: String): Boolean = withContext(Dispatchers.IO) {
-        val gateway = paymentGatewayUrl()
-        val payload = JSONObject().apply {
-            put("action", "verify")
-            put("transactionId", txnId)
+            put("action", "redeem")
+            put("key", rawKey.trim())
         }
         val req = gatewayHeaders(
             Request.Builder()
@@ -766,12 +767,16 @@ Keep code concise, modern, and production-ready (2 to 4 files)."""
             session
         ).build()
         client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) return@use false
-            val obj = JSONObject(res.body?.string().orEmpty())
-            val sub = obj.optJSONObject("subscription")
-            obj.optBoolean("verified", false) ||
-                obj.optBoolean("activated", false) ||
-                sub?.optBoolean("isPro", false) == true
+            val raw = res.body?.string().orEmpty()
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (!res.isSuccessful) {
+                val errMsg = obj?.optString("error")?.ifBlank { null }
+                    ?: "Не удалось активировать ключ (${res.code})"
+                throw IllegalStateException(errMsg)
+            }
+            val subObj = obj?.optJSONObject("subscription")
+                ?: throw IllegalStateException("Сервер вернул некорректный ответ подписки")
+            parseSubscriptionJson(subObj)
         }
     }
 

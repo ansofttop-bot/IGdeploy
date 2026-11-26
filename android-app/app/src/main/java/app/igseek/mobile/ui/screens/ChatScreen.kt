@@ -305,7 +305,8 @@ fun ChatScreen(
                 runCatching { voiceLauncher.launch(intent) }
                     .onFailure { viewModel.showToast("Голосовой ввод недоступен на этом устройстве") }
             },
-            onSend = { viewModel.sendMessage() }
+            onSend = { viewModel.sendMessage() },
+            onStop = { viewModel.stopStreaming() }
         )
     }
 
@@ -795,7 +796,8 @@ private fun ChatGlassComposer(
     onToggleReasoning: () -> Unit,
     onToggleImage: () -> Unit,
     onVoiceClick: () -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onStop: () -> Unit
 ) {
     val palette = LocalIGseekPalette.current
     val isEn = state.layoutPrefs.language == "en"
@@ -1013,21 +1015,41 @@ private fun ChatGlassComposer(
                             }
                         }
 
-                        Surface(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable(enabled = canSend, onClick = onSend),
-                            shape = CircleShape,
-                            color = if (canSend) palette.brand else palette.chipBg
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = LucideIcons.ArrowUp,
-                                    contentDescription = "Send",
-                                    tint = if (canSend) palette.brandOn else palette.textMuted,
-                                    modifier = Modifier.size(17.dp)
-                                )
+                        if (state.isStreaming) {
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onStop),
+                                shape = CircleShape,
+                                color = palette.textPrimary
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = LucideIcons.Square,
+                                        contentDescription = if (isEn) "Stop generation" else "Остановить генерацию",
+                                        tint = palette.canvas,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = canSend, onClick = onSend),
+                                shape = CircleShape,
+                                color = if (canSend) palette.brand else palette.chipBg
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = LucideIcons.ArrowUp,
+                                        contentDescription = "Send",
+                                        tint = if (canSend) palette.brandOn else palette.textMuted,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
                             }
                         }
                     }

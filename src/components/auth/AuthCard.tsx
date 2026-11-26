@@ -72,11 +72,6 @@ export function AuthCard({
   const handleGoogleAuth = async () => {
     setError(null);
     setSuccessMessage(null);
-    if (mode === "signup" && !signupConsentsAccepted) {
-      setConsentAttempted(true);
-      setError(t("You must accept the User Agreement and Privacy Policy to register."));
-      return;
-    }
     setLoading("google");
     try {
       const res = await firebaseClient.auth.signInWithGoogle();

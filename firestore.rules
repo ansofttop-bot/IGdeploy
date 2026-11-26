@@ -376,6 +376,23 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Redeemed One-Time Pro License Keys: /redeemed_keys/{keyHash}
+    // Strictly atomic create-only: once created, a key is permanently burned (no update, no delete, no list).
+    match /redeemed_keys/{keyHash} {
+      allow get: if isSignedIn() && keyHash.matches('^[a-f0-9]{64}$');
+      allow list: if false;
+      allow create: if isSignedIn()
+        && keyHash.matches('^[a-f0-9]{64}$')
+        && request.resource.data.keys().hasOnly(['redeemedBy', 'redeemedAt', 'durationDays'])
+        && request.resource.data.redeemedBy == request.auth.uid
+        && request.resource.data.redeemedAt is string
+        && request.resource.data.redeemedAt.size() > 0
+        && request.resource.data.redeemedAt.size() <= 64
+        && request.resource.data.durationDays is int
+        && request.resource.data.durationDays == 30;
+      allow update, delete: if false;
+    }
+
     // Flow Tasks: /flow_tasks/{taskId}
     match /flow_tasks/{taskId} {
       allow get, delete: if isValidId(taskId) && isDocOwner();

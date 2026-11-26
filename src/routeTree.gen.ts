@@ -113,24 +113,10 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: unknown
       parentRoute: typeof rootRouteImport
     }
-    '/api/create-payment': {
-      id: '/api/create-payment'
-      path: '/api/create-payment'
-      fullPath: '/api/create-payment'
-      preLoaderRoute: unknown
-      parentRoute: typeof rootRouteImport
-    }
     '/api/memory': {
       id: '/api/memory'
       path: '/api/memory'
       fullPath: '/api/memory'
-      preLoaderRoute: unknown
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/platega-callback': {
-      id: '/api/public/platega-callback'
-      path: '/api/public/platega-callback'
-      fullPath: '/api/public/platega-callback'
       preLoaderRoute: unknown
       parentRoute: typeof rootRouteImport
     }

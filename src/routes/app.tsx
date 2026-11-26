@@ -71,10 +71,8 @@ import { getDeviceFingerprint } from "@/lib/device-fingerprint";
 import {
   DEFAULT_FREE_SUBSCRIPTION,
   fetchSubscriptionStatus,
-  getStoredPendingTxnId,
   hasSeenRegistrationProOffer,
   markRegistrationProOfferSeen,
-  verifyPlategaPayment,
   type ClientSubscriptionState,
 } from "@/lib/subscription-client";
 import { SubscriptionPanel } from "@/components/subscription/SubscriptionPanel";
@@ -505,6 +503,8 @@ function Index() {
     if (messages.length === 0) setShowScrollToBottom(false);
   }, [messages.length]);
   const isSending = Boolean(
+    streamingMsgIds.size > 0 ||
+    generatingChatIds.has("__pending__") ||
     (activeChatId && generatingChatIds.has(activeChatId)) ||
     messages.some((m) => streamingMsgIds.has(m.id)),
   );
@@ -683,58 +683,29 @@ function Index() {
       // ignore storage errors
     }
 
-    const syncSubscription = async (showReturnToast = false) => {
+    const syncSubscription = async () => {
       try {
         const token = await getSubscriptionAuthToken();
         if (!token || cancelled) return;
-        const pendingTxn = getStoredPendingTxnId(uid);
-        if (pendingTxn) {
-          const res = await verifyPlategaPayment(token, pendingTxn, uid);
-          if (cancelled) return;
-          applySubscriptionState(res.subscription, uid);
-          if (res.verified) {
-            toast.success(t("Payment confirmed — IGseek Pro is active!"));
-          } else if (showReturnToast && res.message) {
-            toast.info(res.message);
-          }
-          return;
-        }
         const status = await fetchSubscriptionStatus(token, uid);
         if (cancelled) return;
         applySubscriptionState(status, uid);
-        if (showReturnToast && status.isPro) {
-          toast.success(t("Payment confirmed — IGseek Pro is active!"));
-        }
       } catch {
         // non-blocking
       }
     };
 
-    const params = new URLSearchParams(window.location.search);
-    const paymentResult = params.get("payment");
-    if (paymentResult === "success" || paymentResult === "failed") {
-      params.delete("payment");
-      const cleanUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
-      window.history.replaceState({}, "", cleanUrl);
-      if (paymentResult === "failed") {
-        toast.info(t("Payment was canceled or not completed."));
-      } else {
-        openProfileTab("subscription");
-      }
-      void syncSubscription(paymentResult === "success");
-    } else {
-      void syncSubscription(false);
-    }
+    void syncSubscription();
 
     const onFocus = () => {
       if (document.visibilityState === "visible") {
-        void syncSubscription(false);
+        void syncSubscription();
       }
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     const periodicTimer = window.setInterval(() => {
-      void syncSubscription(false);
+      void syncSubscription();
     }, 10 * 60 * 1000);
 
     return () => {
@@ -3031,7 +3002,7 @@ function Index() {
             <span className="shrink-0 text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
               {subscriptionState.isPro
                 ? `${subscriptionState.daysLeft} ${t("d. left")}`
-                : `149 ₽/${t("mo")}`}
+                : lang === "ru" ? "По ключу" : "Key"}
             </span>
           </button>
 
@@ -3676,10 +3647,10 @@ function Index() {
                         onClick={stopStreaming}
                         title={t("Stop generation")}
                         aria-label={t("Stop generation")}
-                        className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
+                        className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-semibold transition-all active:scale-95 cursor-pointer shadow-sm"
                       >
                         <Square className="h-3 w-3 shrink-0" fill="currentColor" />
-                        <span className="hidden xs:inline sm:inline">{t("Stop")}</span>
+                        <span>{t("Stop")}</span>
                       </button>
                     ) : (
                       <button
@@ -3798,7 +3769,8 @@ function Index() {
               markRegistrationProOfferSeen(user.id);
               setShowRegProOffer(false);
             }}
-            onPaymentStarted={() => {
+            onSubscriptionChange={(next) => {
+              applySubscriptionState(next, user.id);
               markRegistrationProOfferSeen(user.id);
               setShowRegProOffer(false);
             }}
@@ -4307,10 +4279,10 @@ function ChatView({
                     onClick={onStop}
                     title={t("Stop generation")}
                     aria-label={t("Stop generation")}
-                    className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
+                    className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-semibold transition-all active:scale-95 cursor-pointer shadow-sm"
                   >
                     <Square className="h-3 w-3 shrink-0" fill="currentColor" />
-                    <span className="hidden xs:inline sm:inline">{t("Stop")}</span>
+                    <span>{t("Stop")}</span>
                   </button>
                 ) : (
                   <button
