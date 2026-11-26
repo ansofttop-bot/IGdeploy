@@ -4,7 +4,9 @@ import android.app.Application
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.IGseekApplication
+import app.igseek.mobile.data.api.FirebaseOperationNotAllowedException
 import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
@@ -127,7 +129,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 isOnline = network.isOnline.value,
                 cloudSyncStatus = when {
                     session == null -> CloudSyncStatus.IDLE
-                    session.isGuest -> CloudSyncStatus.LOCAL_ONLY
+                    !session.isCloudSynced -> CloudSyncStatus.LOCAL_ONLY
                     !network.isOnline.value -> CloudSyncStatus.OFFLINE
                     else -> CloudSyncStatus.IDLE
                 },
@@ -144,7 +146,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
 
-        if (session != null && !session.isGuest && network.isOnline.value) {
+        if (session != null && session.isCloudSynced && network.isOnline.value) {
             syncAllFromCloud()
         }
     }
@@ -155,7 +157,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 _state.update { st ->
                     st.copy(
                         isOnline = online,
-                        cloudSyncStatus = if (!online && st.session != null && !st.session.isGuest) {
+                        cloudSyncStatus = if (!online && st.session != null && st.session.isCloudSynced) {
                             CloudSyncStatus.OFFLINE
                         } else st.cloudSyncStatus
                     )
@@ -163,7 +165,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 if (online) {
                     flushOfflineOutbox()
                     val s = _state.value.session
-                    if (s != null && !s.isGuest) syncAllFromCloud()
+                    if (s != null && s.isCloudSynced) syncAllFromCloud()
                 }
             }
         }
@@ -171,7 +173,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun getFreshSession(): AuthSession? {
         val current = _state.value.session ?: return null
-        if (current.isGuest) return current
+        if (!current.isCloudSynced) return current
         val refreshed = runCatching { authApi.refreshSession(current) }.getOrDefault(current)
         if (refreshed != current) {
             store.saveSession(refreshed)
@@ -185,7 +187,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun syncAllFromCloud() {
         viewModelScope.launch {
             val session = getFreshSession() ?: return@launch
-            if (session.isGuest) {
+            if (!session.isCloudSynced) {
                 _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY) }
                 return@launch
             }
@@ -292,11 +294,60 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     // ==================== AUTH ====================
 
+    fun clearAuthError() {
+        if (_state.value.authError != null) {
+            _state.update { it.copy(authError = null) }
+        }
+    }
+
+    fun getAuthBridgeBaseUrl(): String {
+        val configured = store.getServerBaseUrl().trim().trimEnd('/')
+        if (configured.startsWith("https://") || configured.startsWith("http://")) {
+            return configured
+        }
+        return BuildConfig.DEFAULT_AUTH_BRIDGE_URL.trim().trimEnd('/')
+    }
+
+    fun createAndStoreOAuthState(): String {
+        val state = UUID.randomUUID().toString().replace("-", "")
+        store.savePendingOAuthState(state)
+        return state
+    }
+
+    fun verifyAndConsumeOAuthState(incoming: String?): Boolean {
+        val expected = store.consumePendingOAuthState()
+        if (expected.isNullOrBlank()) return true
+        return !incoming.isNullOrBlank() && expected == incoming
+    }
+
+    private fun isValidEmail(raw: String): Boolean {
+        val clean = raw.trim()
+        val at = clean.indexOf('@')
+        val dot = clean.lastIndexOf('.')
+        return clean.length >= 5 && at > 0 && dot > at + 1 && dot < clean.length - 1 && !clean.contains(' ')
+    }
+
     fun signIn(email: String, password: String) {
+        val cleanEmail = email.trim()
+        if (!isValidEmail(cleanEmail)) {
+            _state.update { it.copy(authError = "Введите корректный адрес email") }
+            return
+        }
         viewModelScope.launch {
             _state.update { it.copy(isAuthLoading = true, authError = null) }
             runCatching {
-                authApi.signInWithEmail(email.trim(), password)
+                try {
+                    authApi.signInWithEmail(cleanEmail, password)
+                } catch (err: Throwable) {
+                    val localMatch = store.authenticateLocalEmailAccount(cleanEmail, password)
+                    if (localMatch != null) {
+                        localMatch
+                    } else if (err is FirebaseOperationNotAllowedException) {
+                        throw IllegalStateException("Аккаунт с этим email не найден. Перейдите на вкладку «Регистрация» или войдите через Google.")
+                    } else {
+                        throw err
+                    }
+                }
             }.onSuccess { session ->
                 store.saveSession(session)
                 _state.update {
@@ -304,10 +355,13 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         session = session,
                         isAuthLoading = false,
                         authError = null,
-                        needsAccentOnboarding = false
+                        needsAccentOnboarding = false,
+                        cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
                     )
                 }
-                syncAllFromCloud()
+                if (session.isCloudSynced) {
+                    syncAllFromCloud()
+                }
             }.onFailure { err ->
                 _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка входа") }
             }
@@ -315,10 +369,25 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun signUp(email: String, password: String, displayName: String) {
+        val cleanEmail = email.trim()
+        val cleanName = displayName.trim()
+        if (!isValidEmail(cleanEmail)) {
+            _state.update { it.copy(authError = "Введите корректный адрес email") }
+            return
+        }
+        if (password.length < 6) {
+            _state.update { it.copy(authError = "Пароль должен содержать минимум 6 символов") }
+            return
+        }
         viewModelScope.launch {
             _state.update { it.copy(isAuthLoading = true, authError = null) }
             runCatching {
-                authApi.signUpWithEmail(email.trim(), password, displayName.trim())
+                try {
+                    authApi.signUpWithEmail(cleanEmail, password, cleanName)
+                } catch (_: FirebaseOperationNotAllowedException) {
+                    // Matches web firebase-service.ts fallback when Firebase Email/Password provider is disabled
+                    store.registerLocalEmailAccount(cleanEmail, password, cleanName)
+                }
             }.onSuccess { session ->
                 store.saveSession(session)
                 _state.update {
@@ -326,14 +395,17 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         session = session,
                         isAuthLoading = false,
                         authError = null,
-                        needsAccentOnboarding = true
+                        needsAccentOnboarding = true,
+                        cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
                     )
                 }
-                val lp = _state.value.layoutPrefs
-                viewModelScope.launch {
-                    firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+                if (session.isCloudSynced) {
+                    val lp = _state.value.layoutPrefs
+                    viewModelScope.launch {
+                        firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+                    }
+                    syncAllFromCloud()
                 }
-                syncAllFromCloud()
             }.onFailure { err ->
                 _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка регистрации") }
             }
@@ -351,6 +423,29 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onGoogleAuthError(message: String) {
         _state.update { it.copy(isGoogleAuthLoading = false, isAuthLoading = false, authError = message) }
+    }
+
+    fun signInWithFirebaseBridge(
+        uid: String,
+        email: String,
+        displayName: String,
+        idToken: String,
+        refreshToken: String
+    ) {
+        if (uid.isBlank() || idToken.isBlank()) {
+            onGoogleAuthError("Не удалось завершить вход через Google. Попробуйте ещё раз.")
+            return
+        }
+        val session = AuthSession(
+            uid = uid,
+            email = email,
+            displayName = displayName.ifBlank { email.substringBefore("@").ifBlank { "User" } },
+            idToken = idToken,
+            refreshToken = refreshToken,
+            expiresAtMs = System.currentTimeMillis() + 3500_000L,
+            isGuest = false
+        )
+        completeGoogleSession(session)
     }
 
     fun signInWithGoogleIdToken(googleIdToken: String) {
@@ -400,11 +495,13 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 needsAccentOnboarding = false
             )
         }
-        val lp = _state.value.layoutPrefs
-        viewModelScope.launch {
-            firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+        if (session.isCloudSynced) {
+            val lp = _state.value.layoutPrefs
+            viewModelScope.launch {
+                firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+            }
+            syncAllFromCloud()
         }
-        syncAllFromCloud()
     }
 
     fun continueAsGuest() {

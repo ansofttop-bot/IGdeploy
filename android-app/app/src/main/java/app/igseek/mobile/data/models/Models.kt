@@ -32,7 +32,7 @@ enum class AccentPresetId(val id: String, val title: String) {
 }
 
 enum class AiModelId(val apiId: String, val label: String, val badge: String) {
-    INSTINCT("instinct", "IGseek 4.0 instinct", "Default"),
+    INSTINCT("instinct", "IGseek 3.5 instinct", "Default"),
     CHAT("chat", "IGseek 3.2 chat", "Fast"),
     F1("f1", "IGseek F1", "Reasoning")
 }
@@ -95,7 +95,10 @@ data class AuthSession(
     val refreshToken: String,
     val expiresAtMs: Long,
     val isGuest: Boolean = false
-)
+) {
+    val isCloudSynced: Boolean
+        get() = !isGuest && idToken.isNotBlank() && !idToken.startsWith("local_")
+}
 
 data class ProjectFolder(
     val id: String,

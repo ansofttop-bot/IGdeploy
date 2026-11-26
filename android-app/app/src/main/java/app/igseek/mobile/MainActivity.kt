@@ -171,31 +171,30 @@ class MainActivity : FragmentActivity() {
             } catch (_: GetCredentialCancellationException) {
                 viewModel.setGoogleAuthLoading(false)
             } catch (_: Exception) {
-                // Fallback to browser OAuth Custom Tab if Credential Manager is unavailable or debug SHA-1 differs
+                // Native Credential Manager requires registered APK SHA-1.
+                // Fall back to Google OAuth 2.0-compliant IGseek Web Auth Bridge in Chrome Custom Tab.
                 viewModel.setGoogleAuthLoading(false)
-                launchGoogleBrowserOAuthFallback(clientId)
+                launchGoogleWebBridge()
             }
         }
     }
 
-    private fun launchGoogleBrowserOAuthFallback(clientId: String) {
-        val redirectUri = URLEncoder.encode("app.igseek.mobile://auth", StandardCharsets.UTF_8.name())
-        val scope = URLEncoder.encode("openid email profile", StandardCharsets.UTF_8.name())
-        val nonce = System.currentTimeMillis().toString()
-        val url = "https://accounts.google.com/o/oauth2/v2/auth" +
-            "?client_id=$clientId" +
-            "&redirect_uri=$redirectUri" +
-            "&response_type=token" +
-            "&scope=$scope" +
-            "&prompt=select_account" +
-            "&nonce=$nonce"
+    private fun launchGoogleWebBridge() {
+        val bridgeBase = viewModel.getAuthBridgeBaseUrl()
+        if (bridgeBase.isBlank()) {
+            viewModel.onGoogleAuthError("Адрес сервера авторизации не настроен. Зарегистрируйтесь по email.")
+            return
+        }
+        val state = URLEncoder.encode(viewModel.createAndStoreOAuthState(), StandardCharsets.UTF_8.name())
+        val url = "$bridgeBase/login?mobile_auth=1&state=$state"
         openCustomTab(url)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
 
-        // Handle Google OAuth Custom Tab redirect: app.igseek.mobile://auth#access_token=... or ?id_token=...
+        // Handle Google OAuth / Firebase Web Bridge redirect:
+        // app.igseek.mobile://auth#firebase_id_token=...&refresh_token=...&uid=...&email=...&name=...&state=...
         val dataUri = intent.data
         if (dataUri != null && dataUri.scheme == "app.igseek.mobile" && dataUri.host == "auth") {
             val fragment = dataUri.fragment.orEmpty()
@@ -205,10 +204,30 @@ class MainActivity : FragmentActivity() {
                 val parts = pair.split("=", limit = 2)
                 if (parts.size == 2) parts[0] to Uri.decode(parts[1]) else null
             }.toMap()
+            val firebaseIdToken = params["firebase_id_token"]
+            val refreshToken = params["refresh_token"].orEmpty()
+            val uid = params["uid"].orEmpty()
+            val email = params["email"].orEmpty()
+            val displayName = params["name"].orEmpty()
+            val state = params["state"]
             val idToken = params["id_token"]
             val accessToken = params["access_token"]
             val error = params["error"]
+
             when {
+                !firebaseIdToken.isNullOrBlank() -> {
+                    if (!viewModel.verifyAndConsumeOAuthState(state)) {
+                        viewModel.onGoogleAuthError("Ошибка проверки состояния авторизации. Попробуйте ещё раз.")
+                    } else {
+                        viewModel.signInWithFirebaseBridge(
+                            uid = uid,
+                            email = email,
+                            displayName = displayName,
+                            idToken = firebaseIdToken,
+                            refreshToken = refreshToken
+                        )
+                    }
+                }
                 !idToken.isNullOrBlank() -> viewModel.signInWithGoogleIdToken(idToken)
                 !accessToken.isNullOrBlank() -> viewModel.signInWithGoogleAccessToken(accessToken)
                 !error.isNullOrBlank() -> viewModel.onGoogleAuthError("Вход через Google отменён ($error)")

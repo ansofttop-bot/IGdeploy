@@ -49,4 +49,23 @@ class ModelsUnitTest {
         assertTrue(ids.contains("f1"))
         assertEquals(6, AgentRoleId.entries.size)
     }
+
+    @Test
+    fun authSessionDistinguishesCloudFromLocalEmailAndGuest() {
+        val cloud = app.igseek.mobile.data.models.AuthSession(
+            uid = "fb_uid_1",
+            email = "user@gmail.com",
+            displayName = "User",
+            idToken = "eyJhbGciOiJSUzI1NiJ9.payload.sig",
+            refreshToken = "refresh_1",
+            expiresAtMs = Long.MAX_VALUE,
+            isGuest = false
+        )
+        val localEmail = cloud.copy(uid = "local_123", idToken = "", refreshToken = "")
+        val guest = cloud.copy(uid = "local_guest", idToken = "", isGuest = true)
+
+        assertTrue(cloud.isCloudSynced)
+        assertFalse(localEmail.isCloudSynced)
+        assertFalse(guest.isCloudSynced)
+    }
 }

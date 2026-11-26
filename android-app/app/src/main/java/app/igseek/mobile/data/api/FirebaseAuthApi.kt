@@ -10,6 +10,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
+class FirebaseOperationNotAllowedException(message: String) : IllegalStateException(message)
+
 class FirebaseAuthApi(private val client: OkHttpClient) {
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -31,6 +33,9 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (!res.isSuccessful) {
                 val msg = obj?.optJSONObject("error")?.optString("message") ?: "Ошибка входа (${res.code})"
+                if (isOperationNotAllowed(msg)) {
+                    throw FirebaseOperationNotAllowedException(translateAuthError(msg))
+                }
                 throw IllegalStateException(translateAuthError(msg))
             }
             parseAuthResponse(obj ?: JSONObject(), email)
@@ -53,6 +58,9 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (!res.isSuccessful) {
                 val msg = obj?.optJSONObject("error")?.optString("message") ?: "Ошибка регистрации (${res.code})"
+                if (isOperationNotAllowed(msg)) {
+                    throw FirebaseOperationNotAllowedException(translateAuthError(msg))
+                }
                 throw IllegalStateException(translateAuthError(msg))
             }
             parseAuthResponse(obj ?: JSONObject(), email, displayName)
@@ -76,7 +84,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     }
 
     suspend fun refreshSession(current: AuthSession): AuthSession = withContext(Dispatchers.IO) {
-        if (current.isGuest || current.refreshToken.isBlank() || apiKey.isBlank()) return@withContext current
+        if (!current.isCloudSynced || current.refreshToken.isBlank() || apiKey.isBlank()) return@withContext current
         if (System.currentTimeMillis() < current.expiresAtMs - 120_000L) return@withContext current
 
         val body = JSONObject().apply {
@@ -166,12 +174,19 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         )
     }
 
+    private fun isOperationNotAllowed(code: String): Boolean =
+        code.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ||
+            code.contains("ADMIN_RESTRICTED_OPERATION", ignoreCase = true)
+
     private fun translateAuthError(code: String): String = when {
         code.contains("INVALID_LOGIN_CREDENTIALS") || code.contains("INVALID_PASSWORD") -> "Неверный email или пароль"
         code.contains("EMAIL_EXISTS") -> "Этот email уже зарегистрирован"
         code.contains("EMAIL_NOT_FOUND") -> "Аккаунт с таким email не найден"
+        code.contains("INVALID_EMAIL") -> "Введите корректный адрес email"
         code.contains("WEAK_PASSWORD") -> "Пароль должен содержать минимум 6 символов"
+        code.contains("USER_DISABLED") -> "Этот аккаунт временно отключён"
         code.contains("TOO_MANY_ATTEMPTS") -> "Слишком много попыток, попробуйте чуть позже"
+        isOperationNotAllowed(code) -> "Вход по паролю недоступен на сервере Firebase — используется локальный аккаунт"
         else -> code
     }
 }

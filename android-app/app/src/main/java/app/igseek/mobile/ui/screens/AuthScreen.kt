@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -93,15 +94,20 @@ fun AuthScreen(
     val busy = state.isAuthLoading || state.isGoogleAuthLoading
 
     IGseekCanvas {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .imePadding()
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
             // Top Controls: Theme + Language (Lucide icons, website style)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -179,6 +185,7 @@ fun AuthScreen(
                             mode = "signin"
                             showEmailForm = false
                             isForgot = false
+                            viewModel.clearAuthError()
                         },
                         modifier = Modifier.weight(1f)
                     )
@@ -189,6 +196,7 @@ fun AuthScreen(
                             mode = "signup"
                             showEmailForm = true
                             isForgot = false
+                            viewModel.clearAuthError()
                         },
                         modifier = Modifier.weight(1f)
                     )
@@ -361,7 +369,10 @@ fun AuthScreen(
 
                     OutlinedTextField(
                         value = email,
-                        onValueChange = { email = it },
+                        onValueChange = {
+                            email = it
+                            viewModel.clearAuthError()
+                        },
                         placeholder = { Text("name@example.com") },
                         leadingIcon = {
                             Icon(LucideIcons.Mail, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(17.dp))
@@ -376,7 +387,10 @@ fun AuthScreen(
                     if (!isForgot) {
                         OutlinedTextField(
                             value = password,
-                            onValueChange = { password = it },
+                            onValueChange = {
+                                password = it
+                                viewModel.clearAuthError()
+                            },
                             placeholder = {
                                 Text(
                                     if (mode == "signup") {
@@ -480,6 +494,7 @@ fun AuthScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
+            }
         }
     }
 }

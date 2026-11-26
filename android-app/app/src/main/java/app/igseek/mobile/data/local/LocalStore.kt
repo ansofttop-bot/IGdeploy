@@ -24,6 +24,9 @@ import app.igseek.mobile.data.models.ProjectFolder
 import app.igseek.mobile.data.models.WebSourceItem
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.UUID
 
 class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 2) {
 
@@ -178,6 +181,92 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
 
     fun clearSession() {
         prefs.edit().remove("auth_session").apply()
+    }
+
+    // ==================== LOCAL EMAIL ACCOUNT FALLBACK (MATCHES WEB) ====================
+
+    fun savePendingOAuthState(state: String) {
+        prefs.edit().putString("pending_oauth_state", state).apply()
+    }
+
+    fun consumePendingOAuthState(): String? {
+        val state = prefs.getString("pending_oauth_state", null)
+        prefs.edit().remove("pending_oauth_state").apply()
+        return state
+    }
+
+    fun registerLocalEmailAccount(email: String, password: String, displayName: String): AuthSession {
+        val cleanEmail = email.trim()
+        val key = cleanEmail.lowercase()
+        val accounts = readLocalAccountsJson()
+        if (accounts.has(key)) {
+            throw IllegalStateException("Аккаунт с таким email уже существует. Перейдите на вкладку «Вход».")
+        }
+
+        val saltBytes = ByteArray(16)
+        SecureRandom().nextBytes(saltBytes)
+        val saltHex = saltBytes.joinToString("") { "%02x".format(it) }
+        val hashHex = hashLocalPassword(password, saltHex)
+        val uid = "local_${UUID.randomUUID().toString().replace("-", "").take(16)}"
+        val resolvedName = displayName.trim().ifBlank { cleanEmail.substringBefore("@").ifBlank { "User" } }
+
+        val record = JSONObject().apply {
+            put("uid", uid)
+            put("email", cleanEmail)
+            put("displayName", resolvedName)
+            put("salt", saltHex)
+            put("passwordHash", hashHex)
+            put("createdAtMs", System.currentTimeMillis())
+        }
+        accounts.put(key, record)
+        prefs.edit().putString("local_email_accounts_v1", accounts.toString()).apply()
+
+        return AuthSession(
+            uid = uid,
+            email = cleanEmail,
+            displayName = resolvedName,
+            idToken = "",
+            refreshToken = "",
+            expiresAtMs = Long.MAX_VALUE,
+            isGuest = false
+        )
+    }
+
+    fun authenticateLocalEmailAccount(email: String, password: String): AuthSession? {
+        val cleanEmail = email.trim()
+        val key = cleanEmail.lowercase()
+        val accounts = readLocalAccountsJson()
+        val record = accounts.optJSONObject(key) ?: return null
+        val saltHex = record.optString("salt")
+        val storedHash = record.optString("passwordHash")
+        val computedHash = hashLocalPassword(password, saltHex)
+        val matches = MessageDigest.isEqual(
+            storedHash.toByteArray(Charsets.UTF_8),
+            computedHash.toByteArray(Charsets.UTF_8)
+        )
+        if (!matches) {
+            throw IllegalStateException("Неверный email или пароль")
+        }
+        return AuthSession(
+            uid = record.optString("uid"),
+            email = record.optString("email").ifBlank { cleanEmail },
+            displayName = record.optString("displayName").ifBlank { cleanEmail.substringBefore("@") },
+            idToken = "",
+            refreshToken = "",
+            expiresAtMs = Long.MAX_VALUE,
+            isGuest = false
+        )
+    }
+
+    private fun readLocalAccountsJson(): JSONObject {
+        val raw = prefs.getString("local_email_accounts_v1", null) ?: return JSONObject()
+        return runCatching { JSONObject(raw) }.getOrElse { JSONObject() }
+    }
+
+    private fun hashLocalPassword(password: String, salt: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$salt:$password:igseek_android_v1".toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     // ==================== LAYOUT PREFERENCES ====================
