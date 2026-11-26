@@ -130,8 +130,11 @@ export function AuthCard({
         throw res.error;
       }
       try {
+        const newUid = (res as any)?.data?.user?.id || "";
         window.localStorage.removeItem("igseek:guest_account");
         window.localStorage.setItem("igseek:has_logged_in", "1");
+        window.localStorage.setItem("igseek:just_registered_uid", newUid || "1");
+        window.dispatchEvent(new CustomEvent("igseek:registration-pro-offer", { detail: { uid: newUid } }));
       } catch {
       }
       await Promise.race([

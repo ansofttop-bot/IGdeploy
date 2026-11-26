@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getWritableDataDir } from "./server-data-dir";
 
-export const DAILY_PHOTO_LIMIT = 8;
+export const DAILY_PHOTO_LIMIT = 20;
 export const PHOTO_RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export type ServerPhotoQuotaState = {
@@ -167,3 +167,88 @@ export function consumeServerPhotoQuota(
     resetAt: updated.resetAt,
   };
 }
+
+// ---------- Silent Pro hourly anti-abuse tracker (> 8 paid images/hour -> silent Pollinations fallback) ----------
+export const PRO_HOURLY_PAID_IMAGE_LIMIT = 8;
+export const PRO_HOURLY_WINDOW_MS = 60 * 60 * 1000;
+
+const PRO_HOURLY_STORE_FILE = path.join(DATA_DIR, "pro-hourly-images.json");
+let proHourlyCache: Map<string, number[]> | null = null;
+let proHourlyFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function ensureProHourlyLoaded(): Map<string, number[]> {
+  if (proHourlyCache) return proHourlyCache;
+  const map = new Map<string, number[]>();
+  try {
+    if (fs.existsSync(PRO_HOURLY_STORE_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(PRO_HOURLY_STORE_FILE, "utf8")) as Record<string, number[]>;
+      const cutoff = Date.now() - PRO_HOURLY_WINDOW_MS;
+      for (const [k, arr] of Object.entries(raw || {})) {
+        if (!Array.isArray(arr)) continue;
+        const recent = arr.filter((ts) => typeof ts === "number" && ts > cutoff);
+        if (recent.length > 0) map.set(k, recent);
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+  proHourlyCache = map;
+  return map;
+}
+
+function scheduleProHourlyFlush(): void {
+  if (proHourlyFlushTimer) return;
+  proHourlyFlushTimer = setTimeout(() => {
+    proHourlyFlushTimer = null;
+    try {
+      const map = ensureProHourlyLoaded();
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const cutoff = Date.now() - PRO_HOURLY_WINDOW_MS;
+      const obj: Record<string, number[]> = {};
+      for (const [k, arr] of map.entries()) {
+        const recent = arr.filter((ts) => ts > cutoff);
+        if (recent.length > 0) obj[k] = recent;
+      }
+      fs.writeFileSync(PRO_HOURLY_STORE_FILE, JSON.stringify(obj), "utf8");
+    } catch {
+      // non-fatal on serverless FS
+    }
+  }, 250);
+  if (typeof proHourlyFlushTimer.unref === "function") {
+    proHourlyFlushTimer.unref();
+  }
+}
+
+/**
+ * Checks whether a Pro user has exceeded 8 paid image generations/edits in the past 60 minutes.
+ * Never surfaces an error or limit UI — callers silently route to Pollinations (with DeepSeek
+ * describing reference images for edits) once the threshold is exceeded.
+ */
+export function evaluateProHourlyImageRoute(actorKey: string): {
+  useSilentPollinations: boolean;
+  countInLastHour: number;
+} {
+  const now = Date.now();
+  const cutoff = now - PRO_HOURLY_WINDOW_MS;
+  const map = ensureProHourlyLoaded();
+  const recent = (map.get(actorKey) || []).filter((ts) => ts > cutoff);
+  map.set(actorKey, recent);
+  return {
+    useSilentPollinations: recent.length >= PRO_HOURLY_PAID_IMAGE_LIMIT,
+    countInLastHour: recent.length,
+  };
+}
+
+export function recordProHourlyImageGeneration(actorKey: string): number {
+  const now = Date.now();
+  const cutoff = now - PRO_HOURLY_WINDOW_MS;
+  const map = ensureProHourlyLoaded();
+  const recent = (map.get(actorKey) || []).filter((ts) => ts > cutoff);
+  recent.push(now);
+  map.set(actorKey, recent);
+  scheduleProHourlyFlush();
+  return recent.length;
+}
+

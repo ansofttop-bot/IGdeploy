@@ -753,7 +753,7 @@ export function FlowView({
       const reset = ensureScopeResetTimestamp("flow", usageUid);
       setCooldownResetAt(reset);
       toast.error(
-        `${t("Flow prompt limit reached (18/18).")} ${t("Limits will reset in")} ${formatRemainingReset(reset, lang)}.`,
+        `${t("Flow prompt limit reached (20/20).")} ${t("Limits will reset in")} ${formatRemainingReset(reset, lang)}.`,
       );
       return;
     }
@@ -1784,16 +1784,18 @@ export function FlowView({
                       </span>
                     </div>
 
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-mono font-semibold ${
-                        flowExhausted
-                          ? "border-red-500/40 bg-red-500/10 text-red-500"
-                          : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
-                      }`}
-                      title={t("Prompts used")}
-                    >
-                      {flowUsed}/{flowLimit}
-                    </span>
+                    {Number.isFinite(flowLimit) && (
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-mono font-semibold ${
+                          flowExhausted
+                            ? "border-red-500/40 bg-red-500/10 text-red-500"
+                            : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
+                        }`}
+                        title={t("Prompts used")}
+                      >
+                        {flowUsed}/{flowLimit}
+                      </span>
+                    )}
                   </div>
 
                   {isPlanning ? (

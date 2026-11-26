@@ -11,6 +11,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
+import { callMistralFreeText } from "./mistral-free";
 
 export type MemoryAttachment = {
   name: string;
@@ -589,6 +590,7 @@ export async function analyzeAndUpdateMemory(
   userMessage: string,
   assistantMessage: string,
   token?: string,
+  options?: { useFreeModel?: boolean },
 ): Promise<boolean> {
   if (!token || (!isFirebaseJwt(token) && !isLocalFallbackToken(token))) return false;
   const trimmedMsg = userMessage.trim();
@@ -599,10 +601,11 @@ export async function analyzeAndUpdateMemory(
   if (trimmedMsg.length < 10 || !hasDurableMemorySignal) {
     return false;
   }
+  const useFreeModel = Boolean(options?.useFreeModel);
   const key = (process.env.DEEPSEEK_API_KEY || "").trim();
   const apimiraKey = (process.env.APIMIRA_API_KEY || "").trim();
   const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
-  if (!key && !apimiraKey) return false;
+  if (!useFreeModel && !key && !apimiraKey) return false;
 
   let existing: MemoryRow[] = [];
   try {
@@ -623,11 +626,25 @@ export async function analyzeAndUpdateMemory(
   let decisions: MemoryDecision[] = [];
   try {
     let rawRaw = "";
+    if (useFreeModel) {
+      rawRaw =
+        (await callMistralFreeText({
+          messages: [
+            { role: "system", content: ANALYZER_SYSTEM },
+            { role: "user", content: analysisPrompt },
+          ],
+          temperature: 0.2,
+          maxTokens: 256,
+          jsonMode: true,
+          timeoutMs: 18_000,
+          allowPollinationsFallback: false,
+        })) || "";
+    }
     const endpoints: Array<{ url: string; apiKey: string; model: string; isDirect: boolean }> = [];
-    if (shouldTryDirectDeepSeek(key, apimiraKey)) {
+    if (!useFreeModel && shouldTryDirectDeepSeek(key, apimiraKey)) {
       endpoints.push({ url: "https://api.deepseek.com/chat/completions", apiKey: key, model: DEEPSEEK_DIRECT_CHAT, isDirect: true });
     }
-    if (apimiraKey) {
+    if (!useFreeModel && apimiraKey) {
       for (const modelId of getApimiraFallbackChain("f1", false)) {
         endpoints.push({ url: `${apimiraBase}/chat/completions`, apiKey: apimiraKey, model: modelId, isDirect: false });
       }

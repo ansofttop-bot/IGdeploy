@@ -19,6 +19,7 @@ import {
   resolveEffectiveTemperature,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
+import { callMistralFreeText } from "./mistral-free";
 
 export type FlowModelId = "instinct" | "chat" | "f1";
 
@@ -31,6 +32,7 @@ export interface PlanContext {
   userScope?: string | null;
   agent?: AgentId;
   model?: FlowModelId;
+  useFreeModel?: boolean;
 }
 
 export interface StepExecutionContext {
@@ -38,6 +40,7 @@ export interface StepExecutionContext {
   autonomy: FlowAutonomyLevel;
   agent?: AgentId;
   model?: FlowModelId;
+  useFreeModel?: boolean;
   projectId?: string | null;
   userScope?: string | null;
   previousSteps?: Array<{ title: string; tool: string; status: string; output?: string }>;
@@ -111,10 +114,24 @@ function deepseekModelFor(model?: FlowModelId): string {
 
 async function generateTextWithDeepSeek(
   prompt: string,
-  opts?: { agent?: AgentId; model?: FlowModelId },
+  opts?: { agent?: AgentId; model?: FlowModelId; useFreeModel?: boolean },
 ): Promise<string | null> {
   const directive = buildFlowSystemDirective(opts?.agent || "universal");
   const temperature = modelTemperatureFor(opts?.model);
+
+  if (opts?.useFreeModel) {
+    const freeText = await callMistralFreeText({
+      messages: [
+        { role: "system", content: directive },
+        { role: "user", content: prompt },
+      ],
+      temperature: temperature ?? 0.5,
+      maxTokens: 3000,
+      timeoutMs: 30_000,
+    });
+    return freeText ? freeText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : null;
+  }
+
   const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim();
   const apimiraKey = (process.env.APIMIRA_API_KEY || "").trim();
   const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
@@ -241,6 +258,59 @@ Rules:
   const userPrompt = `GOAL: ${goal}\nAUTONOMY MODE: ${autonomy}`;
 
   const temperature = modelTemperatureFor(context.model);
+
+  if (context.useFreeModel) {
+    try {
+      const freeText = await callMistralFreeText({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: temperature ?? 0.4,
+        maxTokens: 2048,
+        jsonMode: true,
+        timeoutMs: 25_000,
+      });
+      if (freeText) {
+        const clean = freeText.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/```json\s*|```/gi, "").trim();
+        const jsonMatch = clean.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+        if (parsed.steps && Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Mistral Free planning failed:", e);
+    }
+    const slug = sanitizeLibraryFilename(goal.slice(0, 28)).replace(/\.[^.]+$/, "") || "flow_report";
+    return {
+      title: goal.slice(0, 50),
+      steps: [
+        {
+          title: "Web search & data gathering",
+          description: "Search for up-to-date information and sources for the goal",
+          tool: "web_search",
+          toolParams: { query: goal },
+          requiresApproval: false,
+        },
+        {
+          title: "Inspect workspace in terminal",
+          description: "Check sandbox files and ./library directory",
+          tool: "terminal",
+          toolParams: { command: "pwd && ls -la library" },
+          requiresApproval: false,
+        },
+        {
+          title: "Save final report to Library",
+          description: "Compile findings into a structured markdown report",
+          tool: "library",
+          toolParams: { action: "create", filename: `${slug}.md`, title: goal.slice(0, 50), type: "report" },
+          requiresApproval: false,
+        },
+      ],
+    };
+  }
+
   const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim();
   const apimiraKey = (process.env.APIMIRA_API_KEY || "").trim();
   const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
@@ -378,7 +448,7 @@ Step description: ${step.description || ""}
 Overall goal: ${taskContext.goal}
 Files currently in ./library: ${diskFiles.map((f) => f.name).join(", ") || "(empty)"}
 Rules: Never access /app, /proc, /sys, or ../. If creating output files, save them in ./library/. If inspecting files, inspect ./library/.`,
-    { agent: taskContext.agent, model: taskContext.model },
+    { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
   );
   if (aiCmd) {
     const cleaned = aiCmd.replace(/^```(?:bash|sh)?\s*|```$/gi, "").split("\n")[0].trim();
@@ -523,7 +593,7 @@ export async function executeFlowStep(
 
       const synthesis = await generateTextWithDeepSeek(
         `Based ONLY on these live web search results for "${q}", write a concise structured summary (3–5 points) with source links in the same language as the goal (${taskContext.goal}):\n\n${formattedHits}`,
-        { agent: taskContext.agent, model: taskContext.model },
+        { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
       );
 
       if (synthesis) {
@@ -673,7 +743,7 @@ export async function executeFlowStep(
         analysis =
           (await generateTextWithDeepSeek(
             `Perform a concise real analysis of these Library files for task "${taskContext.goal}" (step: ${step.title}). Answer strictly based on file contents in the same language as the goal.\n\n${contentForAi}`,
-            { agent: taskContext.agent, model: taskContext.model },
+            { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
           )) || "";
       }
 
@@ -696,7 +766,7 @@ Real data from previous steps (MUST use in the document):
 ${prevSummary}
 
 If format is .json, return ONLY valid JSON without markdown wrappers. Otherwise return a Markdown document in the same language as the task goal.`,
-        { agent: taskContext.agent, model: taskContext.model },
+        { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
       );
       if (generated) {
         content = filename.endsWith(".json")
@@ -757,7 +827,7 @@ If format is .json, return ONLY valid JSON without markdown wrappers. Otherwise 
             String(step.toolParams?.body || "") ||
             (await generateTextWithDeepSeek(
               `Write a GitHub Issue body for repository ${repo} for task "${taskContext.goal}" (in the same language as the goal).\nContext:\n${prevSummary}`,
-              { agent: taskContext.agent, model: taskContext.model },
+              { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
             )) ||
             `Created via IGseek Flow:\n\n${taskContext.goal}`;
 
@@ -889,7 +959,7 @@ If format is .json, return ONLY valid JSON without markdown wrappers. Otherwise 
       body =
         (await generateTextWithDeepSeek(
           `Write a clear professional email body on subject "${subject}" in the same language as the goal.\nGoal: ${taskContext.goal}\nPrevious steps data:\n${prevSummary}`,
-          { agent: taskContext.agent, model: taskContext.model },
+          { agent: taskContext.agent, model: taskContext.model, useFreeModel: taskContext.useFreeModel },
         )) || `Hello,\n\nResults for "${taskContext.goal}":\n\n${prevSummary}`;
     }
 

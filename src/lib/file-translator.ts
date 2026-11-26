@@ -19,6 +19,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
+import { callMistralFreeText } from "./mistral-free";
 
 export type FileTranslatorArgs = {
   filename?: string;
@@ -33,6 +34,7 @@ export type FileTranslatorContext = {
   deepseekKey: string;
   apimiraKey: string;
   apimiraBaseUrl: string;
+  useFreeModel?: boolean;
   userAttachments?: Array<{ name: string; dataUrl: string; type?: string }>;
   libraryItems: ServerLibraryItem[];
   memories: MemoryRow[];
@@ -268,6 +270,17 @@ ${sanitizeTextForApi(payload.extractedContent).slice(0, 72_000)}`;
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
+
+  if (ctx.useFreeModel) {
+    const mistralText = await callMistralFreeText({
+      messages: apiMessages,
+      temperature: 0.2,
+      maxTokens: 3000,
+      timeoutMs: 35_000,
+    });
+    if (mistralText) return sanitizeTextForApi(mistralText);
+    return sanitizeTextForApi(payload.extractedContent).slice(0, 16_000);
+  }
 
   if (shouldTryDirectDeepSeek(ctx.deepseekKey, ctx.apimiraKey)) {
     try {

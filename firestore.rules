@@ -58,6 +58,12 @@ service cloud.firestore {
           'model', 'agent', 'ai_style', 'aiStyle', 'ai_creativity', 'aiCreativity',
           'ai_length', 'aiLength', 'accent', 'needs_accent_onboarding',
           'defaults_v2_migrated', 'plan', 'pro_lifetime', 'proLifetime',
+          'subscription_status', 'subscriptionStatus',
+          'subscription_started_at', 'subscriptionStartedAt',
+          'subscription_expires_at', 'subscriptionExpiresAt',
+          'subscription_txn_id', 'subscriptionTxnId',
+          'subscription_pending_txn_id', 'subscriptionPendingTxnId',
+          'subscription_proof', 'subscriptionProof',
           'signup_number', 'signupNumber', 'device_fingerprint', 'deviceFingerprint',
           'prompt_usage', 'promptUsage', 'created_at', 'createdAt',
           'updated_at', 'updatedAt', 'avatar_url', 'avatarUrl', 'photoURL'
@@ -80,6 +86,18 @@ service cloud.firestore {
         && isOptionalBool(data, 'needs_accent_onboarding')
         && isOptionalBool(data, 'defaults_v2_migrated')
         && isOptionalString(data, 'plan', 32)
+        && isOptionalString(data, 'subscription_status', 32)
+        && isOptionalString(data, 'subscriptionStatus', 32)
+        && isOptionalString(data, 'subscription_started_at', 64)
+        && isOptionalString(data, 'subscriptionStartedAt', 64)
+        && isOptionalString(data, 'subscription_expires_at', 64)
+        && isOptionalString(data, 'subscriptionExpiresAt', 64)
+        && isOptionalString(data, 'subscription_txn_id', 128)
+        && isOptionalString(data, 'subscriptionTxnId', 128)
+        && isOptionalString(data, 'subscription_pending_txn_id', 128)
+        && isOptionalString(data, 'subscriptionPendingTxnId', 128)
+        && isOptionalString(data, 'subscription_proof', 1024)
+        && isOptionalString(data, 'subscriptionProof', 1024)
         && isOptionalBool(data, 'pro_lifetime')
         && isOptionalBool(data, 'proLifetime')
         && isOptionalNumber(data, 'signup_number')
@@ -219,10 +237,10 @@ service cloud.firestore {
     function isValidDeviceLimits(data) {
       return data.keys().hasAll(['engine', 'chat', 'flow', 'updatedAt'])
         && data.keys().hasOnly(['engine', 'chat', 'flow', 'image', 'engineResetAt', 'chatResetAt', 'flowResetAt', 'imageResetAt', 'updatedAt', 'updated_at'])
-        && data.engine is int && data.engine >= 0 && data.engine <= 18
+        && data.engine is int && data.engine >= 0 && data.engine <= 20
         && data.chat is int && data.chat >= 0 && data.chat <= 1000000
-        && data.flow is int && data.flow >= 0 && data.flow <= 18
-        && (!('image' in data) || (data.image is int && data.image >= 0 && data.image <= 8))
+        && data.flow is int && data.flow >= 0 && data.flow <= 20
+        && (!('image' in data) || (data.image is int && data.image >= 0 && data.image <= 20))
         && (!('engineResetAt' in data) || (data.engineResetAt is int && data.engineResetAt >= 0))
         && (!('chatResetAt' in data) || (data.chatResetAt is int && data.chatResetAt >= 0))
         && (!('flowResetAt' in data) || (data.flowResetAt is int && data.flowResetAt >= 0))
@@ -354,7 +372,8 @@ service cloud.firestore {
         resource.data.userId == request.auth.uid
       );
       allow create: if isValidId(paymentId) && isValidPayment(request.resource.data);
-      allow update, delete: if false;
+      allow update: if isValidId(paymentId) && isDocOwner() && isValidPayment(request.resource.data);
+      allow delete: if false;
     }
 
     // Flow Tasks: /flow_tasks/{taskId}
@@ -386,9 +405,9 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && isValidId(fpHash)
         && isValidDeviceLimits(request.resource.data)
-        && (request.resource.data.engine < 18 || !('engineResetAt' in request.resource.data) || request.resource.data.engineResetAt == 0 || request.resource.data.engineResetAt > request.time.toMillis())
-        && (request.resource.data.flow < 18 || !('flowResetAt' in request.resource.data) || request.resource.data.flowResetAt == 0 || request.resource.data.flowResetAt > request.time.toMillis())
-        && (!('image' in request.resource.data) || request.resource.data.image < 8 || !('imageResetAt' in request.resource.data) || request.resource.data.imageResetAt == 0 || request.resource.data.imageResetAt > request.time.toMillis());
+        && (request.resource.data.engine < 20 || !('engineResetAt' in request.resource.data) || request.resource.data.engineResetAt == 0 || request.resource.data.engineResetAt > request.time.toMillis())
+        && (request.resource.data.flow < 20 || !('flowResetAt' in request.resource.data) || request.resource.data.flowResetAt == 0 || request.resource.data.flowResetAt > request.time.toMillis())
+        && (!('image' in request.resource.data) || request.resource.data.image < 20 || !('imageResetAt' in request.resource.data) || request.resource.data.imageResetAt == 0 || request.resource.data.imageResetAt > request.time.toMillis());
       allow update: if isSignedIn()
         && isValidId(fpHash)
         && isValidDeviceLimits(request.resource.data)
@@ -396,7 +415,7 @@ service cloud.firestore {
         && canUpdateDeviceScope(
           request.resource.data.engine,
           resource.data.engine,
-          18,
+          20,
           'engineResetAt' in resource.data,
           'engineResetAt' in resource.data ? resource.data.engineResetAt : 0,
           'engineResetAt' in request.resource.data ? request.resource.data.engineResetAt : 0,
@@ -405,7 +424,7 @@ service cloud.firestore {
         && canUpdateDeviceScope(
           request.resource.data.flow,
           resource.data.flow,
-          18,
+          20,
           'flowResetAt' in resource.data,
           'flowResetAt' in resource.data ? resource.data.flowResetAt : 0,
           'flowResetAt' in request.resource.data ? request.resource.data.flowResetAt : 0,
@@ -414,7 +433,7 @@ service cloud.firestore {
         && canUpdateDeviceScope(
           'image' in request.resource.data ? request.resource.data.image : 0,
           'image' in resource.data ? resource.data.image : 0,
-          8,
+          20,
           'imageResetAt' in resource.data,
           'imageResetAt' in resource.data ? resource.data.imageResetAt : 0,
           'imageResetAt' in request.resource.data ? request.resource.data.imageResetAt : 0,

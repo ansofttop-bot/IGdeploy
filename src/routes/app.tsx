@@ -63,10 +63,22 @@ import {
   markScopeExhausted,
   readPromptSnapshot,
   refundPrompt,
+  setUserProStatus,
   syncPromptUsageFromCloud,
   usePromptLimits,
 } from "@/lib/prompt-limits";
 import { getDeviceFingerprint } from "@/lib/device-fingerprint";
+import {
+  DEFAULT_FREE_SUBSCRIPTION,
+  fetchSubscriptionStatus,
+  getStoredPendingTxnId,
+  hasSeenRegistrationProOffer,
+  markRegistrationProOfferSeen,
+  verifyPlategaPayment,
+  type ClientSubscriptionState,
+} from "@/lib/subscription-client";
+import { SubscriptionPanel } from "@/components/subscription/SubscriptionPanel";
+import { RegistrationProOfferModal } from "@/components/subscription/RegistrationProOfferModal";
 
 const TContext = createContext<(k: string) => string>((k) => k);
 const useT = () => useContext(TContext);
@@ -144,6 +156,7 @@ import {
   Upload,
   Cloud,
   CloudOff,
+  Crown,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -422,6 +435,13 @@ function Index() {
   const [authReady, setAuthReady] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [profileInitialTab, setProfileInitialTab] = useState<"settings" | "personalization" | "subscription" | "account">("settings");
+  const openProfileTab = (nextTab: "settings" | "personalization" | "subscription" | "account" = "settings") => {
+    setProfileInitialTab(nextTab);
+    setProfileOpen(true);
+  };
+  const [subscriptionState, setSubscriptionState] = useState<ClientSubscriptionState>(DEFAULT_FREE_SUBSCRIPTION);
+  const [showRegProOffer, setShowRegProOffer] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryPulse, setMemoryPulse] = useState(0);
   const [tab, setTab] = useState<TabId>("chat");
@@ -589,15 +609,20 @@ function Index() {
       if (uid) pendingOnboardingUidRef.current = uid;
       setNeedsAccentOnboarding(true);
     };
+    const onRegProOffer = () => {
+      setShowRegProOffer(true);
+    };
     window.addEventListener("igseek:open-memory", onOpen);
     window.addEventListener("igseek:navigate-tab" as any, onNav);
     window.addEventListener("igseek:open-gmail-auth" as any, onGmailAuth);
     window.addEventListener("igseek:accent-onboarding-required", onAccentOnboarding);
+    window.addEventListener("igseek:registration-pro-offer", onRegProOffer);
     return () => {
       window.removeEventListener("igseek:open-memory", onOpen);
       window.removeEventListener("igseek:navigate-tab" as any, onNav);
       window.removeEventListener("igseek:open-gmail-auth" as any, onGmailAuth);
       window.removeEventListener("igseek:accent-onboarding-required", onAccentOnboarding);
+      window.removeEventListener("igseek:registration-pro-offer", onRegProOffer);
     };
   }, []);
 
@@ -606,6 +631,118 @@ function Index() {
       window.localStorage.setItem("igseek:sidebar_v2", sidebarOpen ? "1" : "0");
     } catch {}
   }, [sidebarOpen]);
+
+  const getSubscriptionAuthToken = async (): Promise<string> => {
+    if (accessTokenRef.current.token && Date.now() - accessTokenRef.current.fetchedAt < 45 * 60 * 1000) {
+      return accessTokenRef.current.token;
+    }
+    try {
+      const { data } = await supabase.auth.getSession();
+      const tok = data.session?.access_token || "";
+      if (tok) {
+        accessTokenRef.current = { token: tok, fetchedAt: Date.now() };
+      }
+      return tok;
+    } catch {
+      return accessTokenRef.current.token || "";
+    }
+  };
+
+  const applySubscriptionState = (next: ClientSubscriptionState, uid?: string | null) => {
+    setSubscriptionState(next);
+    if (uid) {
+      setUserProStatus(uid, Boolean(next.isPro));
+    }
+    setUser((prev) => {
+      if (!prev) return prev;
+      const nextPlan: Plan = next.isPro ? "pro" : "free";
+      return prev.plan === nextPlan ? prev : { ...prev, plan: nextPlan };
+    });
+  };
+
+  useEffect(() => {
+    if (!user || isGuest || user.id === GUEST_ID || user.id.startsWith("local_")) {
+      setSubscriptionState(DEFAULT_FREE_SUBSCRIPTION);
+      if (user?.id) setUserProStatus(user.id, false);
+      return;
+    }
+
+    let cancelled = false;
+    const uid = user.id;
+
+    try {
+      const justRegistered = window.localStorage.getItem("igseek:just_registered_uid");
+      if (justRegistered && (justRegistered === "1" || justRegistered === uid)) {
+        window.localStorage.removeItem("igseek:just_registered_uid");
+        if (!hasSeenRegistrationProOffer(uid)) {
+          setShowRegProOffer(true);
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const syncSubscription = async (showReturnToast = false) => {
+      try {
+        const token = await getSubscriptionAuthToken();
+        if (!token || cancelled) return;
+        const pendingTxn = getStoredPendingTxnId(uid);
+        if (pendingTxn) {
+          const res = await verifyPlategaPayment(token, pendingTxn, uid);
+          if (cancelled) return;
+          applySubscriptionState(res.subscription, uid);
+          if (res.verified) {
+            toast.success(t("Payment confirmed — IGseek Pro is active!"));
+          } else if (showReturnToast && res.message) {
+            toast.info(res.message);
+          }
+          return;
+        }
+        const status = await fetchSubscriptionStatus(token, uid);
+        if (cancelled) return;
+        applySubscriptionState(status, uid);
+        if (showReturnToast && status.isPro) {
+          toast.success(t("Payment confirmed — IGseek Pro is active!"));
+        }
+      } catch {
+        // non-blocking
+      }
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    const paymentResult = params.get("payment");
+    if (paymentResult === "success" || paymentResult === "failed") {
+      params.delete("payment");
+      const cleanUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
+      window.history.replaceState({}, "", cleanUrl);
+      if (paymentResult === "failed") {
+        toast.info(t("Payment was canceled or not completed."));
+      } else {
+        openProfileTab("subscription");
+      }
+      void syncSubscription(paymentResult === "success");
+    } else {
+      void syncSubscription(false);
+    }
+
+    const onFocus = () => {
+      if (document.visibilityState === "visible") {
+        void syncSubscription(false);
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    const periodicTimer = window.setInterval(() => {
+      void syncSubscription(false);
+    }, 10 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.clearInterval(periodicTimer);
+    };
+  }, [user?.id, isGuest]);
 
   useEffect(() => {
     if (!user || isGuest || user.id === GUEST_ID || user.id.startsWith("local_")) return;
@@ -1849,8 +1986,20 @@ function Index() {
       let reasoningBuf = "";
 
       let streamDone = false;
+      const CLIENT_STREAM_STALL_MS = 45_000;
       while (!streamDone) {
-        const { done, value } = await reader.read();
+        let clientStallTimer: ReturnType<typeof setTimeout> | null = null;
+        const { done, value } = await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) => {
+            clientStallTimer = setTimeout(() => {
+              controller.abort();
+              reject(new Error(t("Server response timed out. Please try again.")));
+            }, CLIENT_STREAM_STALL_MS);
+          }),
+        ]).finally(() => {
+          if (clientStallTimer) clearTimeout(clientStallTimer);
+        });
         if (done) {
           streamDone = true;
           buffer += decoder.decode();
@@ -2814,10 +2963,34 @@ function Index() {
           </div>
         </div>
 
-        <div className="shrink-0 border-t border-zinc-200/80 dark:border-white/[0.08] p-3">
+        <div className="shrink-0 border-t border-zinc-200/80 dark:border-white/[0.08] p-3 space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (isAuthed) {
+                openProfileTab("subscription");
+              } else {
+                setAuthOpen(true);
+              }
+            }}
+            className="w-full rounded-xl border border-zinc-200/70 dark:border-white/[0.08] bg-zinc-50/70 hover:bg-zinc-100/90 dark:bg-white/[0.02] dark:hover:bg-white/[0.05] px-2.5 py-2 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <Crown className={`h-3.5 w-3.5 shrink-0 ${subscriptionState.isPro ? "text-[var(--brand)]" : "text-zinc-500 dark:text-zinc-400"}`} />
+              <span className="text-[12px] font-medium text-zinc-700 dark:text-zinc-300 truncate">
+                {subscriptionState.isPro ? "IGseek Pro" : t("Upgrade to Pro")}
+              </span>
+            </span>
+            <span className="shrink-0 text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+              {subscriptionState.isPro
+                ? `${subscriptionState.daysLeft} ${t("d. left")}`
+                : `149 ₽/${t("mo")}`}
+            </span>
+          </button>
+
           {isAuthed ? (
             <button
-              onClick={() => setProfileOpen(true)}
+              onClick={() => openProfileTab("settings")}
               className="w-full rounded-xl border border-zinc-200/80 dark:border-white/[0.08] bg-zinc-100/70 hover:bg-zinc-200/70 dark:bg-white/[0.03] dark:hover:bg-white/[0.06] p-2.5 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
             >
               <div className="relative h-8 w-8 shrink-0 rounded-lg bg-zinc-900 dark:bg-[var(--brand)] flex items-center justify-center text-xs font-bold text-white">
@@ -3443,6 +3616,14 @@ function Index() {
             user={user}
             isGuest={isGuest}
             usageUid={usageUid}
+            initialTab={profileInitialTab}
+            subscription={subscriptionState}
+            getToken={getSubscriptionAuthToken}
+            onSubscriptionChange={(next) => applySubscriptionState(next, user.id)}
+            onRequestAuth={() => {
+              setProfileOpen(false);
+              setAuthOpen(true);
+            }}
             onClose={() => setProfileOpen(false)}
             onSignOut={signOut}
             onUpdate={updateUser}
@@ -3508,6 +3689,27 @@ function Index() {
               } catch {
               }
               toast.success(t("Accent color saved"));
+              if (!subscriptionState.isPro && !hasSeenRegistrationProOffer(user.id)) {
+                setShowRegProOffer(true);
+              }
+            }}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {user && !isGuest && !needsAccentOnboarding && showRegProOffer && !subscriptionState.isPro && (
+          <RegistrationProOfferModal
+            uid={user.id}
+            email={user.email}
+            t={t}
+            getToken={getSubscriptionAuthToken}
+            onDismiss={() => {
+              markRegistrationProOfferSeen(user.id);
+              setShowRegProOffer(false);
+            }}
+            onPaymentStarted={() => {
+              markRegistrationProOfferSeen(user.id);
+              setShowRegProOffer(false);
             }}
           />
         )}
@@ -8359,9 +8561,21 @@ Engine Studio automatically parses these blocks and writes files directly into t
       let sseBuffer = "";
       let currentEvent = "delta";
       let streamDone = false;
+      const ENGINE_STREAM_STALL_MS = 45_000;
 
       while (!streamDone) {
-        const { done, value } = await reader.read();
+        let engineStallTimer: ReturnType<typeof setTimeout> | null = null;
+        const { done, value } = await Promise.race([
+          reader.read(),
+          new Promise<never>((_resolve, reject) => {
+            engineStallTimer = setTimeout(() => {
+              controller.abort();
+              reject(new Error(t("Server response timed out. Please try again.")));
+            }, ENGINE_STREAM_STALL_MS);
+          }),
+        ]).finally(() => {
+          if (engineStallTimer) clearTimeout(engineStallTimer);
+        });
         if (done) {
           streamDone = true;
           sseBuffer += decoder.decode();
@@ -8856,16 +9070,18 @@ Engine Studio automatically parses these blocks and writes files directly into t
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 ml-auto">
-                  <span
-                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-mono font-semibold ${
-                      engineExhausted
-                        ? "border-red-500/40 bg-red-500/10 text-red-500"
-                        : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
-                    }`}
-                    title={t("Prompts used")}
-                  >
-                    {engineUsed}/{engineLimit}
-                  </span>
+                  {Number.isFinite(engineLimit) && (
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-mono font-semibold ${
+                        engineExhausted
+                          ? "border-red-500/40 bg-red-500/10 text-red-500"
+                          : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
+                      }`}
+                      title={t("Prompts used")}
+                    >
+                      {engineUsed}/{engineLimit}
+                    </span>
+                  )}
 
                 {isGenerating ? (
                   <button
@@ -9148,16 +9364,18 @@ Engine Studio automatically parses these blocks and writes files directly into t
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 ml-auto">
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-mono font-semibold ${
-                        engineExhausted
-                          ? "border-red-500/40 bg-red-500/10 text-red-500"
-                          : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
-                      }`}
-                      title={t("Prompts used")}
-                    >
-                      {engineUsed}/{engineLimit}
-                    </span>
+                    {Number.isFinite(engineLimit) && (
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-mono font-semibold ${
+                          engineExhausted
+                            ? "border-red-500/40 bg-red-500/10 text-red-500"
+                            : "border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 text-muted-foreground"
+                        }`}
+                        title={t("Prompts used")}
+                      >
+                        {engineUsed}/{engineLimit}
+                      </span>
+                    )}
                     {isGenerating ? (
                       <button
                         type="button"
@@ -9968,6 +10186,11 @@ function ProfileModal({
   user,
   isGuest = false,
   usageUid = "guest",
+  initialTab = "settings",
+  subscription = DEFAULT_FREE_SUBSCRIPTION,
+  getToken,
+  onSubscriptionChange,
+  onRequestAuth,
   onClose,
   onSignOut,
   onUpdate,
@@ -9980,6 +10203,11 @@ function ProfileModal({
   user: NonNullable<User>;
   isGuest?: boolean;
   usageUid?: string;
+  initialTab?: "settings" | "personalization" | "subscription" | "account";
+  subscription?: ClientSubscriptionState;
+  getToken?: () => Promise<string>;
+  onSubscriptionChange?: (next: ClientSubscriptionState) => void;
+  onRequestAuth?: () => void;
   onClose: () => void;
   onSignOut: () => void;
   onUpdate?: (patch: Partial<NonNullable<User>>) => void;
@@ -9991,8 +10219,12 @@ function ProfileModal({
 }) {
   const t = useT();
   const lang = useLang();
-  const { usage: promptUsage, resetAt: promptResetAt, limits: promptLimits } = usePromptLimits(usageUid);
-  const [activeTab, setActiveTab] = useState<"settings" | "personalization" | "account">("settings");
+  const { isPro: isProLimits } = usePromptLimits(usageUid);
+  const isProPlan = Boolean(subscription?.isPro || isProLimits);
+  const [activeTab, setActiveTab] = useState<"settings" | "personalization" | "subscription" | "account">(initialTab);
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
   const [accent, setAccent] = useAccent();
   const [theme, setTheme] = useTheme();
   const [selectedModel, setSelectedModel] = useState<ModelId>(() => {
@@ -10123,10 +10355,10 @@ function ProfileModal({
         </div>
 
         <div className="flex items-center justify-center border-b border-border/70 py-3 shrink-0">
-          <div className="flex w-full max-w-sm rounded-xl border border-border bg-surface-elevated/60 p-0.5 text-xs">
+          <div className="flex w-full rounded-xl border border-border bg-surface-elevated/60 p-0.5 text-xs">
             <button
               onClick={() => setActiveTab("settings")}
-              className={`flex-1 rounded-lg py-1.5 text-center font-medium transition-colors cursor-pointer truncate ${
+              className={`flex-1 rounded-lg py-1.5 px-1 text-center font-medium transition-colors cursor-pointer truncate ${
                 activeTab === "settings" ? "bg-foreground text-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -10134,15 +10366,23 @@ function ProfileModal({
             </button>
             <button
               onClick={() => setActiveTab("personalization")}
-              className={`flex-1 rounded-lg py-1.5 text-center font-medium transition-colors cursor-pointer truncate ${
+              className={`flex-1 rounded-lg py-1.5 px-1 text-center font-medium transition-colors cursor-pointer truncate ${
                 activeTab === "personalization" ? "bg-foreground text-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               {t("Interface")}
             </button>
             <button
+              onClick={() => setActiveTab("subscription")}
+              className={`flex-1 rounded-lg py-1.5 px-1 text-center font-medium transition-colors cursor-pointer truncate ${
+                activeTab === "subscription" ? "bg-foreground text-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t("Subscription")}
+            </button>
+            <button
               onClick={() => setActiveTab("account")}
-              className={`flex-1 rounded-lg py-1.5 text-center font-medium transition-colors cursor-pointer truncate ${
+              className={`flex-1 rounded-lg py-1.5 px-1 text-center font-medium transition-colors cursor-pointer truncate ${
                 activeTab === "account" ? "bg-foreground text-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -10381,59 +10621,20 @@ function ProfileModal({
                 </div>
               </div>
             </div>
+          ) : activeTab === "subscription" ? (
+            <SubscriptionPanel
+              uid={user.id}
+              email={user.email}
+              isGuest={Boolean(isGuest)}
+              lang={lang}
+              t={t}
+              subscription={subscription}
+              getToken={getToken ?? (async () => "")}
+              onSubscriptionChange={(next) => onSubscriptionChange?.(next)}
+              onRequestAuth={onRequestAuth}
+            />
           ) : (
             <>
-              <div className="glass-card rounded-xl border border-border/80 bg-surface-elevated/40 p-4 space-y-3">
-                <div className="flex items-center justify-between text-sm font-medium text-foreground">
-                  <span className="flex items-center gap-2">
-                    <Zap className="h-4 w-4 text-brand" />
-                    {t("Prompt limits")}
-                  </span>
-                </div>
-                <div className="space-y-2.5">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-foreground">{t("Chat")}</span>
-                      <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                        ∞ {t("Unlimited")}
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-white/10">
-                      <div className="h-full w-full rounded-full bg-[var(--brand)] opacity-80" />
-                    </div>
-                  </div>
-                  {[
-                    { key: "image" as const, label: t("Photos (per day)"), used: promptUsage.image, limit: promptLimits.image },
-                    { key: "engine" as const, label: t("Engine"), used: promptUsage.engine, limit: promptLimits.engine },
-                    { key: "flow" as const, label: t("Flow"), used: promptUsage.flow, limit: promptLimits.flow },
-                  ].map((item) => {
-                    const pct = Math.min(100, Math.round((item.used / item.limit) * 100));
-                    const reached = item.used >= item.limit;
-                    return (
-                      <div key={item.key} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-medium text-foreground">{item.label}</span>
-                          <span className={`font-mono font-semibold ${reached ? "text-red-500" : "text-muted-foreground"}`}>
-                            {item.used}/{item.limit}
-                          </span>
-                        </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-white/10">
-                          <div
-                            className={`h-full rounded-full transition-all duration-300 ${reached ? "bg-red-500" : "bg-[var(--brand)]"}`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        {reached && promptResetAt[item.key] > 0 && (
-                          <div className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                            {t("Resets in")} {formatRemainingReset(promptResetAt[item.key], lang)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
               <div className="glass-card rounded-xl border border-border/80 bg-surface-elevated/40 p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-medium text-foreground">

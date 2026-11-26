@@ -8,6 +8,7 @@ import {
 } from "../../lib/flow-terminal";
 import { planFlowTask, executeFlowStep } from "../../lib/flow-engine";
 import { getUserFromToken } from "../../lib/memory-server";
+import { resolveEffectiveUserTier } from "../../lib/subscription-server";
 
 function bearer(request: Request) {
   const h = request.headers.get("authorization") ?? "";
@@ -153,6 +154,14 @@ export async function handleFlowRequest(request: Request): Promise<Response> {
 
       if (body.action === "plan") {
         const parsed = PlanSchema.parse(body);
+        const tierInfo = authed
+          ? await Promise.race([
+              resolveEffectiveUserTier(authed).catch(() => ({ tier: "free" as const, isPro: false, expiresAt: null })),
+              new Promise<{ tier: "pro" | "free"; isPro: boolean; expiresAt: string | null }>((resolve) =>
+                setTimeout(() => resolve({ tier: "free", isPro: false, expiresAt: null }), 650),
+              ),
+            ])
+          : { tier: "free" as const, isPro: false, expiresAt: null };
         const plan = await planFlowTask(parsed.goal, parsed.autonomy, {
           projectId: parsed.projectId,
           userScope,
@@ -162,6 +171,7 @@ export async function handleFlowRequest(request: Request): Promise<Response> {
           hasCalendar: parsed.hasCalendar,
           agent: parsed.agent,
           model: parsed.model,
+          useFreeModel: !tierInfo.isPro,
         });
         return new Response(JSON.stringify({ plan }), {
           headers: { "content-type": "application/json" },
@@ -171,9 +181,18 @@ export async function handleFlowRequest(request: Request): Promise<Response> {
       if (body.action === "run_step") {
         const parsed = RunStepSchema.parse(body);
         const effectiveScope = userScope || `ephemeral_${Date.now()}`;
+        const tierInfo = authed
+          ? await Promise.race([
+              resolveEffectiveUserTier(authed).catch(() => ({ tier: "free" as const, isPro: false, expiresAt: null })),
+              new Promise<{ tier: "pro" | "free"; isPro: boolean; expiresAt: string | null }>((resolve) =>
+                setTimeout(() => resolve({ tier: "free", isPro: false, expiresAt: null }), 650),
+              ),
+            ])
+          : { tier: "free" as const, isPro: false, expiresAt: null };
         const res = await executeFlowStep(parsed.step as any, {
           ...(parsed.taskContext as any),
           userScope: effectiveScope,
+          useFreeModel: !tierInfo.isPro,
         });
         return new Response(JSON.stringify({ stepResult: res }), {
           headers: { "content-type": "application/json" },

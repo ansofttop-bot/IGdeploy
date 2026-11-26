@@ -20,8 +20,14 @@ import { checkContent, refusalMessage } from "../../lib/content-filters";
 import { isChinaSensitive } from "../../lib/sensitive-topics";
 import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/apimira-image";
 import {
-  checkServerPhotoQuota,
-  consumeServerPhotoQuota,
+  buildReferenceAwarePollinationsPrompt,
+  callMistralFreeChat,
+} from "../../lib/mistral-free";
+import { generateImageWithPollinations } from "../../lib/pollinations-image";
+import { resolveEffectiveUserTier } from "../../lib/subscription-server";
+import {
+  evaluateProHourlyImageRoute,
+  recordProHourlyImageGeneration,
   resolvePhotoQuotaActorKey,
 } from "../../lib/photo-limits-server";
 import { searchWebLive, searchWebRich } from "../../lib/web-search";
@@ -840,12 +846,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
   const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
   const apimiraKey = (process.env.APIMIRA_API_KEY || "").trim();
   const apimiraBaseUrl = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
-  if (!deepseekKey && !apimiraKey) {
-    return new Response(JSON.stringify({ error: "DeepSeek provider not configured" }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
-  }
 
         let parsed: z.infer<typeof BodySchema>;
         try {
@@ -868,7 +868,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
 
         const authHeader = request.headers.get("authorization") ?? "";
         const token = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7) : "";
-        let currentImageQuotaHint = parsed.imageQuota;
+        // No visible photo quota cap — Free uses Pollinations; Pro uses silent >8/hr Pollinations fallback
 
         const lastUserMessage = stripImageDataUrls(
           [...cleanMessages].reverse().find((m) => m.role === "user")?.content ?? "",
@@ -1048,7 +1048,11 @@ export async function handleChatPost(request: Request): Promise<Response> {
               : null;
             const photoQuotaActorKey = resolvePhotoQuotaActorKey(request, authed?.id, parsed.deviceFp);
 
-            const [memories, initialLibraryItems]: [MemoryRow[], ServerLibraryItem[]] = await Promise.all([
+            const [memories, initialLibraryItems, userTierInfo]: [
+              MemoryRow[],
+              ServerLibraryItem[],
+              { tier: "pro" | "free"; isPro: boolean; expiresAt: string | null },
+            ] = await Promise.all([
               authed && lastUserMessage
                 ? Promise.race([
                     loadRelevantMemories(authed.client, authed.id, lastUserMessage, 12, authed.token).catch(() => []),
@@ -1061,7 +1065,17 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     new Promise<ServerLibraryItem[]>((resolve) => setTimeout(() => resolve([]), 650)),
                   ])
                 : Promise.resolve([]),
+              authed
+                ? Promise.race([
+                    resolveEffectiveUserTier(authed).catch(() => ({ tier: "free" as const, isPro: false, expiresAt: null })),
+                    new Promise<{ tier: "pro" | "free"; isPro: boolean; expiresAt: string | null }>((resolve) =>
+                      setTimeout(() => resolve({ tier: "free", isPro: false, expiresAt: null }), 650),
+                    ),
+                  ])
+                : Promise.resolve({ tier: "free" as const, isPro: false, expiresAt: null }),
             ]);
+            const isProUser = userTierInfo.isPro;
+            const useFreeModels = !isProUser;
             let libraryItems: ServerLibraryItem[] = initialLibraryItems;
             let fullLibraryLoaded = false;
             const ensureFullLibraryItems = async (): Promise<ServerLibraryItem[]> => {
@@ -1257,6 +1271,68 @@ export async function handleChatPost(request: Request): Promise<Response> {
               if (!upstream.body) {
                 throw new Error(`upstream ${upstream.status}`);
               }
+
+              const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
+              const extractDeltaText = (rawContent: unknown): { text: string; thinking: string } => {
+                if (typeof rawContent === "string") {
+                  return { text: rawContent, thinking: "" };
+                }
+                if (Array.isArray(rawContent)) {
+                  let text = "";
+                  let thinking = "";
+                  for (const part of rawContent) {
+                    if (!part || typeof part !== "object") continue;
+                    if (part.type === "text" && typeof part.text === "string") {
+                      text += part.text;
+                    } else if (part.type === "thinking") {
+                      if (typeof part.thinking === "string") {
+                        thinking += part.thinking;
+                      } else if (Array.isArray(part.thinking)) {
+                        for (const sub of part.thinking) {
+                          if (sub && typeof sub.text === "string") thinking += sub.text;
+                        }
+                      }
+                    }
+                  }
+                  return { text, thinking };
+                }
+                return { text: "", thinking: "" };
+              };
+
+              // Handle non-streamed JSON completion gracefully if an upstream ignores `stream: true`
+              if (contentType.includes("application/json")) {
+                const json = (await upstream.json().catch(() => null)) as any;
+                const choice = json?.choices?.[0];
+                const msg = choice?.message;
+                const { text, thinking } = extractDeltaText(msg?.content);
+                const reasoningText = String(msg?.reasoning_content ?? msg?.reasoning ?? thinking ?? "");
+                if (reasoningText && forwardText && effectiveReasoning) {
+                  send("reasoning", JSON.stringify(reasoningText));
+                }
+                if (text && forwardText) {
+                  send("delta", JSON.stringify(text));
+                }
+                const toolCalls: ToolCall[] = Array.isArray(msg?.tool_calls)
+                  ? msg.tool_calls.map((tc: any, idx: number) => ({
+                      id: String(tc?.id || `call_${idx}_${Math.random().toString(36).slice(2, 8)}`),
+                      type: "function" as const,
+                      function: {
+                        name: String(tc?.function?.name || ""),
+                        arguments:
+                          typeof tc?.function?.arguments === "string"
+                            ? tc.function.arguments
+                            : JSON.stringify(tc?.function?.arguments ?? {}),
+                      },
+                    }))
+                  : [];
+                return {
+                  finishReason: choice?.finish_reason ?? "stop",
+                  toolCalls,
+                  assistantText: text,
+                  reasoningText,
+                };
+              }
+
               const reader = upstream.body.getReader();
               const decoder = new TextDecoder();
               let buffer = "";
@@ -1264,50 +1340,59 @@ export async function handleChatPost(request: Request): Promise<Response> {
               let finishReason: string | null = null;
               let assistantText = "";
               let reasoningText = "";
+              const CHUNK_STALL_TIMEOUT_MS = 25_000;
 
               const processLines = (lines: string[]) => {
                 for (const raw of lines) {
                   const line = raw.trim();
                   if (!line.startsWith("data:")) continue;
                   const payload = line.slice(5).trim();
-                  if (payload === "[DONE]") continue;
+                  if (!payload || payload === "[DONE]") continue;
                   try {
                     const json = JSON.parse(payload) as {
                       choices?: Array<{
                         delta?: {
-                          content?: string;
+                          content?: unknown;
                           reasoning_content?: string;
                           reasoning?: string;
                           tool_calls?: Array<{
-                            index: number;
+                            index?: number;
                             id?: string;
                             function?: { name?: string; arguments?: string };
                           }>;
+                        };
+                        message?: {
+                          content?: unknown;
+                          reasoning_content?: string;
+                          reasoning?: string;
                         };
                         finish_reason?: string | null;
                       }>;
                     };
                     const choice = json.choices?.[0];
-                    const delta = choice?.delta;
+                    const delta = choice?.delta ?? choice?.message;
                     if (choice?.finish_reason) finishReason = choice.finish_reason;
-                    const reasoningDelta = delta?.reasoning_content ?? delta?.reasoning;
+                    const { text: deltaText, thinking: chunkThinking } = extractDeltaText(delta?.content);
+                    const reasoningDelta = delta?.reasoning_content ?? delta?.reasoning ?? (chunkThinking || undefined);
                     if (reasoningDelta) {
                       reasoningText += reasoningDelta;
                       if (forwardText && effectiveReasoning) {
                         send("reasoning", JSON.stringify(reasoningDelta));
                       }
                     }
-                    if (delta?.content) {
-                      assistantText += delta.content;
-                      if (forwardText) send("delta", JSON.stringify(delta.content));
+                    if (deltaText) {
+                      assistantText += deltaText;
+                      if (forwardText) send("delta", JSON.stringify(deltaText));
                     }
-                    if (delta?.tool_calls) {
-                      for (const tc of delta.tool_calls) {
-                        const existing = toolAcc.get(tc.index) ?? { id: "", name: "", args: "" };
+                    if (choice?.delta?.tool_calls) {
+                      for (let tcPos = 0; tcPos < choice.delta.tool_calls.length; tcPos += 1) {
+                        const tc = choice.delta.tool_calls[tcPos];
+                        const idx = typeof tc.index === "number" ? tc.index : tcPos;
+                        const existing = toolAcc.get(idx) ?? { id: "", name: "", args: "" };
                         if (tc.id) existing.id = tc.id;
                         if (tc.function?.name) existing.name = tc.function.name;
                         if (tc.function?.arguments) existing.args += tc.function.arguments;
-                        toolAcc.set(tc.index, existing);
+                        toolAcc.set(idx, existing);
                       }
                     }
                   } catch {
@@ -1315,14 +1400,36 @@ export async function handleChatPost(request: Request): Promise<Response> {
                 }
               };
 
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-                const lines = buffer.split("\n");
-                buffer = lines.pop() ?? "";
-                processLines(lines);
+              try {
+                while (true) {
+                  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+                  const readResult = await Promise.race([
+                    reader.read(),
+                    new Promise<never>((_resolve, reject) => {
+                      stallTimer = setTimeout(() => {
+                        reject(new Error("Upstream stream stalled (no data received)"));
+                      }, CHUNK_STALL_TIMEOUT_MS);
+                    }),
+                  ]).finally(() => {
+                    if (stallTimer) clearTimeout(stallTimer);
+                  });
+
+                  if (readResult.done) break;
+                  buffer += decoder.decode(readResult.value, { stream: true }).replace(/\r\n/g, "\n");
+                  const lines = buffer.split("\n");
+                  buffer = lines.pop() ?? "";
+                  processLines(lines);
+                }
+              } catch (streamReadErr) {
+                try {
+                  await reader.cancel();
+                } catch {}
+                // If we already streamed usable content before a trailing stall, return what we have cleanly
+                if (!assistantText && toolAcc.size === 0) {
+                  throw streamReadErr;
+                }
               }
+
               if (buffer.trim()) {
                 processLines(buffer.split("\n"));
               }
@@ -1612,6 +1719,53 @@ export async function handleChatPost(request: Request): Promise<Response> {
             ): Promise<StreamOutcome> {
               let lastErr: unknown = null;
 
+              if (useFreeModels) {
+                const mistralAttempts: Array<{
+                  msgs: ChatMessage[];
+                  useTools: typeof activeTools | null;
+                }> =
+                  tools.length > 0
+                    ? [
+                        { msgs: messages, useTools: tools },
+                        { msgs: trimMessagesForRetry(messages, 40_000), useTools: null },
+                      ]
+                    : [{ msgs: messages, useTools: null }];
+
+                for (let idx = 0; idx < mistralAttempts.length; idx += 1) {
+                  const att = mistralAttempts[idx];
+                  if (streamClosed || streamAbort.signal.aborted) break;
+                  try {
+                    const apiMsgs = toApiMessages(att.msgs);
+                    const upstream = await callMistralFreeChat({
+                      messages: apiMsgs,
+                      tools: att.useTools && att.useTools.length ? att.useTools : undefined,
+                      temperature: effectiveTemperature,
+                      maxTokens: 4096,
+                      hasVisionInput: hasEditableImageContext,
+                      signal: streamAbort.signal,
+                    });
+                    const outcome = await consumeOpenAiSse(upstream, forwardText);
+                    if (outcome.assistantText || outcome.toolCalls.length > 0) {
+                      return outcome;
+                    }
+                    lastErr = new Error("Mistral Free returned an empty response");
+                  } catch (mistralErr) {
+                    lastErr = mistralErr;
+                    const errText = mistralErr instanceof Error ? mistralErr.message : String(mistralErr);
+                    console.warn("[chat] Mistral Free attempt failed:", errText);
+                    // Never double-hit a rate-limited or timed-out free endpoint — fail fast
+                    if (/(429|402|rate limit|cooldown|timeout|aborted)/i.test(errText)) {
+                      break;
+                    }
+                  }
+                }
+                throw lastErr instanceof Error ? lastErr : new Error("mistral_free_unavailable");
+              }
+
+              if (!deepseekKey && !apimiraKey) {
+                throw new Error("DeepSeek / APIMIRA provider is not configured on the server");
+              }
+
               if (shouldTryDirectDeepSeek(deepseekKey, apimiraKey)) {
                 const dsAttempts: Array<{
                   msgs: ChatMessage[];
@@ -1670,7 +1824,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
 
             let finalAssistantText = "";
             let memoryMutatedInTool = false;
-            let hitImageLimit = false;
             let lastTranslatedFileText: string | null = null;
             let lastGeneratedImageDataUrl: string | null =
               parsed.previousGeneratedImage?.dataUrl?.startsWith("data:image/")
@@ -1707,6 +1860,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     lastUserMessage,
                     finalAssistantText,
                     authed.token,
+                    { useFreeModel: useFreeModels },
                   ).catch((e) => console.error("memory analyze error", e));
                 }
                 return;
@@ -1765,33 +1919,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     }
                   } else if (tc.function.name === "generate_image") {
                     try {
-                      const quotaStatus = checkServerPhotoQuota(photoQuotaActorKey, currentImageQuotaHint);
-                      if (!quotaStatus.allowed) {
-                        hitImageLimit = true;
-                        send(
-                          "image_limit",
-                          JSON.stringify({
-                            scope: "image",
-                            used: quotaStatus.used,
-                            limit: quotaStatus.limit,
-                            resetAt: quotaStatus.resetAt,
-                          }),
-                        );
-                        followupMessages.push({
-                          role: "tool",
-                          tool_call_id: tc.id,
-                          content: JSON.stringify({
-                            ok: false,
-                            limit_reached: true,
-                            used: quotaStatus.used,
-                            limit: quotaStatus.limit,
-                            resetAt: quotaStatus.resetAt,
-                            message:
-                              "Дневной лимит генерации и редактирования фото (8 фото в день) исчерпан. Пользователю уже показана карточка с таймером до обновления. Кратко подтверди, что лимит на сегодня исчерпан, и напомни, что обычный текстовый чат работает без ограничений.",
-                          }),
-                        });
-                        continue;
-                      }
                       const parsedArgs = JSON.parse(tc.function.arguments) as {
                         title?: string;
                         prompt?: string;
@@ -1800,10 +1927,20 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       if (!parsedArgs.prompt) throw new Error("missing prompt");
                       const imageTitle = String(parsedArgs.title ?? "Generated image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
-                      const dataUrl = await generateImage(parsedArgs.prompt);
-                      const updatedQuota = consumeServerPhotoQuota(photoQuotaActorKey, currentImageQuotaHint);
-                      currentImageQuotaHint = { used: updatedQuota.used, resetAt: updatedQuota.resetAt };
-                      send("photo_usage", JSON.stringify(updatedQuota));
+
+                      let usePollinations = useFreeModels;
+                      if (isProUser) {
+                        const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
+                        recordProHourlyImageGeneration(photoQuotaActorKey);
+                        if (proRoute.useSilentPollinations) {
+                          usePollinations = true;
+                        }
+                      }
+
+                      const dataUrl = usePollinations
+                        ? (await generateImageWithPollinations(parsedArgs.prompt)).dataUrl
+                        : await generateImage(parsedArgs.prompt);
+
                       lastGeneratedImageDataUrl = dataUrl;
                       lastGeneratedImageState = {
                         dataUrl,
@@ -1839,33 +1976,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     }
                   } else if (tc.function.name === "edit_image") {
                     try {
-                      const quotaStatus = checkServerPhotoQuota(photoQuotaActorKey, currentImageQuotaHint);
-                      if (!quotaStatus.allowed) {
-                        hitImageLimit = true;
-                        send(
-                          "image_limit",
-                          JSON.stringify({
-                            scope: "image",
-                            used: quotaStatus.used,
-                            limit: quotaStatus.limit,
-                            resetAt: quotaStatus.resetAt,
-                          }),
-                        );
-                        followupMessages.push({
-                          role: "tool",
-                          tool_call_id: tc.id,
-                          content: JSON.stringify({
-                            ok: false,
-                            limit_reached: true,
-                            used: quotaStatus.used,
-                            limit: quotaStatus.limit,
-                            resetAt: quotaStatus.resetAt,
-                            message:
-                              "Дневной лимит генерации и редактирования фото (8 фото в день) исчерпан. Пользователю уже показана карточка с таймером до обновления. Кратко подтверди, что лимит на сегодня исчерпан, и напомни, что обычный текстовый чат работает без ограничений.",
-                          }),
-                        });
-                        continue;
-                      }
                       const parsedArgs = JSON.parse(tc.function.arguments) as {
                         title?: string;
                         prompt?: string;
@@ -1877,18 +1987,43 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         cleanMessages,
                         lastGeneratedImageState,
                       );
-                      if (sourceImages.length === 0) {
+
+                      let usePollinations = useFreeModels;
+                      let silentProFallback = false;
+                      if (isProUser) {
+                        const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
+                        recordProHourlyImageGeneration(photoQuotaActorKey);
+                        if (proRoute.useSilentPollinations) {
+                          usePollinations = true;
+                          silentProFallback = true;
+                        }
+                      }
+
+                      if (!usePollinations && sourceImages.length === 0) {
                         throw new Error("No source image found for editing");
                       }
                       const imageTitle = String(parsedArgs.title ?? "Edited image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
-                      const edited = await editImageWithGptImage2(parsedArgs.prompt, sourceImages);
-                      const updatedQuota = consumeServerPhotoQuota(photoQuotaActorKey, currentImageQuotaHint);
-                      currentImageQuotaHint = { used: updatedQuota.used, resetAt: updatedQuota.resetAt };
-                      send("photo_usage", JSON.stringify(updatedQuota));
-                      lastGeneratedImageDataUrl = edited.dataUrl;
+
+                      let editedDataUrl: string;
+                      if (usePollinations) {
+                        const synthesizedPrompt = await buildReferenceAwarePollinationsPrompt({
+                          sourceImageDataUrl: sourceImages[0]?.dataUrl ?? null,
+                          editPrompt: parsedArgs.prompt,
+                          extraDescription: parsedArgs.description,
+                          useDeepSeekSynthesis: silentProFallback,
+                          deepseekKey,
+                          apimiraKey,
+                          apimiraBaseUrl,
+                        });
+                        editedDataUrl = (await generateImageWithPollinations(synthesizedPrompt)).dataUrl;
+                      } else {
+                        editedDataUrl = (await editImageWithGptImage2(parsedArgs.prompt, sourceImages)).dataUrl;
+                      }
+
+                      lastGeneratedImageDataUrl = editedDataUrl;
                       lastGeneratedImageState = {
-                        dataUrl: edited.dataUrl,
+                        dataUrl: editedDataUrl,
                         messageIndex: cleanMessages.length,
                         sameTurn: true,
                       };
@@ -1899,7 +2034,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         description: parsedArgs.description
                           ? String(parsedArgs.description)
                           : undefined,
-                        dataUrl: edited.dataUrl,
+                        dataUrl: editedDataUrl,
                       };
                       send("image", JSON.stringify(image));
                       followupMessages.push({
@@ -2299,6 +2434,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         deepseekKey,
                         apimiraKey,
                         apimiraBaseUrl,
+                        useFreeModel: useFreeModels,
                         userAttachments: parsed.userAttachments,
                         libraryItems,
                         memories,
@@ -2675,11 +2811,12 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   lastUserMessage,
                   finalAssistantText,
                   authed.token,
+                  { useFreeModel: useFreeModels },
                 ).catch((e) => console.error("memory analyze error", e));
               }
             } catch (err) {
               console.error("stream error", err);
-              if (!lastGeneratedImageDataUrl && !finalAssistantText && !hitImageLimit) {
+              if (!lastGeneratedImageDataUrl && !finalAssistantText) {
                 const errDetail = err instanceof Error ? err.message.slice(0, 120) : "stream_failed";
                 send("error", JSON.stringify(errDetail || "stream_failed"));
               } else {

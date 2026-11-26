@@ -229,6 +229,48 @@ app.all(['/api/auth/github', '/api/auth/github/*'], async (req, res) => {
   }
 });
 
+app.post('/api/create-payment', async (req, res) => {
+  try {
+    const webReq = await toWebRequest(req);
+    const mod = await loadApiModule('/src/routes/api/create-payment.ts', () => import('./src/routes/api/create-payment.ts'));
+    const webRes = await mod.handleCreatePaymentRequest(webReq);
+    await pipeWebResponse(webRes, res);
+  } catch (err: any) {
+    console.error('API /api/create-payment error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  }
+});
+
+app.all('/api/subscription', async (req, res) => {
+  try {
+    const webReq = await toWebRequest(req);
+    const mod = await loadApiModule('/src/routes/api/subscription.ts', () => import('./src/routes/api/subscription.ts'));
+    const webRes = await mod.handleSubscriptionRequest(webReq);
+    await pipeWebResponse(webRes, res);
+  } catch (err: any) {
+    console.error('API /api/subscription error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  }
+});
+
+app.post('/api/payment-webhook', async (req, res) => {
+  try {
+    const webReq = await toWebRequest(req);
+    const mod = await loadApiModule('/src/routes/api/payment-webhook.ts', () => import('./src/routes/api/payment-webhook.ts'));
+    const webRes = await mod.handlePaymentWebhookRequest(webReq);
+    await pipeWebResponse(webRes, res);
+  } catch (err: any) {
+    console.error('API /api/payment-webhook error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
+  }
+});
+
 app.get('/api/legal', async (req, res) => {
   try {
     const webReq = await toWebRequest(req);

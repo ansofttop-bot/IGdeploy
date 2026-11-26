@@ -5,20 +5,37 @@ import { getDeviceFingerprint } from "./device-fingerprint";
 export type PromptScope = "engine" | "chat" | "flow" | "image";
 
 export const PROMPT_LIMITS: Record<PromptScope, number> = {
-  engine: 18,
+  engine: Number.POSITIVE_INFINITY,
   chat: Number.POSITIVE_INFINITY,
-  flow: 18,
-  image: 8,
+  flow: Number.POSITIVE_INFINITY,
+  image: Number.POSITIVE_INFINITY,
 };
 
 export const UNLIMITED_SCOPES: Record<PromptScope, boolean> = {
-  engine: false,
+  engine: true,
   chat: true,
-  flow: false,
-  image: false,
+  flow: true,
+  image: true,
 };
 
-export function isScopeUnlimited(scope: PromptScope): boolean {
+const PRO_USER_MAP = new Map<string, boolean>();
+
+export function setUserProStatus(uid: string | null | undefined, isPro: boolean): void {
+  const keyUid = uid && uid.trim() ? uid.trim() : "guest";
+  const prev = PRO_USER_MAP.get(keyUid) ?? false;
+  PRO_USER_MAP.set(keyUid, Boolean(isPro));
+  if (prev !== Boolean(isPro) && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(EVENT_NAME));
+  }
+}
+
+export function isUserProStatus(uid?: string | null): boolean {
+  const keyUid = uid && uid.trim() ? uid.trim() : "guest";
+  return PRO_USER_MAP.get(keyUid) === true;
+}
+
+export function isScopeUnlimited(scope: PromptScope, uid?: string | null): boolean {
+  if (uid && isUserProStatus(uid)) return true;
   return Boolean(UNLIMITED_SCOPES[scope]);
 }
 
@@ -409,18 +426,18 @@ export async function resolveRegistrationPromptUsage(
 }
 
 export function getPromptRemaining(scope: PromptScope, uid?: string | null): number {
-  if (isScopeUnlimited(scope)) return Number.POSITIVE_INFINITY;
+  if (isScopeUnlimited(scope, uid)) return Number.POSITIVE_INFINITY;
   const usage = readPromptUsage(uid);
   return Math.max(0, PROMPT_LIMITS[scope] - usage[scope]);
 }
 
 export function canUsePrompt(scope: PromptScope, uid?: string | null): boolean {
-  if (isScopeUnlimited(scope)) return true;
+  if (isScopeUnlimited(scope, uid)) return true;
   return readPromptSnapshot(uid).usage[scope] < PROMPT_LIMITS[scope];
 }
 
 export function ensureScopeResetTimestamp(scope: PromptScope, uid?: string | null): number {
-  if (isScopeUnlimited(scope)) return 0;
+  if (isScopeUnlimited(scope, uid)) return 0;
   const keyUid = uid && uid.trim() ? uid.trim() : "guest";
   const snap = readPromptSnapshot(keyUid);
   if (snap.usage[scope] < PROMPT_LIMITS[scope]) return 0;
@@ -438,7 +455,7 @@ export function ensureScopeResetTimestamp(scope: PromptScope, uid?: string | nul
 }
 
 export function markScopeExhausted(scope: PromptScope, uid?: string | null, resetAtMs?: number): number {
-  if (isScopeUnlimited(scope)) return 0;
+  if (isScopeUnlimited(scope, uid)) return 0;
   const keyUid = uid && uid.trim() ? uid.trim() : "guest";
   const now = Date.now();
   const snap = readPromptSnapshot(keyUid);
@@ -478,7 +495,7 @@ export function consumePrompt(
   const keyUid = uid && uid.trim() ? uid.trim() : "guest";
   const now = Date.now();
   const current = readPromptSnapshot(keyUid);
-  if (isScopeUnlimited(scope)) {
+  if (isScopeUnlimited(scope, keyUid)) {
     return { allowed: true, usage: current.usage, receipt: null };
   }
   if (current.usage[scope] >= PROMPT_LIMITS[scope]) {
@@ -669,14 +686,19 @@ export function formatRemainingReset(resetAtMs: number, lang: string = "en", now
 
 export interface UsePromptLimitsResult extends PromptLimitsSnapshot {
   limits: Record<PromptScope, number>;
+  isPro: boolean;
 }
 
 export function usePromptLimits(uid?: string | null): UsePromptLimitsResult {
   const keyUid = uid && uid.trim() ? uid.trim() : "guest";
   const [snapshot, setSnapshot] = useState<PromptLimitsSnapshot>(() => readPromptSnapshot(keyUid));
+  const [isPro, setIsPro] = useState<boolean>(() => isUserProStatus(keyUid));
 
   useEffect(() => {
-    const refresh = () => setSnapshot(readPromptSnapshot(keyUid));
+    const refresh = () => {
+      setSnapshot(readPromptSnapshot(keyUid));
+      setIsPro(isUserProStatus(keyUid));
+    };
     refresh();
 
     const onStorage = (e: StorageEvent) => {
@@ -715,7 +737,7 @@ export function usePromptLimits(uid?: string | null): UsePromptLimitsResult {
     return () => window.clearTimeout(timer);
   }, [keyUid, snapshot.resetAt.engine, snapshot.resetAt.chat, snapshot.resetAt.flow, snapshot.resetAt.image]);
 
-  return { ...snapshot, limits: PROMPT_LIMITS };
+  return { ...snapshot, limits: PROMPT_LIMITS, isPro };
 }
 
 export function usePromptUsage(uid?: string | null): PromptUsage {
