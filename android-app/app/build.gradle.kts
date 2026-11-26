@@ -20,6 +20,12 @@ val firebaseWebApiKey = (providers.gradleProperty("IGSEEK_FIREBASE_API_KEY").orN
 val firebaseProjectId = (providers.gradleProperty("IGSEEK_FIREBASE_PROJECT_ID").orNull
     ?: firebaseJson["projectId"]?.toString()
     ?: "").replace("\"", "")
+val firebaseAuthDomain = (providers.gradleProperty("IGSEEK_FIREBASE_AUTH_DOMAIN").orNull
+    ?: firebaseJson["authDomain"]?.toString()
+    ?: "").replace("\"", "")
+val firebaseOAuthClientId = (providers.gradleProperty("IGSEEK_GOOGLE_CLIENT_ID").orNull
+    ?: firebaseJson["oAuthClientId"]?.toString()
+    ?: "").replace("\"", "")
 val defaultApiBaseUrl = (providers.gradleProperty("IGSEEK_API_BASE_URL").orNull
     ?: "").replace("\"", "")
 
@@ -31,8 +37,8 @@ android {
         applicationId = "app.igseek.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 200
-        versionName = "2.0.0"
+        versionCode = 201
+        versionName = "2.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -42,6 +48,8 @@ android {
         buildConfigField("String", "DEFAULT_API_BASE_URL", "\"$defaultApiBaseUrl\"")
         buildConfigField("String", "FIREBASE_WEB_API_KEY", "\"$firebaseWebApiKey\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
+        buildConfigField("String", "FIREBASE_AUTH_DOMAIN", "\"$firebaseAuthDomain\"")
+        buildConfigField("String", "FIREBASE_OAUTH_CLIENT_ID", "\"$firebaseOAuthClientId\"")
     }
 
     buildTypes {
@@ -97,6 +105,10 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

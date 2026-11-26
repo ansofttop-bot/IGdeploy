@@ -15,7 +15,7 @@
     "db:migrate": "node scripts/migrate-db.mjs"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@google/genai": "^3.6.1",
     "@tanstack/react-router": "^1.170.46",
     "@types/pg": "^8.23.1",
     "dotenv": "^17.2.3",

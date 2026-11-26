@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GEMINI_FREE_MODEL, getGeminiServerClient } from "../../lib/gemini-free";
 
 const MAX_AUDIO_BASE64_LEN = 12 * 1024 * 1024; // ~9 MB raw audio
 
@@ -25,13 +25,7 @@ function normalizeAudioMimeType(raw?: string): string {
   return "audio/webm";
 }
 
-function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
-  if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
-}
-
-const DEFAULT_TRANSCRIBE_MODELS = ["gemini-3.5-transcribe", "gemini-2.5-flash"];
+const DEFAULT_TRANSCRIBE_MODELS = ["gemini-3.5-transcribe", GEMINI_FREE_MODEL];
 const TRANSCRIBE_WINDOW_MS = 5 * 60_000;
 const TRANSCRIBE_MAX_REQ_PER_WINDOW = 25;
 const transcribeRateBuckets = new Map<string, number[]>();
@@ -76,7 +70,7 @@ export async function handleTranscribePost(req: Request): Promise<Response> {
     const mimeType = normalizeAudioMimeType(body?.mimeType);
     const langHint = typeof body?.lang === "string" ? body.lang.trim().slice(0, 16) : "";
 
-    const ai = getGeminiClient();
+    const ai = getGeminiServerClient();
     if (!ai) {
       return Response.json(
         { error: "Server speech transcription is not configured" },

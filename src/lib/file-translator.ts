@@ -19,7 +19,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callMistralFreeText } from "./mistral-free";
+import { callGeminiFreeText } from "./gemini-free";
 
 export type FileTranslatorArgs = {
   filename?: string;
@@ -272,13 +272,11 @@ ${sanitizeTextForApi(payload.extractedContent).slice(0, 72_000)}`;
   ];
 
   if (ctx.useFreeModel) {
-    const mistralText = await callMistralFreeText({
+    const geminiText = await callGeminiFreeText({
       messages: apiMessages,
-      temperature: 0.2,
       maxTokens: 3000,
-      timeoutMs: 35_000,
     });
-    if (mistralText) return sanitizeTextForApi(mistralText);
+    if (geminiText) return sanitizeTextForApi(geminiText);
     return sanitizeTextForApi(payload.extractedContent).slice(0, 16_000);
   }
 

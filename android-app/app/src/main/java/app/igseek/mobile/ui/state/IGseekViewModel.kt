@@ -37,8 +37,10 @@ import java.util.UUID
 data class IGseekUiState(
     val session: AuthSession? = null,
     val isAuthLoading: Boolean = false,
+    val isGoogleAuthLoading: Boolean = false,
     val authError: String? = null,
     val needsAccentOnboarding: Boolean = false,
+    val showProSheet: Boolean = false,
     val isOnline: Boolean = true,
     val cloudSyncStatus: CloudSyncStatus = CloudSyncStatus.IDLE,
     val layoutPrefs: MobileLayoutPrefs = MobileLayoutPrefs(),
@@ -341,6 +343,68 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun completeAccentOnboarding(accent: AccentPresetId) {
         updateLayoutPrefs { it.copy(accent = accent) }
         _state.update { it.copy(needsAccentOnboarding = false) }
+    }
+
+    fun setGoogleAuthLoading(loading: Boolean) {
+        _state.update { it.copy(isGoogleAuthLoading = loading, authError = if (loading) null else it.authError) }
+    }
+
+    fun onGoogleAuthError(message: String) {
+        _state.update { it.copy(isGoogleAuthLoading = false, isAuthLoading = false, authError = message) }
+    }
+
+    fun signInWithGoogleIdToken(googleIdToken: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(isGoogleAuthLoading = true, authError = null) }
+            runCatching {
+                authApi.signInWithGoogleIdToken(googleIdToken)
+            }.onSuccess { session ->
+                completeGoogleSession(session)
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        isGoogleAuthLoading = false,
+                        authError = err.message ?: "Не удалось войти через Google"
+                    )
+                }
+            }
+        }
+    }
+
+    fun signInWithGoogleAccessToken(accessToken: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(isGoogleAuthLoading = true, authError = null) }
+            runCatching {
+                authApi.signInWithGoogleAccessToken(accessToken)
+            }.onSuccess { session ->
+                completeGoogleSession(session)
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        isGoogleAuthLoading = false,
+                        authError = err.message ?: "Не удалось войти через Google"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun completeGoogleSession(session: AuthSession) {
+        store.saveSession(session)
+        _state.update {
+            it.copy(
+                session = session,
+                isGoogleAuthLoading = false,
+                isAuthLoading = false,
+                authError = null,
+                needsAccentOnboarding = false
+            )
+        }
+        val lp = _state.value.layoutPrefs
+        viewModelScope.launch {
+            firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+        }
+        syncAllFromCloud()
     }
 
     fun continueAsGuest() {
@@ -1200,6 +1264,15 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     // ==================== SUBSCRIPTION ====================
 
+    fun openProSheet() {
+        _state.update { it.copy(showProSheet = true) }
+        refreshSubscription()
+    }
+
+    fun closeProSheet() {
+        _state.update { it.copy(showProSheet = false) }
+    }
+
     fun refreshSubscription() {
         viewModelScope.launch {
             val session = getFreshSession() ?: return@launch
@@ -1208,21 +1281,23 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             if (fromFirestore != null) {
                 _state.update { it.copy(subscription = fromFirestore) }
             }
-            if (_state.value.serverBaseUrl.isNotBlank()) {
-                runCatching { api.getSubscription(session) }
-                    .onSuccess { sub -> _state.update { it.copy(subscription = sub) } }
-            }
+            runCatching { api.getSubscription(session) }
+                .onSuccess { sub ->
+                    _state.update { st ->
+                        if (sub.isPro || !st.subscription.isPro) st.copy(subscription = sub) else st
+                    }
+                }
         }
     }
 
-    fun startProCheckout() {
+    fun startProCheckout(paymentMethod: Int = 2) {
         viewModelScope.launch {
             val session = getFreshSession() ?: return@launch
             if (session.isGuest) {
                 showToast("Войдите в аккаунт IGseek для оформления Pro")
                 return@launch
             }
-            runCatching { api.createSubscriptionCheckout(session) }
+            runCatching { api.createSubscriptionCheckout(session, paymentMethod) }
                 .onSuccess { (url, txnId) ->
                     _state.update {
                         it.copy(
@@ -1243,6 +1318,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 .onSuccess { activated ->
                     if (activated) {
                         showToast("Подписка IGseek Pro активирована!")
+                        _state.update { it.copy(showProSheet = false) }
                         refreshSubscription()
                     } else {
                         showToast("Платёж ещё обрабатывается")

@@ -45,22 +45,38 @@ async function fetchPollinationsVariant(
   prompt: string,
   model: "flux" | "turbo",
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<PollinationsImageResult> {
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const encoded = encodeURIComponent(prompt);
-  const url = `https://image.pollinations.ai/prompt/${encoded}?model=${model}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true`;
+  const apiKey = (process.env.POLLINATIONS_API_KEY || "").trim();
+  const baseUrl = apiKey
+    ? `https://gen.pollinations.ai/image/${encoded}?model=${model}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true`
+    : `https://image.pollinations.ai/prompt/${encoded}?model=${model}&width=1024&height=1024&seed=${seed}&nologo=true&enhance=true`;
 
   const controller = new AbortController();
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url, {
+    const headers: Record<string, string> = {
+      Accept: "image/png,image/jpeg,image/webp,image/*;q=0.8",
+      "User-Agent": "IGseek/1.0 (+https://igseek.app)",
+    };
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    const res = await fetch(baseUrl, {
       method: "GET",
       signal: controller.signal,
-      headers: {
-        Accept: "image/png,image/jpeg,image/webp,image/*;q=0.8",
-        "User-Agent": "IGseek/1.0 (+https://igseek.app)",
-      },
+      headers,
     });
     if (!res.ok) {
       throw new Error(`Pollinations ${model} HTTP ${res.status}`);
@@ -81,12 +97,15 @@ async function fetchPollinationsVariant(
     };
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
   }
 }
 
 export async function generateImageWithPollinations(
   prompt: string,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<PollinationsImageResult> {
   const cleanPrompt = normalizePrompt(prompt);
   if (!cleanPrompt) {
@@ -96,22 +115,30 @@ export async function generateImageWithPollinations(
 
   let lastErr: unknown = null;
   for (const model of ["flux", "turbo"] as const) {
+    if (options?.signal?.aborted) {
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
     try {
-      return await fetchPollinationsVariant(cleanPrompt, model, timeoutMs);
+      return await fetchPollinationsVariant(cleanPrompt, model, timeoutMs, options?.signal);
     } catch (err) {
+      if (options?.signal?.aborted || (err as Error)?.name === "AbortError") {
+        throw err;
+      }
       lastErr = err;
       console.warn(`[pollinations-image] ${model} failed:`, err instanceof Error ? err.message : String(err));
     }
   }
   throw lastErr instanceof Error
     ? lastErr
-    : new Error("Failed to generate image via Pollinations Free tier.");
+    : new Error("Failed to generate image via Pollinations.");
 }
 
 export async function editImageWithPollinations(
   editInstruction: string,
   referenceDescription?: string,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<PollinationsImageResult> {
   const base = normalizePrompt(editInstruction);
   const context = referenceDescription ? normalizePrompt(referenceDescription) : "";

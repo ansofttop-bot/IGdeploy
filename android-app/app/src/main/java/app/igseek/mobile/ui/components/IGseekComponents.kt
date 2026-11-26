@@ -3,7 +3,6 @@ package app.igseek.mobile.ui.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -23,9 +22,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -43,6 +39,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
@@ -55,13 +54,15 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.igseek.mobile.R
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
 
 /**
- * Real IGseek curling Fox logo tinted to match the website's `.logo-mark` CSS mask behavior.
+ * Real IGseek curling Fox logo tinted to match the website's `.logo-mark`.
+ * Always pure black (#000000) with zero colored halo in Light theme.
  */
 @Composable
 fun IGseekFoxLogo(
@@ -72,19 +73,20 @@ fun IGseekFoxLogo(
 ) {
     val palette = LocalIGseekPalette.current
     val tintColor = tintOverride ?: palette.logoTint
+    val renderGlow = showGlow && palette.isDark
 
     Box(
-        modifier = modifier.size(if (showGlow) size + 24.dp else size),
+        modifier = modifier.size(if (renderGlow) size + 24.dp else size),
         contentAlignment = Alignment.Center
     ) {
-        if (showGlow) {
+        if (renderGlow) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                palette.brand.copy(alpha = if (palette.isDark) 0.28f else 0.16f),
+                                tintColor.copy(alpha = 0.24f),
                                 Color.Transparent
                             )
                         ),
@@ -103,7 +105,91 @@ fun IGseekFoxLogo(
 }
 
 /**
- * Website-authentic radial glow canvas (`bg-radial-glow`) on warm obsidian dark or alabaster light.
+ * Website-authentic IGseek typographic wordmark (`IG` in brand accent + `seek` in primary text).
+ */
+@Composable
+fun IGseekWordmark(
+    fontSize: TextUnit = 34.sp,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    Text(
+        text = buildAnnotatedString {
+            withStyle(
+                SpanStyle(
+                    color = palette.brand,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            ) {
+                append("IG")
+            }
+            withStyle(
+                SpanStyle(
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            ) {
+                append("seek")
+            }
+        },
+        style = TextStyle(
+            fontFamily = FontFamily.SansSerif,
+            fontSize = fontSize,
+            lineHeight = (fontSize.value + 6f).sp,
+            letterSpacing = (-0.8).sp
+        ),
+        modifier = modifier
+    )
+}
+
+/**
+ * Official 4-color Google "G" mark rendered as native vector for the Google Sign-In pill.
+ */
+@Composable
+fun GoogleGIcon(modifier: Modifier = Modifier.size(18.dp)) {
+    val vector = remember {
+        ImageVector.Builder(
+            name = "GoogleG",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            addPath(
+                pathData = PathParser().parsePathString(
+                    "M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                ).toNodes(),
+                fill = SolidColor(Color(0xFF4285F4))
+            )
+            addPath(
+                pathData = PathParser().parsePathString(
+                    "M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                ).toNodes(),
+                fill = SolidColor(Color(0xFF34A853))
+            )
+            addPath(
+                pathData = PathParser().parsePathString(
+                    "M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                ).toNodes(),
+                fill = SolidColor(Color(0xFFFBBC05))
+            )
+            addPath(
+                pathData = PathParser().parsePathString(
+                    "M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                ).toNodes(),
+                fill = SolidColor(Color(0xFFEA4335))
+            )
+        }.build()
+    }
+    Image(
+        imageVector = vector,
+        contentDescription = "Google",
+        modifier = modifier
+    )
+}
+
+/**
+ * Website-authentic radial glow canvas on dark obsidian, pure clean surface on light mode.
  */
 @Composable
 fun IGseekCanvas(
@@ -111,33 +197,34 @@ fun IGseekCanvas(
     content: @Composable BoxScope.() -> Unit
 ) {
     val palette = LocalIGseekPalette.current
-    Box(
-        modifier = modifier
+    val baseModifier = if (palette.isDark) {
+        modifier
             .fillMaxSize()
             .background(palette.bg)
             .background(
                 brush = Brush.radialGradient(
-                    colors = listOf(
-                        palette.brandGlow,
-                        Color.Transparent
-                    ),
+                    colors = listOf(palette.brandGlow, Color.Transparent),
                     center = Offset(540f, 120f),
-                    radius = 920f
+                    radius = 900f
                 )
-            ),
-        content = content
-    )
+            )
+    } else {
+        modifier
+            .fillMaxSize()
+            .background(palette.bg)
+    }
+    Box(modifier = baseModifier, content = content)
 }
 
 /**
- * Website `.glass-card` equivalent with subtle frosted elevation and crisp 1dp border.
+ * Website `.glass-card` equivalent with clean elevation and crisp 1dp border.
  */
 @Composable
 fun IGseekGlassCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(18.dp),
+    shape: Shape = RoundedCornerShape(20.dp),
     highlighted: Boolean = false,
-    contentPadding: Dp = 14.dp,
+    contentPadding: Dp = 15.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val palette = LocalIGseekPalette.current
@@ -158,7 +245,7 @@ fun IGseekGlassCard(
 }
 
 /**
- * Interactive glass chip matching `.glass-chip` on the IGseek website.
+ * Interactive pill chip matching IGseek website chips.
  */
 @Composable
 fun IGseekGlassChip(
@@ -169,19 +256,23 @@ fun IGseekGlassChip(
     leading: (@Composable () -> Unit)? = null
 ) {
     val palette = LocalIGseekPalette.current
+    val activeBg = if (selected && !palette.isDark) palette.brand else if (selected) palette.brandSoft else palette.chipBg
+    val activeBorder = if (selected) palette.brandBorder else palette.chipBorder
+    val activeText = when {
+        selected && !palette.isDark -> Color.White
+        selected -> palette.brand
+        else -> palette.textSecondary
+    }
     Surface(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(50))
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = if (selected) palette.brandSoft else palette.chipBg,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (selected) palette.brandBorder else palette.chipBorder
-        )
+        shape = RoundedCornerShape(50),
+        color = activeBg,
+        border = BorderStroke(width = 1.dp, color = activeBorder)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
@@ -189,7 +280,7 @@ fun IGseekGlassChip(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
-                color = if (selected) palette.brand else palette.textSecondary,
+                color = activeText,
                 maxLines = 1
             )
         }
@@ -338,7 +429,7 @@ private fun formatInlineMarkdown(text: String, codeBg: Color, accentColor: Color
 }
 
 /**
- * Clean native Compose Markdown renderer with syntax-framed code blocks and 1-tap copy.
+ * Native Compose Markdown renderer with Lucide Copy icon and syntax-framed code cards.
  */
 @Composable
 fun IGseekMarkdownText(
@@ -433,7 +524,7 @@ fun IGseekMarkdownText(
                         var copied by remember(block.code) { mutableStateOf(false) }
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(16.dp),
                             color = palette.codeBg,
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f))
                         ) {
@@ -442,7 +533,7 @@ fun IGseekMarkdownText(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .background(Color.White.copy(alpha = 0.04f))
-                                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -463,7 +554,7 @@ fun IGseekMarkdownText(
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         Icon(
-                                            imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.Share,
+                                            imageVector = if (copied) LucideIcons.Check else LucideIcons.Copy,
                                             contentDescription = "Copy",
                                             tint = if (copied) Color(0xFF10B981) else Color(0xFFA1A1AA),
                                             modifier = Modifier.size(13.dp)

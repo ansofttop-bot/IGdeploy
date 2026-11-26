@@ -231,7 +231,7 @@ data class MobileLayoutPrefs(
     val language: String = "ru",
     val compactDensity: Boolean = false,
     val showQuickPrompts: Boolean = true,
-    val showBottomBar: Boolean = true,
+    val showBottomBar: Boolean = false,
     val biometricLockEnabled: Boolean = false,
     val hapticsEnabled: Boolean = true,
     val tabOrder: List<IGseekTab> = listOf(

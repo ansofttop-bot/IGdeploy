@@ -168,8 +168,8 @@ export function consumeServerPhotoQuota(
   };
 }
 
-// ---------- Silent Pro hourly anti-abuse tracker (> 8 paid images/hour -> silent Pollinations fallback) ----------
-export const PRO_HOURLY_PAID_IMAGE_LIMIT = 8;
+// ---------- Pro hourly anti-abuse tracker (4 GPT Image 2 images / sliding hour -> Pollinations + user notice) ----------
+export const PRO_HOURLY_PAID_IMAGE_LIMIT = 4;
 export const PRO_HOURLY_WINDOW_MS = 60 * 60 * 1000;
 
 const PRO_HOURLY_STORE_FILE = path.join(DATA_DIR, "pro-hourly-images.json");
@@ -221,28 +221,50 @@ function scheduleProHourlyFlush(): void {
   }
 }
 
-/**
- * Checks whether a Pro user has exceeded 8 paid image generations/edits in the past 60 minutes.
- * Never surfaces an error or limit UI — callers silently route to Pollinations (with DeepSeek
- * describing reference images for edits) once the threshold is exceeded.
- */
-export function evaluateProHourlyImageRoute(actorKey: string): {
+export interface ProHourlyImageRoute {
+  usePollinationsFallback: boolean;
   useSilentPollinations: boolean;
   countInLastHour: number;
-} {
-  const now = Date.now();
+  limit: number;
+  remainingPaid: number;
+  resetAt: number | null;
+  retryAfterMinutes: number;
+}
+
+/**
+ * Evaluates whether a Pro user has reached the anti-abuse limit of 4 GPT Image 2
+ * generations/edits within the sliding 60-minute window.
+ * When reached, callers switch to Pollinations and notify the user; once the oldest
+ * GPT Image 2 timestamp expires (> 60 min ago), GPT Image 2 automatically resumes.
+ */
+export function evaluateProHourlyImageRoute(actorKey: string, now = Date.now()): ProHourlyImageRoute {
   const cutoff = now - PRO_HOURLY_WINDOW_MS;
   const map = ensureProHourlyLoaded();
-  const recent = (map.get(actorKey) || []).filter((ts) => ts > cutoff);
+  const recent = (map.get(actorKey) || []).filter((ts) => ts > cutoff).sort((a, b) => a - b);
   map.set(actorKey, recent);
+
+  const reached = recent.length >= PRO_HOURLY_PAID_IMAGE_LIMIT;
+  const oldestTs = recent.length > 0 ? recent[0] : null;
+  const resetAt = reached && oldestTs !== null ? oldestTs + PRO_HOURLY_WINDOW_MS : null;
+  const retryAfterMinutes = resetAt !== null ? Math.max(1, Math.ceil((resetAt - now) / 60_000)) : 0;
+
   return {
-    useSilentPollinations: recent.length >= PRO_HOURLY_PAID_IMAGE_LIMIT,
+    usePollinationsFallback: reached,
+    useSilentPollinations: reached,
     countInLastHour: recent.length,
+    limit: PRO_HOURLY_PAID_IMAGE_LIMIT,
+    remainingPaid: Math.max(0, PRO_HOURLY_PAID_IMAGE_LIMIT - recent.length),
+    resetAt,
+    retryAfterMinutes,
   };
 }
 
-export function recordProHourlyImageGeneration(actorKey: string): number {
-  const now = Date.now();
+/**
+ * Records a GPT Image 2 generation/edit timestamp in the sliding 60-minute window.
+ * Must ONLY be called when GPT Image 2 is actually used (NOT during Pollinations fallback),
+ * so the rolling window expires cleanly after 60 minutes and restores GPT Image 2.
+ */
+export function recordProHourlyImageGeneration(actorKey: string, now = Date.now()): number {
   const cutoff = now - PRO_HOURLY_WINDOW_MS;
   const map = ensureProHourlyLoaded();
   const recent = (map.get(actorKey) || []).filter((ts) => ts > cutoff);
@@ -251,4 +273,14 @@ export function recordProHourlyImageGeneration(actorKey: string): number {
   scheduleProHourlyFlush();
   return recent.length;
 }
+
+export function resetProHourlyImageTracker(actorKey?: string): void {
+  const map = ensureProHourlyLoaded();
+  if (actorKey) {
+    map.delete(actorKey);
+  } else {
+    map.clear();
+  }
+}
+
 

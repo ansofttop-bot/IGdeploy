@@ -6,6 +6,7 @@ import app.igseek.mobile.data.models.AiModelId
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -22,6 +23,7 @@ class ModelsUnitTest {
     @Test
     fun defaultLayoutHasFourQuickBarTabsAndAllNineWorkspacesExist() {
         val prefs = MobileLayoutPrefs()
+        assertFalse(prefs.showBottomBar)
         assertEquals(4, prefs.tabOrder.size)
         assertEquals(IGseekTab.CHAT, prefs.tabOrder.first())
         assertEquals(9, IGseekTab.entries.size)
@@ -29,6 +31,14 @@ class ModelsUnitTest {
         assertTrue(IGseekTab.entries.contains(IGseekTab.ENGINE))
         assertTrue(IGseekTab.entries.contains(IGseekTab.WAVE))
         assertTrue(IGseekTab.entries.contains(IGseekTab.DOCS))
+    }
+
+    @Test
+    fun togglingLightThemePreservesSavedDarkAccent() {
+        val darkPrefs = MobileLayoutPrefs(darkTheme = true, accent = AccentPresetId.PURPLE)
+        val lightPrefs = darkPrefs.copy(darkTheme = false)
+        assertEquals(AccentPresetId.PURPLE, lightPrefs.accent)
+        assertEquals(AccentPresetId.PURPLE, lightPrefs.copy(darkTheme = true).accent)
     }
 
     @Test

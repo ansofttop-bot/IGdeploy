@@ -11,7 +11,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callMistralFreeText } from "./mistral-free";
+import { callGeminiFreeText } from "./gemini-free";
 import { verifyFirebaseIdToken } from "./auth-server";
 
 export type MemoryAttachment = {
@@ -623,16 +623,13 @@ export async function analyzeAndUpdateMemory(
     let rawRaw = "";
     if (useFreeModel) {
       rawRaw =
-        (await callMistralFreeText({
+        (await callGeminiFreeText({
           messages: [
             { role: "system", content: ANALYZER_SYSTEM },
             { role: "user", content: analysisPrompt },
           ],
-          temperature: 0.2,
           maxTokens: 256,
           jsonMode: true,
-          timeoutMs: 18_000,
-          allowPollinationsFallback: false,
         })) || "";
     }
     const endpoints: Array<{ url: string; apiKey: string; model: string; isDirect: boolean }> = [];

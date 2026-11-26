@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -20,12 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Build
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -81,6 +77,7 @@ fun EngineScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -91,7 +88,12 @@ fun EngineScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                    Icon(
+                        imageVector = LucideIcons.Menu,
+                        contentDescription = "Menu",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
                 }
                 IGseekFoxLogo(size = 20.dp)
                 Spacer(Modifier.width(8.dp))
@@ -133,7 +135,7 @@ fun EngineScreen(
                             )
                         },
                         minLines = 2,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.brand,
                             unfocusedBorderColor = palette.glassBorder,
@@ -142,28 +144,41 @@ fun EngineScreen(
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = {
                             viewModel.generateEngineProject(prompt)
                             prompt = ""
                         },
                         enabled = prompt.isNotBlank() && !state.isEngineGenerating,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.brand,
                             contentColor = palette.brandOn
                         ),
-                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
                     ) {
                         if (state.isEngineGenerating) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.brandOn)
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = palette.brandOn
+                            )
                             Spacer(Modifier.width(8.dp))
-                            Text("Генерация файлов…")
+                            Text(if (isEn) "Generating files…" else "Генерация файлов…")
                         } else {
-                            Icon(Icons.Rounded.Build, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Icon(
+                                imageVector = LucideIcons.Code2,
+                                contentDescription = null,
+                                modifier = Modifier.size(17.dp)
+                            )
                             Spacer(Modifier.width(7.dp))
-                            Text(if (isEn) "Generate Project" else "Сгенерировать проект", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = if (isEn) "Generate Project" else "Сгенерировать проект",
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     }
                 }
@@ -176,7 +191,12 @@ fun EngineScreen(
                         shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
                     ) {
-                        Text(engineErr, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+                        Text(
+                            text = engineErr,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(12.dp)
+                        )
                     }
                 }
             }
@@ -205,7 +225,7 @@ fun EngineScreen(
                 item {
                     IGseekGlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
+                        shape = RoundedCornerShape(20.dp),
                         contentPadding = 14.dp
                     ) {
                         Row(
@@ -216,7 +236,11 @@ fun EngineScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(activeProject.title, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
                                 Text(
-                                    text = "${activeProject.files.size} файлов · Синхронизировано",
+                                    text = if (isEn) {
+                                        "${activeProject.files.size} files · Synced"
+                                    } else {
+                                        "${activeProject.files.size} файлов · Синхронизировано"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = palette.textMuted
                                 )
@@ -224,9 +248,9 @@ fun EngineScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 OutlinedButton(
                                     onClick = { viewModel.saveEngineProjectToLibrary(activeProject) },
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(50),
                                     border = BorderStroke(1.dp, palette.glassBorder),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                                 ) {
                                     Text("В Library", style = MaterialTheme.typography.labelSmall, color = palette.textPrimary)
                                 }
@@ -234,7 +258,12 @@ fun EngineScreen(
                                     onClick = { viewModel.deleteEngineProject(activeProject.id) },
                                     modifier = Modifier.size(34.dp)
                                 ) {
-                                    Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = palette.textMuted, modifier = Modifier.size(18.dp))
+                                    Icon(
+                                        imageVector = LucideIcons.Trash2,
+                                        contentDescription = "Delete",
+                                        tint = palette.textMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
                             }
                         }
@@ -286,8 +315,17 @@ fun EngineScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
-                                            Icon(Icons.Rounded.Share, contentDescription = null, tint = Color(0xFFD4D4D8), modifier = Modifier.size(13.dp))
-                                            Text("Копировать", style = MaterialTheme.typography.labelSmall, color = Color(0xFFD4D4D8))
+                                            Icon(
+                                                imageVector = LucideIcons.Copy,
+                                                contentDescription = null,
+                                                tint = Color(0xFFD4D4D8),
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = if (isEn) "Copy" else "Копировать",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFFD4D4D8)
+                                            )
                                         }
                                     }
                                     Box(
@@ -314,11 +352,19 @@ fun EngineScreen(
                 }
             } else {
                 // Starter templates for Engine
-                val starters = listOf(
-                    "Лендинг портфолио с тёмным стеклом (HTML + CSS + JS)",
-                    "Интерактивный Pomodoro-таймер с историей сессий",
-                    "Калькулятор сложного процента и инвестиций"
-                )
+                val starters = if (isEn) {
+                    listOf(
+                        "Portfolio landing page with sleek dark glass (HTML + CSS + JS)",
+                        "Interactive Pomodoro timer with session history",
+                        "Compound interest & investment calculator"
+                    )
+                } else {
+                    listOf(
+                        "Лендинг портфолио с тёмным стеклом (HTML + CSS + JS)",
+                        "Интерактивный Pomodoro-таймер с историей сессий",
+                        "Калькулятор сложного процента и инвестиций"
+                    )
+                }
                 item {
                     Text(
                         text = if (isEn) "STARTER TEMPLATES" else "БЫСТРЫЙ СТАРТ",
@@ -331,9 +377,9 @@ fun EngineScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(16.dp))
                             .clickable { viewModel.generateEngineProject(tpl) },
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = palette.glassBg,
                         border = BorderStroke(1.dp, palette.glassBorder)
                     ) {
@@ -342,8 +388,19 @@ fun EngineScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(tpl, style = MaterialTheme.typography.bodyMedium, color = palette.textSecondary, modifier = Modifier.weight(1f))
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = tpl,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Icon(
+                                imageVector = LucideIcons.Play,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
                 }

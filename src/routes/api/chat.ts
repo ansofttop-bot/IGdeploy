@@ -21,11 +21,13 @@ import { isChinaSensitive } from "../../lib/sensitive-topics";
 import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/apimira-image";
 import {
   buildReferenceAwarePollinationsPrompt,
-} from "../../lib/mistral-free";
+  callGeminiFreeChatStream,
+} from "../../lib/gemini-free";
 import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithPollinations } from "../../lib/pollinations-image";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
 import {
+  PRO_HOURLY_PAID_IMAGE_LIMIT,
   evaluateProHourlyImageRoute,
   recordProHourlyImageGeneration,
   resolvePhotoQuotaActorKey,
@@ -643,8 +645,8 @@ function toApiMessages(
   });
 }
 
-async function generateImage(prompt: string): Promise<string> {
-  const res = await generateImageWithGptImage2(prompt);
+async function generateImage(prompt: string, signal?: AbortSignal): Promise<string> {
+  const res = await generateImageWithGptImage2(prompt, { signal });
   return res.dataUrl;
 }
 
@@ -652,59 +654,72 @@ async function streamFallbackToClient(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   send: (event: string, data: string) => void,
   uiModel: UiModel = "instinct",
+  useFreeModels = false,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
-  const apimiraKey = process.env.APIMIRA_API_KEY?.trim() || "";
-  const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
-
-  const endpoints: Array<{ url: string; apiKey: string; model: string; isDirect: boolean }> = [];
-  if (shouldTryDirectDeepSeek(deepseekKey, apimiraKey)) {
-    endpoints.push({
-      url: "https://api.deepseek.com/chat/completions",
-      apiKey: deepseekKey,
-      model: resolveDirectDeepSeekModel(uiModel, false),
-      isDirect: true,
-    });
-  }
-  if (apimiraKey) {
-    for (const modelId of getApimiraFallbackChain(uiModel, false)) {
-      endpoints.push({ url: `${apimiraBase}/chat/completions`, apiKey: apimiraKey, model: modelId, isDirect: false });
-    }
-  }
-  if (endpoints.length === 0) throw new Error("No DeepSeek text provider configured");
-
   let upstream: Response | null = null;
   let lastStatus = 0;
-  for (const ep of endpoints) {
-    try {
-      const r = await fetch(ep.url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${ep.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: ep.model,
-          stream: true,
-          ...(!ep.isDirect ? APIMIRA_NO_REASONING_PARAMS : {}),
-          messages,
-        }),
-        signal: AbortSignal.timeout(60000),
+
+  if (useFreeModels) {
+    upstream = await callGeminiFreeChatStream({
+      messages,
+      reasoning: false,
+      maxTokens: 4096,
+      signal,
+    });
+  } else {
+    const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
+    const apimiraKey = process.env.APIMIRA_API_KEY?.trim() || "";
+    const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
+
+    const endpoints: Array<{ url: string; apiKey: string; model: string; isDirect: boolean }> = [];
+    if (shouldTryDirectDeepSeek(deepseekKey, apimiraKey)) {
+      endpoints.push({
+        url: "https://api.deepseek.com/chat/completions",
+        apiKey: deepseekKey,
+        model: resolveDirectDeepSeekModel(uiModel, false),
+        isDirect: true,
       });
-      if (r.ok && r.body) {
-        if (!ep.isDirect) markApimiraModelHealthy(ep.model);
-        upstream = r;
-        break;
+    }
+    if (apimiraKey) {
+      for (const modelId of getApimiraFallbackChain(uiModel, false)) {
+        endpoints.push({ url: `${apimiraBase}/chat/completions`, apiKey: apimiraKey, model: modelId, isDirect: false });
       }
-      if (ep.isDirect) markDirectDeepSeekUnavailable(r.status);
-      else markApimiraModelUnhealthy(ep.model, r.status);
-      lastStatus = r.status;
-    } catch {
+    }
+    if (endpoints.length === 0) throw new Error("No DeepSeek text provider configured");
+
+    for (const ep of endpoints) {
+      if (signal?.aborted) break;
+      try {
+        const r = await fetch(ep.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${ep.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: ep.model,
+            stream: true,
+            ...(!ep.isDirect ? APIMIRA_NO_REASONING_PARAMS : {}),
+            messages,
+          }),
+          signal: signal ?? AbortSignal.timeout(60000),
+        });
+        if (r.ok && r.body) {
+          if (!ep.isDirect) markApimiraModelHealthy(ep.model);
+          upstream = r;
+          break;
+        }
+        if (ep.isDirect) markDirectDeepSeekUnavailable(r.status);
+        else markApimiraModelUnhealthy(ep.model, r.status);
+        lastStatus = r.status;
+      } catch {
+      }
     }
   }
 
   if (!upstream || !upstream.body) {
-    throw new Error(`deepseek fallback ${lastStatus || "failed"}`);
+    throw new Error(`fallback ${lastStatus || "failed"}`);
   }
 
   const reader = upstream.body.getReader();
@@ -712,6 +727,12 @@ async function streamFallbackToClient(
   let buffer = "";
   let assistantText = "";
   while (true) {
+    if (signal?.aborted) {
+      try {
+        await reader.cancel();
+      } catch {}
+      break;
+    }
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -751,6 +772,7 @@ async function callPrimary(
   uiModel: UiModel,
   temperature: number,
   modelOverride?: string,
+  signal?: AbortSignal,
 ) {
   const profile = MODEL_PROFILES[uiModel];
   const targetModel = modelOverride || resolveDirectDeepSeekModel(uiModel, reasoning);
@@ -765,15 +787,27 @@ async function callPrimary(
     bodyPayload.temperature = temperature;
     bodyPayload.top_p = profile.top_p;
   }
-  return fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(bodyPayload),
-    signal: AbortSignal.timeout(120_000),
-  });
+  const ac = new AbortController();
+  const onExternalAbort = () => ac.abort(signal?.reason);
+  if (signal) {
+    if (signal.aborted) ac.abort(signal.reason);
+    else signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => ac.abort(new Error("deepseek_timeout")), 120_000);
+  try {
+    return await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(bodyPayload),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", onExternalAbort);
+  }
 }
 
 async function callApimiraDeepSeek(
@@ -1720,26 +1754,26 @@ export async function handleChatPost(request: Request): Promise<Response> {
               let lastErr: unknown = null;
 
               if (useFreeModels) {
-                const mistralAttempts: Array<{
+                const geminiAttempts: Array<{
                   msgs: ChatMessage[];
                   useTools: typeof activeTools | null;
                 }> =
                   tools.length > 0
                     ? [
                         { msgs: messages, useTools: tools },
-                        { msgs: trimMessagesForRetry(messages, 40_000), useTools: null },
+                        { msgs: trimMessagesForRetry(messages, 48_000), useTools: null },
                       ]
                     : [{ msgs: messages, useTools: null }];
 
-                for (let idx = 0; idx < mistralAttempts.length; idx += 1) {
-                  const att = mistralAttempts[idx];
+                for (let idx = 0; idx < geminiAttempts.length; idx += 1) {
+                  const att = geminiAttempts[idx];
                   if (streamClosed || streamAbort.signal.aborted) break;
                   try {
                     const apiMsgs = toApiMessages(att.msgs);
                     const routed = await routeChatStream({
                       tier: "free",
                       model: parsed.model,
-                      reasoning: false,
+                      reasoning: effectiveReasoning,
                       messages: apiMsgs,
                       tools: att.useTools && att.useTools.length ? att.useTools : undefined,
                       temperature: effectiveTemperature,
@@ -1748,21 +1782,23 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       signal: streamAbort.signal,
                     });
                     const outcome = await consumeOpenAiSse(routed.response, forwardText);
-                    if (outcome.assistantText || outcome.toolCalls.length > 0) {
+                    if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                       return outcome;
                     }
-                    lastErr = new Error("Free AI provider returned an empty response");
-                  } catch (mistralErr) {
-                    lastErr = mistralErr;
-                    const errText = mistralErr instanceof Error ? mistralErr.message : String(mistralErr);
-                    console.warn("[chat] Free tier router attempt failed:", errText);
-                    // Never double-hit a rate-limited or timed-out free endpoint — fail fast
-                    if (/(429|402|rate limit|cooldown|timeout|aborted)/i.test(errText)) {
+                    lastErr = new Error("Gemini Free returned an empty response");
+                  } catch (geminiErr) {
+                    if (streamAbort.signal.aborted || (geminiErr as Error)?.name === "AbortError") {
+                      throw geminiErr;
+                    }
+                    lastErr = geminiErr;
+                    const errText = geminiErr instanceof Error ? geminiErr.message : String(geminiErr);
+                    console.warn("[chat] Free tier Gemini attempt failed:", errText);
+                    if (/(429|401|403|API_KEY|rate limit|quota|timeout|aborted)/i.test(errText)) {
                       break;
                     }
                   }
                 }
-                throw lastErr instanceof Error ? lastErr : new Error("free_ai_unavailable");
+                throw lastErr instanceof Error ? lastErr : new Error("gemini_free_unavailable");
               }
 
               if (!deepseekKey && !apimiraKey) {
@@ -1778,7 +1814,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   signal: streamAbort.signal,
                 });
                 const outcome = await consumeOpenAiSse(routedPro.response, forwardText);
-                if (outcome.assistantText || outcome.toolCalls.length > 0) {
+                if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                   return outcome;
                 }
               }
@@ -1796,6 +1832,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                 ];
 
                 for (const att of dsAttempts) {
+                  if (streamClosed || streamAbort.signal.aborted) break;
                   try {
                     const upstream = await callPrimary(
                       deepseekKey,
@@ -1805,10 +1842,11 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       parsed.model,
                       effectiveTemperature,
                       att.modelOverride,
+                      streamAbort.signal,
                     );
                     if (upstream.ok && upstream.body) {
                       const outcome = await consumeOpenAiSse(upstream, forwardText);
-                      if (outcome.assistantText || outcome.toolCalls.length > 0) {
+                      if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                         return outcome;
                       }
                       lastErr = new Error("upstream empty response");
@@ -1824,12 +1862,19 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       }
                     }
                   } catch (primaryErr) {
+                    if (streamAbort.signal.aborted || (primaryErr as Error)?.name === "AbortError") {
+                      throw primaryErr;
+                    }
                     if (!apimiraKey) {
                       console.warn("DeepSeek primary stream failed, retrying:", (primaryErr as Error)?.message || primaryErr);
                     }
                     lastErr = primaryErr;
                   }
                 }
+              }
+
+              if (streamClosed || streamAbort.signal.aborted) {
+                return { finishReason: "stop", toolCalls: [], assistantText: "", reasoningText: "" };
               }
 
               const dsGateway = await runApimiraDeepSeek(messages, tools, forwardText);
@@ -1867,7 +1912,13 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   },
                   { role: "user" as const, content: lastUserMessage },
                 ];
-                finalAssistantText = await streamFallbackToClient(fallbackMessages, send, parsed.model);
+                finalAssistantText = await streamFallbackToClient(
+                  fallbackMessages,
+                  send,
+                  parsed.model,
+                  useFreeModels,
+                  streamAbort.signal,
+                );
                 send("done", "1");
                 safeClose();
                 if (authed && lastUserMessage) {
@@ -1946,17 +1997,57 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
 
                       let usePollinations = useFreeModels;
+                      let proHourlyFallback = false;
+                      let fallbackNoticeSent = false;
                       if (isProUser) {
                         const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
-                        recordProHourlyImageGeneration(photoQuotaActorKey);
-                        if (proRoute.useSilentPollinations) {
+                        if (proRoute.usePollinationsFallback) {
                           usePollinations = true;
+                          proHourlyFallback = true;
+                          fallbackNoticeSent = true;
+                          send(
+                            "image_fallback_notice",
+                            JSON.stringify({
+                              reason: "pro_hourly_limit",
+                              limit: PRO_HOURLY_PAID_IMAGE_LIMIT,
+                              retryAfterMinutes: proRoute.retryAfterMinutes,
+                              resetAt: proRoute.resetAt,
+                              message: `Лимит GPT Image 2 (${PRO_HOURLY_PAID_IMAGE_LIMIT} изображений за час) временно исчерпан — используется облегчённая модель Pollinations. GPT Image 2 вернётся автоматически через ~${proRoute.retryAfterMinutes} мин.`,
+                            }),
+                          );
                         }
                       }
 
-                      const dataUrl = usePollinations
-                        ? (await generateImageWithPollinations(parsedArgs.prompt)).dataUrl
-                        : await generateImage(parsedArgs.prompt);
+                      // Under the hood on Free plan (or Pro fallback): if the user uploaded a reference image,
+                      // Gemini Vision analyzes the reference and synthesizes a detailed English prompt for Pollinations.
+                      const attachedReferenceImages = (parsed.userAttachments ?? [])
+                        .filter((a) => a.dataUrl?.startsWith("data:image/"))
+                        .map((a) => ({ dataUrl: a.dataUrl, mimeType: a.type }));
+
+                      let dataUrl: string;
+                      if (usePollinations) {
+                        const finalPrompt =
+                          attachedReferenceImages.length > 0
+                            ? await buildReferenceAwarePollinationsPrompt({
+                                sourceImages: attachedReferenceImages,
+                                editPrompt: parsedArgs.prompt,
+                                extraDescription: parsedArgs.description,
+                                useDeepSeekSynthesis: proHourlyFallback,
+                                deepseekKey,
+                                apimiraKey,
+                                apimiraBaseUrl,
+                                signal: streamAbort.signal,
+                              })
+                            : parsedArgs.prompt;
+                        dataUrl = (
+                          await generateImageWithPollinations(finalPrompt, { signal: streamAbort.signal })
+                        ).dataUrl;
+                      } else {
+                        dataUrl = await generateImage(parsedArgs.prompt, streamAbort.signal);
+                        if (isProUser) {
+                          recordProHourlyImageGeneration(photoQuotaActorKey);
+                        }
+                      }
 
                       lastGeneratedImageDataUrl = dataUrl;
                       lastGeneratedImageState = {
@@ -1979,10 +2070,12 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
+                          ...(fallbackNoticeSent ? { lightweightFallbackUsed: true } : {}),
                           message: `Изображение «${image.title}» сгенерировано и показано пользователю карточкой. Не описывай картинку подробно — просто кратко подтверди.`,
                         }),
                       });
                     } catch (e) {
+                      if (streamAbort.signal.aborted || (e as Error)?.name === "AbortError") throw e;
                       const errMsg = (e as Error).message || "Image generation failed";
                       send("image_error", JSON.stringify({ message: errMsg }));
                       followupMessages.push({
@@ -2006,13 +2099,22 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       );
 
                       let usePollinations = useFreeModels;
-                      let silentProFallback = false;
+                      let proHourlyFallback = false;
                       if (isProUser) {
                         const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
-                        recordProHourlyImageGeneration(photoQuotaActorKey);
-                        if (proRoute.useSilentPollinations) {
+                        if (proRoute.usePollinationsFallback) {
                           usePollinations = true;
-                          silentProFallback = true;
+                          proHourlyFallback = true;
+                          send(
+                            "image_fallback_notice",
+                            JSON.stringify({
+                              reason: "pro_hourly_limit",
+                              limit: PRO_HOURLY_PAID_IMAGE_LIMIT,
+                              retryAfterMinutes: proRoute.retryAfterMinutes,
+                              resetAt: proRoute.resetAt,
+                              message: `Лимит GPT Image 2 (${PRO_HOURLY_PAID_IMAGE_LIMIT} изображений за час) временно исчерпан — используется облегчённая модель Pollinations. GPT Image 2 вернётся автоматически через ~${proRoute.retryAfterMinutes} мин.`,
+                            }),
+                          );
                         }
                       }
 
@@ -2025,17 +2127,28 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       let editedDataUrl: string;
                       if (usePollinations) {
                         const synthesizedPrompt = await buildReferenceAwarePollinationsPrompt({
+                          sourceImages,
                           sourceImageDataUrl: sourceImages[0]?.dataUrl ?? null,
                           editPrompt: parsedArgs.prompt,
                           extraDescription: parsedArgs.description,
-                          useDeepSeekSynthesis: silentProFallback,
+                          useDeepSeekSynthesis: proHourlyFallback,
                           deepseekKey,
                           apimiraKey,
                           apimiraBaseUrl,
+                          signal: streamAbort.signal,
                         });
-                        editedDataUrl = (await generateImageWithPollinations(synthesizedPrompt)).dataUrl;
+                        editedDataUrl = (
+                          await generateImageWithPollinations(synthesizedPrompt, { signal: streamAbort.signal })
+                        ).dataUrl;
                       } else {
-                        editedDataUrl = (await editImageWithGptImage2(parsedArgs.prompt, sourceImages)).dataUrl;
+                        editedDataUrl = (
+                          await editImageWithGptImage2(parsedArgs.prompt, sourceImages, {
+                            signal: streamAbort.signal,
+                          })
+                        ).dataUrl;
+                        if (isProUser) {
+                          recordProHourlyImageGeneration(photoQuotaActorKey);
+                        }
                       }
 
                       lastGeneratedImageDataUrl = editedDataUrl;
@@ -2059,10 +2172,12 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
+                          ...(proHourlyFallback ? { lightweightFallbackUsed: true } : {}),
                           message: `Изображение «${image.title}» отредактировано по запросу и показано пользователю карточкой. Кратко подтверди, что правка выполнена.`,
                         }),
                       });
                     } catch (e) {
+                      if (streamAbort.signal.aborted || (e as Error)?.name === "AbortError") throw e;
                       const errMsg = (e as Error).message || "Image editing failed";
                       send("image_error", JSON.stringify({ message: errMsg }));
                       followupMessages.push({
@@ -2832,6 +2947,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                 ).catch((e) => console.error("memory analyze error", e));
               }
             } catch (err) {
+              if (streamClosed || streamAbort.signal.aborted || (err as Error)?.name === "AbortError") {
+                safeClose();
+                return;
+              }
               console.error("stream error", err);
               if (!lastGeneratedImageDataUrl && !finalAssistantText) {
                 const errDetail = err instanceof Error ? err.message.slice(0, 120) : "stream_failed";

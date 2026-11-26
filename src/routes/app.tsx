@@ -258,7 +258,7 @@ const LANGUAGES: { code: LangCode; label: string; native: string; flag: string }
 
 type ModelId = "instinct" | "chat" | "f1";
 const MODELS: { id: ModelId; name: string; tag: string }[] = [
-  { id: "instinct", name: "IGseek 4.0 instinct", tag: "Default" },
+  { id: "instinct", name: "IGseek 3.5 instinct", tag: "Default" },
   { id: "chat", name: "IGseek 3.2 chat", tag: "Chat" },
   { id: "f1", name: "IGseek F1", tag: "Fast" },
 ];
@@ -317,6 +317,7 @@ type ChatMessage = {
     title: string;
     prompt: string;
   };
+  imageFallbackNotice?: string;
   memorySaved?: boolean;
   calendarEvents?: Array<CalendarEventPayload & { id?: string; action?: string; eventId?: string; query?: string }>;
   taskEvents?: Array<{ id?: string; action: string; title: string; notes?: string; due?: string; taskId?: string; taskListId?: string }>;
@@ -1545,30 +1546,59 @@ function Index() {
   }, [messages]);
 
   const stopStreaming = () => {
-    const jobKey = activeChatId ?? "__pending__";
-    const job = backgroundJobsRef.current.get(jobKey);
-    if (job) {
-      const receipt = job.receipt ?? activeChatReceiptRef.current;
-      if (isWithinCancelRefundWindow(receipt) && refundPrompt(receipt)) {
-        toast.info(t("Request cancelled within 5s — prompt refunded."));
+    const activeMessageIds = new Set(messages.map((m) => m.id));
+    const matchedKeys: string[] = [];
+
+    for (const [key, job] of backgroundJobsRef.current.entries()) {
+      if (
+        (activeChatId && key === activeChatId) ||
+        key === "__pending__" ||
+        streamingMsgIds.has(job.assistantMsg.id) ||
+        activeMessageIds.has(job.assistantMsg.id)
+      ) {
+        matchedKeys.push(key);
       }
-      if (activeChatReceiptRef.current === receipt) {
-        activeChatReceiptRef.current = null;
+    }
+
+    if (matchedKeys.length > 0) {
+      let refundedOnce = false;
+      const stoppedAssistantIds = new Set<string>();
+
+      for (const key of matchedKeys) {
+        const job = backgroundJobsRef.current.get(key);
+        if (!job) continue;
+        const receipt = job.receipt ?? activeChatReceiptRef.current;
+        if (!refundedOnce && isWithinCancelRefundWindow(receipt) && refundPrompt(receipt)) {
+          refundedOnce = true;
+          toast.info(t("Request cancelled within 5s — prompt refunded."));
+        }
+        if (activeChatReceiptRef.current === receipt) {
+          activeChatReceiptRef.current = null;
+        }
+        job.assistantMsg.pendingImage = undefined;
+        stoppedAssistantIds.add(job.assistantMsg.id);
+        job.controller.abort();
+        backgroundJobsRef.current.delete(key);
       }
-      job.controller.abort();
-      backgroundJobsRef.current.delete(jobKey);
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          stoppedAssistantIds.has(m.id) ? { ...m, pendingImage: undefined } : m,
+        ),
+      );
       setStreamingMsgIds((prev) => {
         const next = new Set(prev);
-        next.delete(job.assistantMsg.id);
+        for (const id of stoppedAssistantIds) next.delete(id);
         return next;
       });
-      if (activeChatId) {
-        setGeneratingChatIds((prev) => {
-          const next = new Set(prev);
-          next.delete(activeChatId);
-          return next;
-        });
-      }
+      setGeneratingChatIds((prev) => {
+        const next = new Set(prev);
+        if (activeChatId) next.delete(activeChatId);
+        for (const key of matchedKeys) {
+          if (key !== "__pending__") next.delete(key);
+        }
+        return next;
+      });
     } else if (activeChatReceiptRef.current) {
       const receipt = activeChatReceiptRef.current;
       activeChatReceiptRef.current = null;
@@ -2079,6 +2109,22 @@ function Index() {
               } else if (currentEvent === "image_error") {
                 currentAssistantMsg.pendingImage = undefined;
                 updateLiveUi();
+              } else if (currentEvent === "image_fallback_notice") {
+                try {
+                  const notice = JSON.parse(raw) as {
+                    message?: string;
+                    retryAfterMinutes?: number;
+                    limit?: number;
+                  };
+                  const noticeText =
+                    notice.message ||
+                    `Лимит GPT Image 2 (${notice.limit ?? 4} изображений/час) временно исчерпан. Используется облегчённая модель${
+                      notice.retryAfterMinutes ? ` (~${notice.retryAfterMinutes} мин.)` : ""
+                    }.`;
+                  currentAssistantMsg.imageFallbackNotice = noticeText;
+                  toast.info(noticeText, { duration: 6000 });
+                  updateLiveUi();
+                } catch {  }
               } else if (currentEvent === "photo_usage") {
                 try {
                   const quota = JSON.parse(raw) as { used?: number; limit?: number; resetAt?: number };
@@ -2212,6 +2258,7 @@ function Index() {
         }
       }
       if (
+        !controller.signal.aborted &&
         !contentBuf.trim() &&
         !reasoningBuf.trim() &&
         !currentAssistantMsg.limitCooldown &&
@@ -3182,9 +3229,25 @@ function Index() {
                     }
                     onRequireAuth={() => setAuthOpen(true)}
                     onLocked={() => setProfileOpen(true)}
+                    thinking={thinking}
+                    onToggleThinking={() => {
+                      if (!isAuthed) { setAuthOpen(true); return; }
+                      if (isLocked) { setProfileOpen(true); return; }
+                      setThinking((v) => !v);
+                    }}
+                    webSearch={webSearch}
+                    onToggleWebSearch={() => {
+                      if (!isAuthed) { setAuthOpen(true); return; }
+                      if (isLocked) { setProfileOpen(true); return; }
+                      setWebSearch((v) => !v);
+                    }}
                     isVoiceRecording={chatVoice.isRecording}
                     isVoiceTranscribing={chatVoice.isTranscribing}
-                    onToggleVoice={chatVoice.toggle}
+                    onToggleVoice={() => {
+                      if (!isAuthed) { setAuthOpen(true); return; }
+                      if (isLocked) { setProfileOpen(true); return; }
+                      chatVoice.toggle();
+                    }}
                     messages={messages}
                     isSending={isSending}
                     streamingMsgIds={streamingMsgIds}
@@ -3423,7 +3486,7 @@ function Index() {
                   if (isSending) return;
                   sendChat(input);
                 }}
-                className="igseek-chat-composer relative flex flex-col rounded-[24px] border border-zinc-200/90 dark:border-white/[0.11] bg-white/95 dark:bg-[#151518]/95 shadow-[0_2px_16px_rgba(0,0,0,0.04)] dark:shadow-[0_6px_28px_rgba(0,0,0,0.35)] focus-within:border-zinc-400 dark:focus-within:border-white/25 transition-colors w-full min-w-0 overflow-hidden"
+                className="igseek-chat-composer relative flex flex-col rounded-[24px] border border-zinc-200/90 dark:border-white/[0.11] bg-white/95 dark:bg-[#151518]/95 shadow-[0_2px_16px_rgba(0,0,0,0.04)] dark:shadow-[0_6px_28px_rgba(0,0,0,0.35)] focus-within:border-zinc-400 dark:focus-within:border-white/25 transition-colors w-full min-w-0"
               >
                 {attachments.length > 0 && (
                   <ComposerAttachmentsTray
@@ -3459,8 +3522,8 @@ function Index() {
                   className="w-full min-w-0 min-h-[44px] max-h-[184px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] leading-[1.5] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none"
                 />
 
-                <div className="flex flex-nowrap items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
-                  <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto no-scrollbar">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 sm:px-3 pb-2.5 pt-1">
+                  <div className="flex flex-wrap items-center gap-1 min-w-0">
                     <button
                       type="button"
                       onClick={() => {
@@ -3469,7 +3532,8 @@ function Index() {
                         fileInputRef.current?.click();
                       }}
                       title={t("Attach file")}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                      aria-label={t("Attach file")}
+                      className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                     >
                       <Paperclip className="h-4 w-4" />
                     </button>
@@ -3509,16 +3573,28 @@ function Index() {
                         });
                       }}
                       title={t("Select from Library")}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                      aria-label={t("Select from Library")}
+                      className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                     >
                       <BookOpen className="h-4 w-4" />
                     </button>
 
                     <button
                       type="button"
-                      onClick={chatVoice.toggle}
+                      onClick={() => {
+                        if (!isAuthed) { setAuthOpen(true); return; }
+                        if (isLocked) { setProfileOpen(true); return; }
+                        chatVoice.toggle();
+                      }}
                       disabled={chatVoice.isTranscribing}
                       aria-pressed={chatVoice.isRecording}
+                      aria-label={
+                        chatVoice.isTranscribing
+                          ? t("Transcribing…")
+                          : chatVoice.isRecording
+                            ? t("Stop recording")
+                            : t("Voice input")
+                      }
                       title={
                         chatVoice.isTranscribing
                           ? t("Transcribing…")
@@ -3526,7 +3602,7 @@ function Index() {
                             ? t("Stop recording")
                             : t("Voice input")
                       }
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer disabled:opacity-60 ${
+                      className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer disabled:opacity-60 ${
                         chatVoice.isRecording
                           ? "bg-red-500/15 text-red-600 dark:bg-red-500/20 dark:text-red-400 ring-2 ring-red-500/30 animate-pulse"
                           : chatVoice.isTranscribing
@@ -3545,10 +3621,15 @@ function Index() {
 
                     <button
                       type="button"
-                      onClick={() => { if (!isAuthed) { setAuthOpen(true); return; } setThinking((v) => !v); }}
+                      onClick={() => {
+                        if (!isAuthed) { setAuthOpen(true); return; }
+                        if (isLocked) { setProfileOpen(true); return; }
+                        setThinking((v) => !v);
+                      }}
                       title={thinking ? t("Reasoner on") : t("Reasoner off")}
+                      aria-label={thinking ? t("Reasoner on") : t("Reasoner off")}
                       aria-pressed={thinking}
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
+                      className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
                         thinking
                           ? "bg-zinc-900/10 text-zinc-950 dark:bg-[var(--brand-soft)] dark:text-[var(--brand)]"
                           : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
@@ -3559,10 +3640,15 @@ function Index() {
 
                     <button
                       type="button"
-                      onClick={() => { if (!isAuthed) { setAuthOpen(true); return; } setWebSearch((v) => !v); }}
+                      onClick={() => {
+                        if (!isAuthed) { setAuthOpen(true); return; }
+                        if (isLocked) { setProfileOpen(true); return; }
+                        setWebSearch((v) => !v);
+                      }}
                       title={webSearch ? t("Web search on") : t("Web search off")}
+                      aria-label={webSearch ? t("Web search on") : t("Web search off")}
                       aria-pressed={webSearch}
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
+                      className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
                         webSearch
                           ? "bg-zinc-900/10 text-zinc-950 dark:bg-[var(--brand-soft)] dark:text-[var(--brand)]"
                           : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
@@ -3572,35 +3658,40 @@ function Index() {
                     </button>
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex shrink-0 items-center gap-1.5 ml-auto">
                     {isLongTextOverLimit(input) && (
                       <button
                         type="button"
                         onClick={() => setComposerLongTextOpen(true)}
                         title={`${t("Full text")} (${countTextLines(input)})`}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                        aria-label={t("Full text")}
+                        className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                       >
                         <Maximize2 className="h-3.5 w-3.5" />
                       </button>
                     )}
-                    {isSending && (
+                    {isSending ? (
                       <button
                         type="button"
                         onClick={stopStreaming}
                         title={t("Stop generation")}
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 transition-all active:scale-95 cursor-pointer"
+                        aria-label={t("Stop generation")}
+                        className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
                       >
-                        <Square className="h-3 w-3" fill="currentColor" />
+                        <Square className="h-3 w-3 shrink-0" fill="currentColor" />
+                        <span className="hidden xs:inline sm:inline">{t("Stop")}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={attachments.some((a) => a.parsing) || (isAuthed && !input.trim() && !attachments.length)}
+                        title={isAuthed ? t("Send") : t("Sign in to send")}
+                        aria-label={isAuthed ? t("Send") : t("Sign in to send")}
+                        className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 dark:bg-[var(--brand)] hover:bg-zinc-800 dark:hover:brightness-110 text-white transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        <ArrowUp className="h-4 w-4" />
                       </button>
                     )}
-                    <button
-                      type="submit"
-                      disabled={attachments.some((a) => a.parsing) || (isAuthed && !input.trim() && !attachments.length)}
-                      title={isAuthed ? (isSending ? t("Send to queue") : t("Send")) : t("Sign in to send")}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 dark:bg-[var(--brand)] hover:bg-zinc-800 dark:hover:brightness-110 text-white transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      <ArrowUp className="h-4 w-4" />
-                    </button>
                   </div>
                 </div>
               </form>
@@ -3843,6 +3934,10 @@ function ChatView({
   onOpenLibraryPicker,
   onRequireAuth,
   onLocked,
+  thinking = false,
+  onToggleThinking,
+  webSearch = false,
+  onToggleWebSearch,
   isVoiceRecording = false,
   isVoiceTranscribing = false,
   onToggleVoice,
@@ -3866,6 +3961,10 @@ function ChatView({
   onOpenLibraryPicker?: () => void;
   onRequireAuth: () => void;
   onLocked: () => void;
+  thinking?: boolean;
+  onToggleThinking?: () => void;
+  webSearch?: boolean;
+  onToggleWebSearch?: () => void;
   isVoiceRecording?: boolean;
   isVoiceTranscribing?: boolean;
   onToggleVoice?: () => void;
@@ -4060,8 +4159,12 @@ function ChatView({
 
         <div className="mt-8 flex w-full max-w-xl flex-col">
           <form
-            onSubmit={(e) => { e.preventDefault(); submit(input); }}
-            className="igseek-chat-composer flex flex-col w-full min-w-0 rounded-[24px] border border-zinc-200/90 dark:border-white/[0.11] bg-white/95 dark:bg-[#151518]/95 shadow-[0_2px_18px_rgba(0,0,0,0.05)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.38)] focus-within:border-zinc-400 dark:focus-within:border-white/25 transition-colors overflow-hidden"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (isSending) return;
+              submit(input);
+            }}
+            className="igseek-chat-composer flex flex-col w-full min-w-0 rounded-[24px] border border-zinc-200/90 dark:border-white/[0.11] bg-white/95 dark:bg-[#151518]/95 shadow-[0_2px_18px_rgba(0,0,0,0.05)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.38)] focus-within:border-zinc-400 dark:focus-within:border-white/25 transition-colors"
           >
             {attachments.length > 0 && (
               <ComposerAttachmentsTray
@@ -4078,7 +4181,7 @@ function ChatView({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  submit(input);
+                  if (!isSending) submit(input);
                 }
               }}
               onFocus={(e) => {
@@ -4087,16 +4190,21 @@ function ChatView({
               }}
               rows={1}
               readOnly={!isAuthed || isLocked}
-              placeholder={t("Напишите сообщение или задачу…")}
+              placeholder={
+                !isAuthed
+                  ? t("Sign in to start chatting…")
+                  : t("Напишите сообщение или задачу…")
+              }
               className="w-full min-w-0 min-h-[44px] max-h-[184px] resize-none bg-transparent px-4 pt-3.5 pb-2 text-[15px] leading-[1.5] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none text-left"
             />
-            <div className="flex flex-nowrap items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
-              <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto no-scrollbar">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 sm:px-3 pb-2.5 pt-1">
+              <div className="flex flex-wrap items-center gap-1 min-w-0">
                 <button
                   type="button"
                   onClick={() => { if (guard()) onAttach(); }}
                   title={t("Attach file")}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                  aria-label={t("Attach file")}
+                  className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
@@ -4105,7 +4213,8 @@ function ChatView({
                     type="button"
                     onClick={() => { if (guard()) onOpenLibraryPicker(); }}
                     title={t("Select from Library")}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                    aria-label={t("Select from Library")}
+                    className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                   >
                     <BookOpen className="h-4 w-4" />
                   </button>
@@ -4116,6 +4225,13 @@ function ChatView({
                     onClick={() => { if (guard()) onToggleVoice(); }}
                     disabled={isVoiceTranscribing}
                     aria-pressed={isVoiceRecording}
+                    aria-label={
+                      isVoiceTranscribing
+                        ? t("Transcribing…")
+                        : isVoiceRecording
+                          ? t("Stop recording")
+                          : t("Voice input")
+                    }
                     title={
                       isVoiceTranscribing
                         ? t("Transcribing…")
@@ -4123,7 +4239,7 @@ function ChatView({
                           ? t("Stop recording")
                           : t("Voice input")
                     }
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer disabled:opacity-60 ${
+                    className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer disabled:opacity-60 ${
                       isVoiceRecording
                         ? "bg-red-500/15 text-red-600 dark:bg-red-500/20 dark:text-red-400 ring-2 ring-red-500/30 animate-pulse"
                         : isVoiceTranscribing
@@ -4140,36 +4256,73 @@ function ChatView({
                     )}
                   </button>
                 )}
+                {onToggleThinking && (
+                  <button
+                    type="button"
+                    onClick={() => { if (guard()) onToggleThinking(); }}
+                    title={thinking ? t("Reasoner on") : t("Reasoner off")}
+                    aria-label={thinking ? t("Reasoner on") : t("Reasoner off")}
+                    aria-pressed={thinking}
+                    className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
+                      thinking
+                        ? "bg-zinc-900/10 text-zinc-950 dark:bg-[var(--brand-soft)] dark:text-[var(--brand)]"
+                        : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    <Brain className="h-4 w-4" />
+                  </button>
+                )}
+                {onToggleWebSearch && (
+                  <button
+                    type="button"
+                    onClick={() => { if (guard()) onToggleWebSearch(); }}
+                    title={webSearch ? t("Web search on") : t("Web search off")}
+                    aria-label={webSearch ? t("Web search on") : t("Web search off")}
+                    aria-pressed={webSearch}
+                    className={`flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full transition-colors cursor-pointer ${
+                      webSearch
+                        ? "bg-zinc-900/10 text-zinc-950 dark:bg-[var(--brand-soft)] dark:text-[var(--brand)]"
+                        : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    <Globe className="h-4 w-4" />
+                  </button>
+                )}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex shrink-0 items-center gap-1.5 ml-auto">
                 {isLongTextOverLimit(input) && (
                   <button
                     type="button"
                     onClick={() => setHeroLongTextOpen(true)}
                     title={`${t("Full text")} (${countTextLines(input)})`}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
+                    aria-label={t("Full text")}
+                    className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08] transition-colors cursor-pointer"
                   >
                     <Maximize2 className="h-3.5 w-3.5" />
                   </button>
                 )}
-                {isSending && onStop && (
+                {isSending && onStop ? (
                   <button
                     type="button"
                     onClick={onStop}
                     title={t("Stop generation")}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 transition-all active:scale-95 cursor-pointer"
+                    aria-label={t("Stop generation")}
+                    className="flex h-8 sm:h-9 px-3 shrink-0 items-center justify-center gap-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 text-white dark:text-zinc-950 text-xs font-medium transition-all active:scale-95 cursor-pointer shadow-sm"
                   >
-                    <Square className="h-3 w-3" fill="currentColor" />
+                    <Square className="h-3 w-3 shrink-0" fill="currentColor" />
+                    <span className="hidden xs:inline sm:inline">{t("Stop")}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={attachments.some((a) => a.parsing) || (isAuthed && !input.trim() && !attachments.length)}
+                    title={isAuthed ? t("Send") : t("Sign in to send")}
+                    aria-label={isAuthed ? t("Send") : t("Sign in to send")}
+                    className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 dark:bg-[var(--brand)] hover:bg-zinc-800 dark:hover:brightness-110 text-white transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <ArrowUp className="h-4 w-4" />
                   </button>
                 )}
-                <button
-                  type="submit"
-                  disabled={attachments.some((a) => a.parsing) || (!input.trim() && !attachments.length)}
-                  title={isSending ? t("Send to queue") : t("Send")}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 dark:bg-[var(--brand)] hover:bg-zinc-800 dark:hover:brightness-110 text-white transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  <ArrowUp className="h-4 w-4" />
-                </button>
               </div>
             </div>
           </form>
@@ -6281,6 +6434,12 @@ const MessageBubble = memo(function MessageBubble({
                   ))}
                 </div>
               ) : null}
+              {message.imageFallbackNotice && (
+                <div className="mt-2.5 flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                  <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span className="leading-relaxed">{message.imageFallbackNotice}</span>
+                </div>
+              )}
               {message.pendingImage && (
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
                   <ImageGenerationPlaceholder title={message.pendingImage.title} />
@@ -8972,8 +9131,8 @@ Engine Studio automatically parses these blocks and writes files directly into t
                 </div>
               )}
 
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-100 dark:border-white/5 min-w-0">
-                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-100 dark:border-white/5 min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0 py-0.5">
                   <button
                     type="button"
                     onClick={() => {
@@ -9323,8 +9482,8 @@ Engine Studio automatically parses these blocks and writes files directly into t
                   className="w-full min-h-[42px] max-h-[180px] resize-none bg-transparent px-3 pt-3 pb-1.5 text-sm leading-5 text-zinc-900 dark:text-white placeholder:text-zinc-400 focus:outline-none"
                 />
 
-                <div className="flex items-center justify-between px-3 pb-2 pt-1 border-t border-zinc-100 dark:border-white/5 gap-2 min-w-0">
-                  <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-x-auto no-scrollbar py-0.5">
+                <div className="flex flex-wrap items-center justify-between px-3 pb-2 pt-1 border-t border-zinc-100 dark:border-white/5 gap-2 min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0 py-0.5">
                     {onOpenLibraryPicker && (
                       <button
                         type="button"

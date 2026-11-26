@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -19,11 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -41,10 +37,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -72,6 +70,7 @@ fun MemoryScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -82,7 +81,12 @@ fun MemoryScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                    Icon(
+                        imageVector = LucideIcons.Menu,
+                        contentDescription = "Menu",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
                 }
                 IGseekFoxLogo(size = 20.dp)
                 Spacer(Modifier.width(8.dp))
@@ -93,14 +97,23 @@ fun MemoryScreen(
                         color = palette.textPrimary
                     )
                     Text(
-                        text = "${state.memories.size} фактов · Учитывается в каждом чате",
+                        text = if (isEn) {
+                            "${state.memories.size} facts · Used across all chats"
+                        } else {
+                            "${state.memories.size} фактов · Учитывается в каждом чате"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textMuted
                     )
                 }
             }
             IconButton(onClick = { viewModel.refreshMemories() }) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = palette.textMuted)
+                Icon(
+                    imageVector = LucideIcons.RefreshCw,
+                    contentDescription = "Refresh",
+                    tint = palette.textMuted,
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
 
@@ -131,7 +144,7 @@ fun MemoryScreen(
                             )
                         },
                         minLines = 2,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.brand,
                             unfocusedBorderColor = palette.glassBorder,
@@ -162,16 +175,25 @@ fun MemoryScreen(
                             newFact = ""
                         },
                         enabled = newFact.isNotBlank(),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.brand,
                             contentColor = palette.brandOn
                         ),
-                        modifier = Modifier.fillMaxWidth().height(44.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
                     ) {
-                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Icon(
+                            imageVector = LucideIcons.Plus,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Spacer(Modifier.width(6.dp))
-                        Text(if (isEn) "Save Memory" else "Сохранить в память", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = if (isEn) "Save Memory" else "Сохранить в память",
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -180,9 +202,14 @@ fun MemoryScreen(
                 item {
                     Box(modifier = Modifier.fillMaxWidth().padding(28.dp), contentAlignment = Alignment.Center) {
                         Text(
-                            text = if (isEn) "No saved memories yet." else "Память пока пуста. Добавьте предпочтения выше — IGseek начнёт использовать их автоматически.",
+                            text = if (isEn) {
+                                "No saved memories yet."
+                            } else {
+                                "Память пока пуста. Добавьте предпочтения выше — IGseek начнёт использовать их автоматически."
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = palette.textMuted
+                            color = palette.textMuted,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -190,8 +217,8 @@ fun MemoryScreen(
                 items(state.memories, key = { it.id }) { mem ->
                     IGseekGlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        contentPadding = 13.dp
+                        shape = RoundedCornerShape(18.dp),
+                        contentPadding = 14.dp
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -199,7 +226,7 @@ fun MemoryScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Surface(
-                                    shape = RoundedCornerShape(8.dp),
+                                    shape = RoundedCornerShape(50),
                                     color = palette.brandSoft,
                                     border = BorderStroke(1.dp, palette.brandBorder)
                                 ) {
@@ -207,7 +234,7 @@ fun MemoryScreen(
                                         text = mem.kind,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = palette.brand,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 2.dp)
                                     )
                                 }
                                 Spacer(Modifier.height(6.dp))
@@ -221,7 +248,12 @@ fun MemoryScreen(
                                 onClick = { viewModel.deleteMemory(mem.id) },
                                 modifier = Modifier.size(34.dp)
                             ) {
-                                Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = palette.textMuted, modifier = Modifier.size(18.dp))
+                                Icon(
+                                    imageVector = LucideIcons.Trash2,
+                                    contentDescription = "Delete",
+                                    tint = palette.textMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }

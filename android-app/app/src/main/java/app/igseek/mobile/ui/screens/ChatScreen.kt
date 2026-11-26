@@ -10,7 +10,6 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,21 +37,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Send
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Create
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -70,13 +56,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -94,6 +76,7 @@ import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
 import app.igseek.mobile.ui.components.IGseekMarkdownText
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -158,10 +141,10 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
             .imePadding()
-            .let { if (!state.layoutPrefs.showBottomBar) it.navigationBarsPadding() else it }
     ) {
-        // Slim IGseek Website Header
+        // Slim IGseek Header with Lucide Icons
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -170,24 +153,29 @@ fun ChatScreen(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             IconButton(onClick = onOpenDrawer) {
-                Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                Icon(
+                    imageVector = LucideIcons.Menu,
+                    contentDescription = "Menu",
+                    tint = palette.textPrimary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
 
-            // Centered IGseek Fox + Model Pill
+            // Centered Pill Model Selector
             Surface(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(50))
                     .clickable { showModelSheet = true },
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(50),
                 color = palette.glassBg,
                 border = BorderStroke(1.dp, palette.glassBorder)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
-                    IGseekFoxLogo(size = 18.dp, showGlow = false)
+                    IGseekFoxLogo(size = 17.dp, showGlow = false)
                     Text(
                         text = state.selectedModel.label,
                         style = MaterialTheme.typography.labelMedium,
@@ -196,10 +184,10 @@ fun ChatScreen(
                         maxLines = 1
                     )
                     Icon(
-                        Icons.Rounded.KeyboardArrowDown,
+                        imageVector = LucideIcons.ChevronDown,
                         contentDescription = null,
                         tint = palette.textMuted,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
             }
@@ -210,10 +198,10 @@ fun ChatScreen(
                     modifier = Modifier.size(38.dp)
                 ) {
                     Icon(
-                        imageVector = if (isChatSaved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        imageVector = if (isChatSaved) LucideIcons.BookmarkFilled else LucideIcons.Bookmark,
                         contentDescription = "Save Chat",
                         tint = if (isChatSaved) palette.brand else palette.textMuted,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
                 IconButton(
@@ -221,16 +209,16 @@ fun ChatScreen(
                     modifier = Modifier.size(38.dp)
                 ) {
                     Icon(
-                        Icons.Rounded.Add,
+                        imageVector = LucideIcons.SquarePen,
                         contentDescription = "New Chat",
                         tint = palette.textPrimary,
-                        modifier = Modifier.size(21.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
         }
 
-        // Offline Outbox Pill (only shown when offline or queued)
+        // Offline Outbox Pill
         if (!state.isOnline || state.outboxCount > 0) {
             Surface(
                 modifier = Modifier
@@ -253,7 +241,7 @@ fun ChatScreen(
             }
         }
 
-        // Main Chat Content or IGseek Welcome Hero
+        // Empty Hero or Messages Feed
         if (state.messages.isEmpty()) {
             ChatWelcomeHero(
                 state = state,
@@ -299,7 +287,7 @@ fun ChatScreen(
             }
         }
 
-        // Website-Authentic `.glass-composer` Dock
+        // Simplified, Uncluttered IGseek Glass Composer (zero clipping, full functionality via "+" menu)
         ChatGlassComposer(
             state = state,
             onDraftChange = { viewModel.updateDraft(it) },
@@ -338,7 +326,7 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    IGseekFoxLogo(size = 22.dp)
+                    IGseekFoxLogo(size = 20.dp)
                     Text(
                         text = if (isEn) "Model & Agent" else "Модель и агент",
                         style = MaterialTheme.typography.titleMedium,
@@ -360,12 +348,12 @@ fun ChatScreen(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(16.dp))
                                 .clickable {
                                     viewModel.setModel(model)
                                     showModelSheet = false
                                 },
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(16.dp),
                             color = if (active) palette.brandSoft else palette.glassBg,
                             border = BorderStroke(1.dp, if (active) palette.brandBorder else palette.glassBorder)
                         ) {
@@ -387,7 +375,7 @@ fun ChatScreen(
                                     )
                                 }
                                 if (active) {
-                                    Icon(Icons.Rounded.Check, contentDescription = null, tint = palette.brand)
+                                    Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
@@ -422,6 +410,13 @@ fun ChatScreen(
     }
 }
 
+private data class StarterCardData(
+    val icon: ImageVector,
+    val title: String,
+    val hint: String,
+    val prompt: String
+)
+
 @Composable
 private fun ChatWelcomeHero(
     state: IGseekUiState,
@@ -433,17 +428,17 @@ private fun ChatWelcomeHero(
 
     val suggestions = if (isEn) {
         listOf(
-            "Explain simply" to "Explain quantum computing in simple words with an everyday analogy",
-            "Write clean code" to "Write a modern TypeScript utility with unit tests and edge-case handling",
-            "Build a plan" to "Create a 14-day focused roadmap to launch a side project from scratch",
-            "Brainstorm ideas" to "Give me 5 original product ideas combining AI and daily productivity"
+            StarterCardData(LucideIcons.TrendingUp, "Analyze trends", "in your niche this week", "Analyze the biggest emerging trends in tech and AI productivity this week"),
+            StarterCardData(LucideIcons.Code2, "Write clean code", "architecture & edge cases", "Write a clean TypeScript utility with strong types and edge-case handling"),
+            StarterCardData(LucideIcons.Compass, "Build a roadmap", "14-day focused plan", "Create a structured 14-day roadmap to launch a side project from scratch"),
+            StarterCardData(LucideIcons.Sparkles, "Brainstorm ideas", "fresh angles & concepts", "Give me 5 original product ideas that solve real everyday problems")
         )
     } else {
         listOf(
-            "Объясни просто" to "Объясни простыми словами, как работают нейросети и трансформеры",
-            "Напиши код" to "Напиши чистый и современный скрипт с разбором архитектуры и крайних случаев",
-            "Составь план" to "Составь пошаговый план запуска IT-проекта на 14 дней с приоритетами",
-            "Придумай идеи" to "Предложи 5 свежих идей для продукта, которые реально решают повседневные задачи"
+            StarterCardData(LucideIcons.TrendingUp, "Объясни просто", "сложные темы на примерах", "Объясни простыми словами, как работают нейросети и трансформеры"),
+            StarterCardData(LucideIcons.Code2, "Напиши код", "чисто и с разбором", "Напиши чистый и современный скрипт с разбором архитектуры и крайних случаев"),
+            StarterCardData(LucideIcons.Compass, "Составь план", "пошагово с приоритетами", "Составь пошаговый план запуска IT-проекта на 14 дней с приоритетами"),
+            StarterCardData(LucideIcons.Sparkles, "Придумай идеи", "свежие решения и концепты", "Предложи 5 свежих идей для продукта, которые реально решают повседневные задачи")
         )
     }
 
@@ -454,7 +449,7 @@ private fun ChatWelcomeHero(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        IGseekFoxLogo(size = 66.dp, showGlow = true)
+        IGseekFoxLogo(size = 60.dp, showGlow = true)
         Spacer(Modifier.height(12.dp))
         Text(
             text = if (isEn) "How can I help today?" else "Чем помочь сегодня?",
@@ -480,27 +475,36 @@ private fun ChatWelcomeHero(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        pair.forEach { (title, fullPrompt) ->
+                        pair.forEach { card ->
                             Surface(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .clickable { onPromptClick(fullPrompt) },
-                                shape = RoundedCornerShape(16.dp),
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onPromptClick(card.prompt) },
+                                shape = RoundedCornerShape(18.dp),
                                 color = palette.glassBg,
                                 border = BorderStroke(1.dp, palette.glassBorder)
                             ) {
-                                Column(modifier = Modifier.padding(13.dp)) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Icon(
+                                        imageVector = card.icon,
+                                        contentDescription = null,
+                                        tint = palette.brand,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
                                     Text(
-                                        text = title,
+                                        text = card.title,
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = palette.textPrimary
+                                        color = palette.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                    Spacer(Modifier.height(3.dp))
+                                    Spacer(Modifier.height(2.dp))
                                     Text(
-                                        text = fullPrompt,
-                                        style = MaterialTheme.typography.bodySmall,
+                                        text = card.hint,
+                                        style = MaterialTheme.typography.labelSmall,
                                         color = palette.textMuted,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis
@@ -536,30 +540,30 @@ private fun ChatMessageRow(
             horizontalAlignment = Alignment.End
         ) {
             Surface(
-                modifier = Modifier.widthIn(max = 310.dp),
+                modifier = Modifier.widthIn(max = 308.dp),
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 6.dp, bottomStart = 20.dp, bottomEnd = 20.dp),
                 color = palette.userBubbleBg,
                 border = BorderStroke(1.dp, palette.userBubbleBorder)
             ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 15.dp, vertical = 10.dp)) {
                     if (msg.attachmentNames.isNotEmpty()) {
                         Text(
                             text = msg.attachmentNames.joinToString(" · "),
                             style = MaterialTheme.typography.labelSmall,
-                            color = palette.brand,
+                            color = palette.userBubbleText.copy(alpha = 0.78f),
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
                     }
                     Text(
                         text = msg.content,
                         style = MaterialTheme.typography.bodyLarge,
-                        color = palette.textPrimary
+                        color = palette.userBubbleText
                     )
                     if (msg.isQueuedOffline) {
                         Text(
                             text = "В очереди (оффлайн)",
                             style = MaterialTheme.typography.labelSmall,
-                            color = palette.brand,
+                            color = palette.userBubbleText.copy(alpha = 0.75f),
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
@@ -571,19 +575,18 @@ private fun ChatMessageRow(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // IGseek Fox Assistant Header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(26.dp)
+                        .size(24.dp)
                         .clip(CircleShape)
                         .background(palette.brandSoft),
                     contentAlignment = Alignment.Center
                 ) {
-                    IGseekFoxLogo(size = 18.dp, showGlow = false)
+                    IGseekFoxLogo(size = 16.dp, showGlow = false)
                 }
                 Text(
                     text = "IGseek",
@@ -593,14 +596,13 @@ private fun ChatMessageRow(
                 )
             }
 
-            // Reasoning / Thinking Accordion
             if (msg.reasoning.isNotBlank()) {
                 IGseekGlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { showReasoning = !showReasoning },
-                    shape = RoundedCornerShape(14.dp),
-                    contentPadding = 11.dp
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = 12.dp
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -611,7 +613,7 @@ private fun ChatMessageRow(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Rounded.Star, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp))
+                            Icon(LucideIcons.Sparkles, contentDescription = null, tint = palette.brand, modifier = Modifier.size(14.dp))
                             Text(
                                 text = "Ход рассуждений",
                                 style = MaterialTheme.typography.labelMedium,
@@ -619,10 +621,10 @@ private fun ChatMessageRow(
                             )
                         }
                         Icon(
-                            imageVector = if (showReasoning) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                            imageVector = if (showReasoning) LucideIcons.ChevronUp else LucideIcons.ChevronDown,
                             contentDescription = null,
                             tint = palette.textMuted,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                     if (showReasoning) {
@@ -636,7 +638,6 @@ private fun ChatMessageRow(
                 }
             }
 
-            // Main Markdown Prose
             if (msg.content.isNotBlank()) {
                 IGseekMarkdownText(
                     markdown = msg.content,
@@ -650,13 +651,12 @@ private fun ChatMessageRow(
                 )
             }
 
-            // Inline Generated Images
             msg.images.forEach { img ->
                 val bmp = remember(img.dataUrl) { decodeDataUrlBitmap(img.dataUrl) }
                 if (bmp != null) {
                     IGseekGlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(18.dp),
                         contentPadding = 8.dp
                     ) {
                         Image(
@@ -666,7 +666,7 @@ private fun ChatMessageRow(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(260.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(13.dp))
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(
@@ -693,7 +693,6 @@ private fun ChatMessageRow(
                 }
             }
 
-            // Clickable Web Search Sources
             if (msg.webSources.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -704,18 +703,18 @@ private fun ChatMessageRow(
                     msg.webSources.forEach { src ->
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(50))
                                 .clickable { onOpenUrl(src.url) },
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(50),
                             color = palette.chipBg,
                             border = BorderStroke(1.dp, palette.glassBorder)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
-                                Icon(Icons.Rounded.Search, contentDescription = null, tint = palette.brand, modifier = Modifier.size(12.dp))
+                                Icon(LucideIcons.Globe, contentDescription = null, tint = palette.brand, modifier = Modifier.size(12.dp))
                                 Text(
                                     text = src.title.take(28),
                                     style = MaterialTheme.typography.labelSmall,
@@ -728,26 +727,27 @@ private fun ChatMessageRow(
                 }
             }
 
-            // Subtle Assistant Action Row
             if (msg.content.isNotBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.padding(top = 2.dp)
                 ) {
-                    Text(
-                        text = "Копировать",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textMuted,
-                        modifier = Modifier.clickable(onClick = onCopy)
-                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clickable(onClick = onCopy)
+                    ) {
+                        Icon(LucideIcons.Copy, contentDescription = "Copy", tint = palette.textMuted, modifier = Modifier.size(13.dp))
+                        Text("Копировать", style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.clickable(onClick = onBookmark)
                     ) {
                         Icon(
-                            imageVector = if (msg.isBookmarked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            imageVector = if (msg.isBookmarked) LucideIcons.BookmarkFilled else LucideIcons.Bookmark,
                             contentDescription = "Save",
                             tint = if (msg.isBookmarked) palette.brand else palette.textMuted,
                             modifier = Modifier.size(13.dp)
@@ -761,19 +761,15 @@ private fun ChatMessageRow(
                     if (isLastAssistant) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.clickable(onClick = onRegenerate)
                         ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "Retry", tint = palette.textMuted, modifier = Modifier.size(13.dp))
-                            Text(
-                                text = "Ещё раз",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textMuted
-                            )
+                            Icon(LucideIcons.RefreshCw, contentDescription = "Retry", tint = palette.textMuted, modifier = Modifier.size(13.dp))
+                            Text("Ещё раз", style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
                         }
                     }
                     Icon(
-                        Icons.Rounded.Share,
+                        imageVector = LucideIcons.Share2,
                         contentDescription = "Share",
                         tint = palette.textMuted,
                         modifier = Modifier.size(14.dp).clickable(onClick = onShare)
@@ -784,6 +780,11 @@ private fun ChatMessageRow(
     }
 }
 
+/**
+ * Clean, uncluttered IGseek Composer — no clipped chips!
+ * "+" opens a crisp Lucide tools menu (Attach, Web Search, Reasoning, Image Gen),
+ * active tools appear cleanly above the composer, and the action row holds only (+, Globe, Mic, ArrowUp).
+ */
 @Composable
 private fun ChatGlassComposer(
     state: IGseekUiState,
@@ -799,72 +800,76 @@ private fun ChatGlassComposer(
     val palette = LocalIGseekPalette.current
     val isEn = state.layoutPrefs.language == "en"
     val canSend = !state.isStreaming && (state.draftInput.isNotBlank() || state.pendingAttachments.isNotEmpty())
+    var showToolsMenu by remember { mutableStateOf(false) }
+
+    val hasActiveModes = state.webSearchEnabled || state.reasoningEnabled || state.imageModeEnabled
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        if (state.pendingAttachments.isNotEmpty()) {
+        // Removable pills above composer ONLY when an attachment or tool mode is active
+        if (state.pendingAttachments.isNotEmpty() || hasActiveModes) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(bottom = 6.dp),
+                    .padding(bottom = 7.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (state.webSearchEnabled) {
+                    ActiveModeBadge(
+                        icon = LucideIcons.Globe,
+                        label = if (isEn) "Web Search" else "Веб-поиск",
+                        onClear = onToggleWeb
+                    )
+                }
+                if (state.reasoningEnabled) {
+                    ActiveModeBadge(
+                        icon = LucideIcons.Sparkles,
+                        label = if (isEn) "Thinking" else "Мышление",
+                        onClear = onToggleReasoning
+                    )
+                }
+                if (state.imageModeEnabled) {
+                    ActiveModeBadge(
+                        icon = LucideIcons.Image,
+                        label = if (isEn) "Image" else "Фото",
+                        onClear = onToggleImage
+                    )
+                }
                 state.pendingAttachments.forEach { att ->
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = palette.brandSoft,
-                        border = BorderStroke(1.dp, palette.brandBorder)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Text(
-                                text = att.name.take(24),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = palette.textPrimary
-                            )
-                            Icon(
-                                Icons.Rounded.Close,
-                                contentDescription = "Remove",
-                                tint = palette.textMuted,
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clickable { onRemoveAttachment(att.name) }
-                            )
-                        }
-                    }
+                    ActiveModeBadge(
+                        icon = LucideIcons.Paperclip,
+                        label = att.name.take(22),
+                        onClear = { onRemoveAttachment(att.name) }
+                    )
                 }
             }
         }
 
-        // Website `.glass-composer` Card
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
             color = palette.composerBg,
             border = BorderStroke(
                 width = 1.dp,
-                color = if (state.imageModeEnabled) palette.brandBorder else palette.composerBorder
+                color = if (hasActiveModes) palette.brandBorder else palette.composerBorder
             )
         ) {
             Column(
-                modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 9.dp)
+                modifier = Modifier.padding(start = 16.dp, end = 10.dp, top = 13.dp, bottom = 9.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(end = 4.dp, bottom = 8.dp)
+                        .padding(end = 6.dp, bottom = 10.dp)
                 ) {
                     if (state.draftInput.isEmpty()) {
                         Text(
                             text = when {
-                                state.imageModeEnabled -> if (isEn) "Describe the image to create…" else "Опишите изображение, которое нужно создать…"
+                                state.imageModeEnabled -> if (isEn) "Describe the image to create…" else "Опишите изображение…"
                                 isEn -> "Ask IGseek anything…"
                                 else -> "Спросите IGseek о чём угодно…"
                             },
@@ -882,87 +887,113 @@ private fun ChatGlassComposer(
                     )
                 }
 
-                // Bottom Composer Toolbar
+                // Clean, breathable single-row toolbar: [+] [Globe]      [Mic] [ArrowUp]
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Attach button
-                        Surface(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .clickable(onClick = onAttachClick),
-                            shape = CircleShape,
-                            color = palette.chipBg,
-                            border = BorderStroke(1.dp, palette.chipBorder)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    Icons.Rounded.Add,
-                                    contentDescription = "Attach",
-                                    tint = palette.textSecondary,
-                                    modifier = Modifier.size(18.dp)
+                        Box {
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable { showToolsMenu = true },
+                                shape = CircleShape,
+                                color = palette.chipBg,
+                                border = BorderStroke(1.dp, palette.chipBorder)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = LucideIcons.Plus,
+                                        contentDescription = "Tools & Attach",
+                                        tint = palette.textSecondary,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = showToolsMenu,
+                                onDismissRequest = { showToolsMenu = false },
+                                containerColor = palette.surfaceElevated
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (isEn) "Attach file or photo" else "Прикрепить файл или фото", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Paperclip, contentDescription = null, tint = palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onAttachClick()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isEn) "Web Search" else "Веб-поиск", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Globe, contentDescription = null, tint = if (state.webSearchEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    trailingIcon = if (state.webSearchEnabled) {
+                                        { Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp)) }
+                                    } else null,
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onToggleWeb()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isEn) "Deep Thinking" else "Глубокое мышление", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Sparkles, contentDescription = null, tint = if (state.reasoningEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    trailingIcon = if (state.reasoningEnabled) {
+                                        { Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp)) }
+                                    } else null,
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onToggleReasoning()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isEn) "Generate image" else "Создать изображение", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Image, contentDescription = null, tint = if (state.imageModeEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    trailingIcon = if (state.imageModeEnabled) {
+                                        { Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp)) }
+                                    } else null,
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onToggleImage()
+                                    }
                                 )
                             }
                         }
 
-                        IGseekGlassChip(
-                            label = if (isEn) "Search" else "Поиск",
-                            selected = state.webSearchEnabled,
-                            onClick = onToggleWeb,
-                            leading = {
+                        // Quick Web Search toggle button (crisp icon pill, zero overflow)
+                        Surface(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = onToggleWeb),
+                            shape = CircleShape,
+                            color = if (state.webSearchEnabled) palette.brandSoft else palette.chipBg,
+                            border = BorderStroke(
+                                1.dp,
+                                if (state.webSearchEnabled) palette.brandBorder else palette.chipBorder
+                            )
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Rounded.Search,
-                                    contentDescription = null,
-                                    tint = if (state.webSearchEnabled) palette.brand else palette.textMuted,
-                                    modifier = Modifier.size(14.dp)
+                                    imageVector = LucideIcons.Globe,
+                                    contentDescription = "Web Search",
+                                    tint = if (state.webSearchEnabled) palette.brand else palette.textSecondary,
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
-                        )
-                        IGseekGlassChip(
-                            label = if (isEn) "Think" else "Мысли",
-                            selected = state.reasoningEnabled,
-                            onClick = onToggleReasoning,
-                            leading = {
-                                Icon(
-                                    Icons.Rounded.Star,
-                                    contentDescription = null,
-                                    tint = if (state.reasoningEnabled) palette.brand else palette.textMuted,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        )
-                        IGseekGlassChip(
-                            label = if (isEn) "Image" else "Фото",
-                            selected = state.imageModeEnabled,
-                            onClick = onToggleImage,
-                            leading = {
-                                Icon(
-                                    Icons.Rounded.Create,
-                                    contentDescription = null,
-                                    tint = if (state.imageModeEnabled) palette.brand else palette.textMuted,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        )
+                        }
                     }
-
-                    Spacer(Modifier.width(6.dp))
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Native Android Voice Input Button (crisp custom Canvas mic)
                         Surface(
                             modifier = Modifier
                                 .size(36.dp)
@@ -973,11 +1004,15 @@ private fun ChatGlassComposer(
                             border = BorderStroke(1.dp, palette.chipBorder)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                MicrophoneGlyph(color = palette.textSecondary, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    imageVector = LucideIcons.Mic,
+                                    contentDescription = "Voice",
+                                    tint = palette.textSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
 
-                        // Brand Send Button
                         Surface(
                             modifier = Modifier
                                 .size(36.dp)
@@ -988,7 +1023,7 @@ private fun ChatGlassComposer(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.AutoMirrored.Rounded.Send,
+                                    imageVector = LucideIcons.ArrowUp,
                                     contentDescription = "Send",
                                     tint = if (canSend) palette.brandOn else palette.textMuted,
                                     modifier = Modifier.size(17.dp)
@@ -1003,34 +1038,38 @@ private fun ChatGlassComposer(
 }
 
 @Composable
-private fun MicrophoneGlyph(
-    color: Color,
-    modifier: Modifier = Modifier
+private fun ActiveModeBadge(
+    icon: ImageVector,
+    label: String,
+    onClear: () -> Unit
 ) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val stroke = Stroke(width = w * 0.11f)
-        // Mic capsule
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(w * 0.34f, h * 0.10f),
-            size = Size(w * 0.32f, h * 0.48f),
-            cornerRadius = CornerRadius(w * 0.16f, w * 0.16f)
-        )
-        // Cradle arc
-        drawArc(
-            color = color,
-            startAngle = 0f,
-            sweepAngle = 180f,
-            useCenter = false,
-            topLeft = Offset(w * 0.18f, h * 0.30f),
-            size = Size(w * 0.64f, h * 0.44f),
-            style = stroke
-        )
-        // Stem + base
-        drawLine(color = color, start = Offset(w * 0.50f, h * 0.74f), end = Offset(w * 0.50f, h * 0.90f), strokeWidth = w * 0.11f)
-        drawLine(color = color, start = Offset(w * 0.32f, h * 0.90f), end = Offset(w * 0.68f, h * 0.90f), strokeWidth = w * 0.11f)
+    val palette = LocalIGseekPalette.current
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = palette.brandSoft,
+        border = BorderStroke(1.dp, palette.brandBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(icon, contentDescription = null, tint = palette.brand, modifier = Modifier.size(13.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.textPrimary,
+                maxLines = 1
+            )
+            Icon(
+                imageVector = LucideIcons.X,
+                contentDescription = "Clear",
+                tint = palette.textMuted,
+                modifier = Modifier
+                    .size(13.dp)
+                    .clickable(onClick = onClear)
+            )
+        }
     }
 }
 

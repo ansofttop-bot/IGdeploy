@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -17,13 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekMarkdownText
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -83,6 +78,7 @@ fun FlowScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         // Slim Header
         Row(
@@ -94,7 +90,12 @@ fun FlowScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                    Icon(
+                        imageVector = LucideIcons.Menu,
+                        contentDescription = "Menu",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
                 }
                 IGseekFoxLogo(size = 20.dp)
                 Spacer(Modifier.width(8.dp))
@@ -113,7 +114,12 @@ fun FlowScreen(
                     goalInput = ""
                     viewModel.resetFlow()
                 }) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "Reset", tint = palette.textMuted)
+                    Icon(
+                        imageVector = LucideIcons.RefreshCw,
+                        contentDescription = "Reset",
+                        tint = palette.textMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
         }
@@ -146,7 +152,7 @@ fun FlowScreen(
                             )
                         },
                         minLines = 3,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(16.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.brand,
                             unfocusedBorderColor = palette.glassBorder,
@@ -161,19 +167,32 @@ fun FlowScreen(
                         Button(
                             onClick = { viewModel.planFlow(goalInput) },
                             enabled = goalInput.isNotBlank() && !task.isPlanning && !task.isRunning,
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(50),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = palette.brand,
                                 contentColor = palette.brandOn
                             ),
-                            modifier = Modifier.weight(1f).height(46.dp)
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
                         ) {
                             if (task.isPlanning) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.brandOn)
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = palette.brandOn
+                                )
                             } else {
-                                Icon(Icons.Rounded.Star, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Icon(
+                                    imageVector = LucideIcons.Sparkles,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(Modifier.width(6.dp))
-                                Text(if (isEn) "Build Plan" else "Составить план", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    text = if (isEn) "Build Plan" else "Составить план",
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         }
 
@@ -181,14 +200,26 @@ fun FlowScreen(
                             OutlinedButton(
                                 onClick = { viewModel.runFlow() },
                                 enabled = !task.isRunning && !task.isPlanning,
-                                shape = RoundedCornerShape(14.dp),
+                                shape = RoundedCornerShape(50),
                                 border = BorderStroke(1.dp, palette.brandBorder),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.brand),
-                                modifier = Modifier.weight(1f).height(46.dp)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(46.dp)
                             ) {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text(if (task.isRunning) "Выполняется…" else "Запустить")
+                                Icon(
+                                    imageVector = LucideIcons.Play,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (task.isRunning) {
+                                        if (isEn) "Running…" else "Выполняется…"
+                                    } else {
+                                        if (isEn) "Run" else "Запустить"
+                                    }
+                                )
                             }
                         }
                     }
@@ -227,12 +258,12 @@ fun FlowScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(15.dp))
+                            .clip(RoundedCornerShape(16.dp))
                             .clickable {
                                 goalInput = scenario
                                 viewModel.planFlow(scenario)
                             },
-                        shape = RoundedCornerShape(15.dp),
+                        shape = RoundedCornerShape(16.dp),
                         color = palette.glassBg,
                         border = BorderStroke(1.dp, palette.glassBorder)
                     ) {
@@ -247,8 +278,13 @@ fun FlowScreen(
                                 color = palette.textSecondary,
                                 modifier = Modifier.weight(1f)
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Icon(
+                                imageVector = LucideIcons.Play,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
                 }
@@ -260,7 +296,7 @@ fun FlowScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = task.title.ifBlank { "План выполнения" },
+                            text = task.title.ifBlank { if (isEn) "Execution Plan" else "План выполнения" },
                             style = MaterialTheme.typography.titleMedium,
                             color = palette.textPrimary,
                             modifier = Modifier.weight(1f)
@@ -268,9 +304,9 @@ fun FlowScreen(
                         if (task.steps.any { it.status == "done" }) {
                             OutlinedButton(
                                 onClick = { viewModel.saveFlowResultToLibrary() },
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(50),
                                 border = BorderStroke(1.dp, palette.glassBorder),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                             ) {
                                 Text("В Library", style = MaterialTheme.typography.labelSmall, color = palette.textPrimary)
                             }
@@ -281,7 +317,7 @@ fun FlowScreen(
                 itemsIndexed(task.steps, key = { _, s -> s.id }) { idx, step ->
                     IGseekGlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(18.dp),
                         highlighted = step.status == "running",
                         contentPadding = 14.dp
                     ) {
@@ -298,11 +334,25 @@ fun FlowScreen(
                             )
                             Spacer(Modifier.width(8.dp))
                             when (step.status) {
-                                "done" -> Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
-                                "running" -> CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.brand)
-                                "error" -> Icon(Icons.Rounded.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                "done" -> Icon(
+                                    imageVector = LucideIcons.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                "running" -> CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = palette.brand
+                                )
+                                "error" -> Icon(
+                                    imageVector = LucideIcons.AlertCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(19.dp)
+                                )
                                 else -> Surface(
-                                    shape = RoundedCornerShape(8.dp),
+                                    shape = RoundedCornerShape(50),
                                     color = palette.chipBg,
                                     border = BorderStroke(1.dp, palette.glassBorder)
                                 ) {
@@ -310,7 +360,7 @@ fun FlowScreen(
                                         text = step.tool,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = palette.textMuted,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
                                     )
                                 }
                             }

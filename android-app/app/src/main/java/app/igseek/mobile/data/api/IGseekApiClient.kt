@@ -689,17 +689,21 @@ Keep code concise, modern, and production-ready (2 to 4 files)."""
         )
     }
 
-    // ==================== OPTIONAL GATEWAY SUBSCRIPTION CHECKOUT ====================
+    // ==================== SUBSCRIPTION CHECKOUT (EXISTING PLATEGA FLOW) ====================
+
+    private fun paymentGatewayUrl(): String {
+        val configured = optionalGatewayUrl()
+        return configured.ifBlank { "https://igeek-chat.lovable.app" }
+    }
 
     suspend fun getSubscription(session: AuthSession): SubscriptionInfo = withContext(Dispatchers.IO) {
-        val gateway = optionalGatewayUrl()
-        if (gateway.isBlank() || session.isGuest) return@withContext SubscriptionInfo()
-        val req = gatewayHeaders(Request.Builder().url("$gateway/api/subscription/status").get(), session).build()
+        if (session.isGuest || session.idToken.isBlank()) return@withContext SubscriptionInfo()
+        val gateway = paymentGatewayUrl()
+        val req = gatewayHeaders(Request.Builder().url("$gateway/api/subscription").get(), session).build()
         runCatching {
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return@use SubscriptionInfo()
                 val obj = JSONObject(res.body?.string().orEmpty())
-                val price = obj.optJSONObject("pricing")
                 SubscriptionInfo(
                     plan = obj.optString("plan", "free"),
                     isPro = obj.optBoolean("isPro", false),
@@ -707,32 +711,42 @@ Keep code concise, modern, and production-ready (2 to 4 files)."""
                     daysLeft = obj.optInt("daysLeft", 0),
                     expiresAt = obj.optString("expiresAt").takeIf { it.isNotBlank() && it != "null" },
                     pendingTxnId = obj.optString("pendingTxnId").takeIf { it.isNotBlank() && it != "null" },
-                    priceRub = price?.optInt("amountRub", 149) ?: 149,
-                    durationDays = price?.optInt("durationDays", 30) ?: 30,
-                    paymentConfigured = obj.optBoolean("paymentConfigured", false)
+                    priceRub = obj.optInt("priceRub", 149),
+                    durationDays = obj.optInt("durationDays", 30),
+                    paymentConfigured = obj.optBoolean("paymentConfigured", true)
                 )
             }
         }.getOrDefault(SubscriptionInfo())
     }
 
-    suspend fun createSubscriptionCheckout(session: AuthSession): Pair<String, String> = withContext(Dispatchers.IO) {
-        val gateway = optionalGatewayUrl()
-        if (gateway.isBlank()) {
-            throw IllegalStateException("Оплата Pro доступна при подключении платёжного шлюза IGseek в «Расширенных настройках»")
+    suspend fun createSubscriptionCheckout(
+        session: AuthSession,
+        paymentMethod: Int = 2
+    ): Pair<String, String> = withContext(Dispatchers.IO) {
+        val gateway = paymentGatewayUrl()
+        val bucket = System.currentTimeMillis() / (5 * 60_000L)
+        val idempotencyKey = "and_${session.uid.take(12)}_m${paymentMethod}_b$bucket"
+        val payload = JSONObject().apply {
+            put("paymentMethod", paymentMethod)
+            put("email", session.email)
+            put("returnUrl", "$gateway/app")
+            put("failedUrl", "$gateway/app")
+            put("idempotencyKey", idempotencyKey)
         }
         val req = gatewayHeaders(
             Request.Builder()
-                .url("$gateway/api/subscription/create")
-                .post("{}".toRequestBody(jsonMedia)),
+                .url("$gateway/api/create-payment")
+                .header("Idempotency-Key", idempotencyKey)
+                .post(payload.toString().toRequestBody(jsonMedia)),
             session
         ).build()
         client.newCall(req).execute().use { res ->
             val raw = res.body?.string().orEmpty()
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (!res.isSuccessful) {
-                throw IllegalStateException(obj?.optString("error") ?: "Не удалось создать счёт (${res.code})")
+                throw IllegalStateException(obj?.optString("error")?.ifBlank { null } ?: "Не удалось создать платёж (${res.code})")
             }
-            val url = obj?.optString("redirectUrl").orEmpty()
+            val url = obj?.optString("paymentUrl")?.ifBlank { obj.optString("redirectUrl") }.orEmpty()
             val txnId = obj?.optString("transactionId").orEmpty()
             if (url.isBlank()) throw IllegalStateException("Сервер не вернул ссылку оплаты")
             url to txnId
@@ -740,19 +754,24 @@ Keep code concise, modern, and production-ready (2 to 4 files)."""
     }
 
     suspend fun verifySubscription(session: AuthSession, txnId: String): Boolean = withContext(Dispatchers.IO) {
-        val gateway = optionalGatewayUrl()
-        if (gateway.isBlank()) return@withContext false
-        val payload = JSONObject().put("transactionId", txnId)
+        val gateway = paymentGatewayUrl()
+        val payload = JSONObject().apply {
+            put("action", "verify")
+            put("transactionId", txnId)
+        }
         val req = gatewayHeaders(
             Request.Builder()
-                .url("$gateway/api/subscription/verify")
+                .url("$gateway/api/subscription")
                 .post(payload.toString().toRequestBody(jsonMedia)),
             session
         ).build()
         client.newCall(req).execute().use { res ->
             if (!res.isSuccessful) return@use false
             val obj = JSONObject(res.body?.string().orEmpty())
-            obj.optBoolean("activated", false) || obj.optBoolean("isPro", false)
+            val sub = obj.optJSONObject("subscription")
+            obj.optBoolean("verified", false) ||
+                obj.optBoolean("activated", false) ||
+                sub?.optBoolean("isPro", false) == true
         }
     }
 

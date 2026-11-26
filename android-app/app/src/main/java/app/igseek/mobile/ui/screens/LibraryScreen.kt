@@ -6,7 +6,6 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -19,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,12 +28,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -41,7 +35,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,6 +50,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.igseek.mobile.data.models.ChatAttachment
@@ -65,6 +59,7 @@ import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
 import app.igseek.mobile.ui.components.IGseekMarkdownText
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -124,6 +119,7 @@ fun LibraryScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -134,14 +130,23 @@ fun LibraryScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                    Icon(
+                        imageVector = LucideIcons.Menu,
+                        contentDescription = "Menu",
+                        tint = palette.textPrimary,
+                        modifier = Modifier.size(21.dp)
+                    )
                 }
                 IGseekFoxLogo(size = 20.dp)
                 Spacer(Modifier.width(8.dp))
                 Column {
                     Text("Library", style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
                     Text(
-                        text = "${state.libraryFiles.size} файлов · Облако + локально",
+                        text = if (isEn) {
+                            "${state.libraryFiles.size} files · Cloud + local"
+                        } else {
+                            "${state.libraryFiles.size} файлов · Облако + локально"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textMuted
                     )
@@ -149,10 +154,20 @@ fun LibraryScreen(
             }
             Row {
                 IconButton(onClick = { viewModel.refreshLibrary() }) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = palette.textMuted)
+                    Icon(
+                        imageVector = LucideIcons.RefreshCw,
+                        contentDescription = "Refresh",
+                        tint = palette.textMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
                 IconButton(onClick = { uploadPicker.launch("*/*") }) {
-                    Icon(Icons.Rounded.Add, contentDescription = "Upload", tint = palette.brand)
+                    Icon(
+                        imageVector = LucideIcons.Plus,
+                        contentDescription = "Upload",
+                        tint = palette.brand,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
         }
@@ -162,9 +177,16 @@ fun LibraryScreen(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
                 placeholder = { Text(if (isEn) "Search files…" else "Поиск в Library…", color = palette.textMuted) },
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = palette.textMuted) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = LucideIcons.Search,
+                        contentDescription = null,
+                        tint = palette.textMuted,
+                        modifier = Modifier.size(17.dp)
+                    )
+                },
                 singleLine = true,
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(50),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = palette.brand,
                     unfocusedBorderColor = palette.glassBorder,
@@ -204,7 +226,7 @@ fun LibraryScreen(
         } else if (filtered.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IGseekFoxLogo(size = 44.dp, showGlow = true)
+                    IGseekFoxLogo(size = 44.dp, showGlow = palette.isDark)
                     Spacer(Modifier.height(10.dp))
                     Text(
                         text = if (isEn) "Library is empty" else "В Library пока нет файлов",
@@ -213,9 +235,14 @@ fun LibraryScreen(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = if (isEn) "Upload files, save Flow reports, Engine code or generated images." else "Загружайте файлы кнопкой «+», сохраняйте отчёты Flow, код Engine и сгенерированные фото.",
+                        text = if (isEn) {
+                            "Upload files, save Flow reports, Engine code or generated images."
+                        } else {
+                            "Загружайте файлы кнопкой «+», сохраняйте отчёты Flow, код Engine и сгенерированные фото."
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = palette.textMuted
+                        color = palette.textMuted,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -230,8 +257,8 @@ fun LibraryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { previewItem = item },
-                        shape = RoundedCornerShape(16.dp),
-                        contentPadding = 13.dp
+                        shape = RoundedCornerShape(18.dp),
+                        contentPadding = 14.dp
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -255,7 +282,7 @@ fun LibraryScreen(
                                 )
                             }
                             IGseekGlassChip(
-                                label = "В чат",
+                                label = if (isEn) "Attach" else "В чат",
                                 selected = false,
                                 onClick = { viewModel.attachLibraryFileToChat(item) }
                             )
@@ -264,7 +291,12 @@ fun LibraryScreen(
                                 onClick = { viewModel.deleteLibraryFile(item.id) },
                                 modifier = Modifier.size(34.dp)
                             ) {
-                                Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = palette.textMuted, modifier = Modifier.size(18.dp))
+                                Icon(
+                                    imageVector = LucideIcons.Trash2,
+                                    contentDescription = "Delete",
+                                    tint = palette.textMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }
@@ -329,7 +361,7 @@ fun LibraryScreen(
                         previewItem = null
                     }
                 ) {
-                    Text("Прикрепить в чат", color = palette.brand)
+                    Text(if (isEn) "Attach to chat" else "Прикрепить в чат", color = palette.brand)
                 }
             },
             dismissButton = {
@@ -341,11 +373,11 @@ fun LibraryScreen(
                                 viewModel.showToast("Скопировано")
                             }
                         ) {
-                            Text("Копировать", color = palette.textSecondary)
+                            Text(if (isEn) "Copy" else "Копировать", color = palette.textSecondary)
                         }
                     }
                     TextButton(onClick = { previewItem = null }) {
-                        Text("Закрыть", color = palette.textMuted)
+                        Text(if (isEn) "Close" else "Закрыть", color = palette.textMuted)
                     }
                 }
             }

@@ -3,33 +3,33 @@ export type AiCreativity = "exact" | "balance" | "vivid" | "chaos";
 export type AiLength = "short" | "medium" | "long" | "unlimited";
 
 /**
- * Strictly DeepSeek <= 4.0 model mapping across IGseek models:
+ * Strictly DeepSeek < 4.0 model mapping across IGseek Pro models:
  *
- * - IGseek 4.0 instinct (default flagship):
- *     Direct DeepSeek: deepseek-v4-pro   (DeepSeek-V4-Pro)
- *     ApiMira:         deepseek/deepseek-v4-pro
+ * - IGseek 3.5 instinct (default flagship, < V4.0):
+ *     Direct DeepSeek: deepseek-chat             (DeepSeek-V3.2 / V3)
+ *     ApiMira:         deepseek/deepseek-v3.2
  *
- * - IGseek 3.2 chat (conversational):
- *     Direct DeepSeek: deepseek-chat     (DeepSeek V3.x/Chat <= 4.0)
- *     ApiMira:         deepseek/deepseek-v4-pro-0813
+ * - IGseek 3.2 chat (conversational, < V4.0):
+ *     Direct DeepSeek: deepseek-chat             (DeepSeek-V3)
+ *     ApiMira:         deepseek/deepseek-chat-v3-0324
  *
- * - IGseek F1 (fast):
- *     Direct DeepSeek: deepseek-chat     (fast non-reasoner <= 4.0; avoids deepseek-flash which is V4.1)
- *     ApiMira:         deepseek/deepseek-v4-flash
+ * - IGseek F1 (fast, < V4.0):
+ *     Direct DeepSeek: deepseek-chat
+ *     ApiMira:         deepseek/deepseek-chat
  *
- * - Reasoner mode (reasoning: true):
- *     Direct DeepSeek: deepseek-reasoner (fallback: deepseek-v4-pro)
- *     ApiMira:         deepseek/deepseek-v4-pro
+ * - Reasoner mode (reasoning: true, < V4.0):
+ *     Direct DeepSeek: deepseek-reasoner         (DeepSeek-R1 / V3-Reasoner)
+ *     ApiMira:         deepseek/deepseek-r1
  */
-export const DEEPSEEK_DIRECT_INSTINCT = "deepseek-v4-pro";
+export const DEEPSEEK_DIRECT_INSTINCT = "deepseek-chat";
 export const DEEPSEEK_DIRECT_CHAT = "deepseek-chat";
 export const DEEPSEEK_DIRECT_F1 = "deepseek-chat";
 export const DEEPSEEK_DIRECT_REASONER = "deepseek-reasoner";
 
-export const APIMIRA_DEEPSEEK_INSTINCT = "deepseek/deepseek-v4-pro";
-export const APIMIRA_DEEPSEEK_CHAT = "deepseek/deepseek-v4-pro-0813";
-export const APIMIRA_DEEPSEEK_F1 = "deepseek/deepseek-v4-flash";
-export const APIMIRA_DEEPSEEK_REASONER = "deepseek/deepseek-v4-pro";
+export const APIMIRA_DEEPSEEK_INSTINCT = "deepseek/deepseek-v3.2";
+export const APIMIRA_DEEPSEEK_CHAT = "deepseek/deepseek-chat-v3-0324";
+export const APIMIRA_DEEPSEEK_F1 = "deepseek/deepseek-chat";
+export const APIMIRA_DEEPSEEK_REASONER = "deepseek/deepseek-r1";
 
 export interface ModelProfile {
   directModel: string;

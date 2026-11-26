@@ -2,7 +2,6 @@ package app.igseek.mobile.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,17 +23,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Email
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -52,23 +47,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.igseek.mobile.data.models.AccentPresetId
+import app.igseek.mobile.ui.components.GoogleGIcon
 import app.igseek.mobile.ui.components.IGseekCanvas
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.IGseekWordmark
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
 import app.igseek.mobile.ui.theme.accentSwatchColor
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AuthScreen(
     state: IGseekUiState,
-    viewModel: IGseekViewModel
+    viewModel: IGseekViewModel,
+    onLaunchGoogleSignIn: () -> Unit
 ) {
     val palette = LocalIGseekPalette.current
     val isEn = state.layoutPrefs.language == "en"
@@ -81,11 +81,16 @@ fun AuthScreen(
         return
     }
 
-    var isSignUp by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf("signin") } // "signin" | "signup"
+    var showEmailForm by remember { mutableStateOf(false) }
+    var isForgot by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+
     val authErr = state.authError
+    val busy = state.isAuthLoading || state.isGoogleAuthLoading
 
     IGseekCanvas {
         Column(
@@ -94,19 +99,31 @@ fun AuthScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(horizontal = 24.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Controls (Theme + Language — mirrors AuthCard.tsx)
+            // Top Controls: Theme + Language (Lucide icons, website style)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IGseekGlassChip(
-                    label = if (state.layoutPrefs.darkTheme) "Тёмная" else "Светлая",
+                    label = if (state.layoutPrefs.darkTheme) {
+                        if (isEn) "Dark" else "Тёмная"
+                    } else {
+                        if (isEn) "Light" else "Светлая"
+                    },
                     selected = false,
-                    onClick = { viewModel.updateLayoutPrefs { it.copy(darkTheme = !it.darkTheme) } }
+                    onClick = { viewModel.updateLayoutPrefs { it.copy(darkTheme = !it.darkTheme) } },
+                    leading = {
+                        Icon(
+                            imageVector = if (state.layoutPrefs.darkTheme) LucideIcons.Moon else LucideIcons.Sun,
+                            contentDescription = null,
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 )
                 Spacer(Modifier.width(8.dp))
                 IGseekGlassChip(
@@ -116,224 +133,448 @@ fun AuthScreen(
                         viewModel.updateLayoutPrefs {
                             it.copy(language = if (it.language == "en") "ru" else "en")
                         }
+                    },
+                    leading = {
+                        Icon(
+                            imageVector = LucideIcons.Languages,
+                            contentDescription = null,
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
                     }
                 )
             }
 
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(42.dp))
 
-            // Authentic IGseek Fox Brand Hero
-            IGseekFoxLogo(size = 62.dp, showGlow = true)
+            // Authentic IGseek Fox + Wordmark Hero
+            IGseekFoxLogo(size = 56.dp, showGlow = true)
             Spacer(Modifier.height(10.dp))
-            Text(
-                text = "IGseek",
-                style = MaterialTheme.typography.headlineMedium,
-                color = palette.textPrimary
-            )
+            IGseekWordmark(fontSize = 36.sp)
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (isEn) {
-                    "AI workspace · Direct cloud sync · Built for speed"
-                } else {
-                    "ИИ-пространство · Прямая синхронизация · Работает напрямую"
-                },
+                text = if (isEn) "Find. Analyze. Create." else "Находи. Анализируй. Создавай.",
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.textMuted,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(26.dp))
 
-            IGseekGlassCard(
+            // Website-style Pill Mode Switcher (Log in / Register)
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-                contentPadding = 18.dp
+                shape = RoundedCornerShape(50),
+                color = palette.chipBg,
+                border = BorderStroke(1.dp, palette.glassBorder)
             ) {
-                // Segmented Sign In / Sign Up Switcher
+                Row(
+                    modifier = Modifier.padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    AuthPillTab(
+                        title = if (isEn) "Log in" else "Вход",
+                        selected = mode == "signin",
+                        onClick = {
+                            mode = "signin"
+                            showEmailForm = false
+                            isForgot = false
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    AuthPillTab(
+                        title = if (isEn) "Register" else "Регистрация",
+                        selected = mode == "signup",
+                        onClick = {
+                            mode = "signup"
+                            showEmailForm = true
+                            isForgot = false
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // Error Alert Banner
+            if (!authErr.isNullOrBlank()) {
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = palette.chipBg,
-                    border = BorderStroke(1.dp, palette.glassBorder)
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.11f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.30f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
-                        AuthModeTab(
-                            title = if (isEn) "Sign In" else "Вход",
-                            selected = !isSignUp,
-                            onClick = { isSignUp = false },
-                            modifier = Modifier.weight(1f)
+                        Icon(
+                            imageVector = LucideIcons.AlertCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp).padding(top = 1.dp)
                         )
-                        AuthModeTab(
-                            title = if (isEn) "Sign Up" else "Регистрация",
-                            selected = isSignUp,
-                            onClick = { isSignUp = true },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
-
-                val fieldColors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = palette.brand,
-                    unfocusedBorderColor = palette.glassBorder,
-                    focusedTextColor = palette.textPrimary,
-                    unfocusedTextColor = palette.textPrimary,
-                    focusedLabelColor = palette.brand,
-                    unfocusedLabelColor = palette.textMuted,
-                    cursorColor = palette.brand
-                )
-
-                if (isSignUp) {
-                    OutlinedTextField(
-                        value = displayName,
-                        onValueChange = { displayName = it },
-                        label = { Text(if (isEn) "Name" else "Имя") },
-                        leadingIcon = { Icon(Icons.Rounded.Person, contentDescription = null, tint = palette.textMuted) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
-
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Email") },
-                    leadingIcon = { Icon(Icons.Rounded.Email, contentDescription = null, tint = palette.textMuted) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(Modifier.height(10.dp))
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text(if (isEn) "Password" else "Пароль") },
-                    leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null, tint = palette.textMuted) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                if (!authErr.isNullOrBlank()) {
-                    Spacer(Modifier.height(10.dp))
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
-                    ) {
                         Text(
                             text = authErr,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(10.dp)
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                 }
+            }
 
-                Spacer(Modifier.height(16.dp))
-
-                Button(
-                    onClick = {
-                        if (isSignUp) {
-                            viewModel.signUp(email, password, displayName)
-                        } else {
-                            viewModel.signIn(email, password)
-                        }
-                    },
-                    enabled = !state.isAuthLoading && email.isNotBlank() && password.length >= 6,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = palette.brand,
-                        contentColor = palette.brandOn
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(50.dp)
+            // Primary Auth Flow (mirrors AuthCard.tsx clean pill hierarchy)
+            if (mode == "signin" && !showEmailForm && !isForgot) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(11.dp)
                 ) {
-                    if (state.isAuthLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = palette.brandOn
-                        )
-                    } else {
-                        Text(
-                            text = if (isSignUp) {
-                                if (isEn) "Create IGseek Account" else "Создать аккаунт IGseek"
-                            } else {
-                                if (isEn) "Continue" else "Войти в IGseek"
-                            },
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
+                    GoogleSignInPillButton(
+                        label = if (isEn) "Sign in with Google" else "Войти через Google",
+                        loading = state.isGoogleAuthLoading,
+                        enabled = !busy,
+                        onClick = onLaunchGoogleSignIn
+                    )
 
-                if (!isSignUp) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.End
+                    AuthSecondaryPillButton(
+                        label = if (isEn) "Sign in with email" else "Войти по email",
+                        leadingIcon = {
+                            Icon(
+                                imageVector = LucideIcons.Mail,
+                                contentDescription = null,
+                                tint = palette.textSecondary,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        },
+                        onClick = { showEmailForm = true }
+                    )
+
+                    AuthOrDivider(label = if (isEn) "or" else "или")
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(50))
+                            .clickable(enabled = !busy) {
+                                mode = "signup"
+                                showEmailForm = true
+                            },
+                        shape = RoundedCornerShape(50),
+                        color = palette.glassBg,
+                        border = BorderStroke(1.dp, palette.glassBorder)
                     ) {
-                        TextButton(
-                            onClick = {
-                                if (email.isNotBlank()) viewModel.sendPasswordReset(email)
-                                else viewModel.showToast(if (isEn) "Enter your email first" else "Сначала введите email")
-                            }
+                        Row(
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = if (isEn) "Forgot password?" else "Забыли пароль?",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = palette.textMuted
+                                text = if (isEn) "Create account" else "Создать аккаунт",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = palette.textPrimary
+                            )
+                            Icon(
+                                imageVector = LucideIcons.ChevronRight,
+                                contentDescription = null,
+                                tint = palette.textMuted,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Email Sign-In / Sign-Up / Forgot Password Form
+                val fieldColors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = palette.brand,
+                    unfocusedBorderColor = palette.glassBorder,
+                    focusedContainerColor = palette.glassBg,
+                    unfocusedContainerColor = palette.glassBg,
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    focusedPlaceholderColor = palette.textMuted,
+                    unfocusedPlaceholderColor = palette.textMuted,
+                    cursorColor = palette.brand
+                )
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Back link
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                if (isForgot) {
+                                    isForgot = false
+                                } else {
+                                    mode = "signin"
+                                    showEmailForm = false
+                                }
+                            }
+                            .padding(vertical = 4.dp, horizontal = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = LucideIcons.ArrowLeft,
+                            contentDescription = null,
+                            tint = palette.textMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = if (isForgot) {
+                                if (isEn) "Back" else "Назад"
+                            } else {
+                                if (isEn) "All sign-in options" else "Все способы входа"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textMuted
+                        )
+                    }
+
+                    if (mode == "signup" && !isForgot) {
+                        GoogleSignInPillButton(
+                            label = if (isEn) "Continue with Google" else "Продолжить через Google",
+                            loading = state.isGoogleAuthLoading,
+                            enabled = !busy,
+                            onClick = onLaunchGoogleSignIn
+                        )
+                        AuthOrDivider(label = if (isEn) "or" else "или")
+
+                        OutlinedTextField(
+                            value = displayName,
+                            onValueChange = { displayName = it },
+                            placeholder = { Text(if (isEn) "Your name" else "Ваше имя") },
+                            leadingIcon = {
+                                Icon(LucideIcons.User, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(17.dp))
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(50),
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it },
+                        placeholder = { Text("name@example.com") },
+                        leadingIcon = {
+                            Icon(LucideIcons.Mail, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(17.dp))
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        shape = RoundedCornerShape(50),
+                        colors = fieldColors,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (!isForgot) {
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            placeholder = {
+                                Text(
+                                    if (mode == "signup") {
+                                        if (isEn) "Minimum 6 characters" else "Минимум 6 символов"
+                                    } else {
+                                        if (isEn) "Password" else "Пароль"
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(LucideIcons.Lock, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(17.dp))
+                            },
+                            trailingIcon = {
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) LucideIcons.EyeOff else LucideIcons.Eye,
+                                        contentDescription = null,
+                                        tint = palette.textMuted,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                            },
+                            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            shape = RoundedCornerShape(50),
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    if (mode == "signin" && !isForgot) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(onClick = { isForgot = true }) {
+                                Text(
+                                    text = if (isEn) "Forgot password?" else "Забыли пароль?",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textMuted
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Button(
+                        onClick = {
+                            when {
+                                isForgot -> {
+                                    if (email.isNotBlank()) {
+                                        viewModel.sendPasswordReset(email)
+                                        isForgot = false
+                                    } else {
+                                        viewModel.showToast(if (isEn) "Enter your email" else "Введите email")
+                                    }
+                                }
+                                mode == "signup" -> viewModel.signUp(email, password, displayName)
+                                else -> viewModel.signIn(email, password)
+                            }
+                        },
+                        enabled = !busy && email.isNotBlank() && (isForgot || password.length >= 6),
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.brand,
+                            contentColor = palette.brandOn
+                        ),
+                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                    ) {
+                        if (state.isAuthLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(19.dp),
+                                strokeWidth = 2.dp,
+                                color = palette.brandOn
+                            )
+                        } else {
+                            Text(
+                                text = when {
+                                    isForgot -> if (isEn) "Send reset link" else "Сбросить пароль"
+                                    mode == "signup" -> if (isEn) "Continue" else "Продолжить"
+                                    else -> if (isEn) "Sign in" else "Войти в аккаунт"
+                                },
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
-
-            OutlinedButton(
-                onClick = { viewModel.continueAsGuest() },
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, palette.glassBorder),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.textSecondary),
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-            ) {
-                Text(
-                    text = if (isEn) "Continue without account (Local)" else "Продолжить без аккаунта"
-                )
-            }
-
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(28.dp))
             Text(
                 text = if (isEn) {
-                    "Your chats, projects, memories & library sync directly with your IGseek account."
+                    "Your chats, projects, memories and Library sync directly with your IGseek account."
                 } else {
-                    "Чаты, проекты, память и Library синхронизируются напрямую с вашим аккаунтом IGseek."
+                    "Чаты, проекты, память и Library синхронизируются с вашим аккаунтом IGseek."
                 },
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.labelSmall,
                 color = palette.textMuted,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 12.dp)
+                modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
     }
 }
 
 @Composable
-private fun AuthModeTab(
+private fun GoogleSignInPillButton(
+    label: String,
+    loading: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(50))
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(50),
+        color = palette.glassBg,
+        border = BorderStroke(1.dp, palette.glassBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = palette.brand
+                )
+            } else {
+                GoogleGIcon(modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = palette.textPrimary
+            )
+        }
+    }
+}
+
+@Composable
+private fun AuthSecondaryPillButton(
+    label: String,
+    leadingIcon: @Composable () -> Unit,
+    onClick: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(50),
+        color = palette.glassBg,
+        border = BorderStroke(1.dp, palette.glassBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            leadingIcon()
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = palette.textPrimary
+            )
+        }
+    }
+}
+
+@Composable
+private fun AuthOrDivider(label: String) {
+    val palette = LocalIGseekPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        HorizontalDivider(color = palette.divider, modifier = Modifier.weight(1f))
+        Text(text = label, style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
+        HorizontalDivider(color = palette.divider, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun AuthPillTab(
     title: String,
     selected: Boolean,
     onClick: () -> Unit,
@@ -342,13 +583,8 @@ private fun AuthModeTab(
     val palette = LocalIGseekPalette.current
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) palette.surfaceElevated else Color.Transparent)
-            .border(
-                width = 1.dp,
-                color = if (selected) palette.glassBorder else Color.Transparent,
-                shape = RoundedCornerShape(10.dp)
-            )
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) palette.brand else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
@@ -356,8 +592,8 @@ private fun AuthModeTab(
         Text(
             text = title,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (selected) palette.textPrimary else palette.textMuted
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) palette.brandOn else palette.textMuted
         )
     }
 }
@@ -378,18 +614,18 @@ private fun AccentOnboardingStep(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 28.dp),
+                .padding(horizontal = 22.dp, vertical = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             IGseekFoxLogo(
-                size = 72.dp,
+                size = 64.dp,
                 showGlow = true,
-                tintOverride = accentSwatchColor(chosen, state.layoutPrefs.darkTheme)
+                tintOverride = if (state.layoutPrefs.darkTheme) accentSwatchColor(chosen, true) else Color(0xFF000000)
             )
             Spacer(Modifier.height(14.dp))
             Text(
-                text = if (isEn) "Choose your IGseek accent" else "Выберите ваш акцент IGseek",
+                text = if (isEn) "Choose your dark theme accent" else "Выберите акцент тёмной темы",
                 style = MaterialTheme.typography.headlineMedium,
                 color = palette.textPrimary,
                 textAlign = TextAlign.Center
@@ -397,9 +633,9 @@ private fun AccentOnboardingStep(
             Spacer(Modifier.height(6.dp))
             Text(
                 text = if (isEn) {
-                    "You can change the accent and theme anytime in Settings."
+                    "Light theme always uses pure black (#000000). This accent applies in Dark theme."
                 } else {
-                    "Цвет акцента и тему всегда можно изменить в настройках."
+                    "В светлой теме всегда используется чёрный акцент (#000000). Выбранный цвет применяется в тёмной теме."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = palette.textMuted,
@@ -410,7 +646,7 @@ private fun AccentOnboardingStep(
 
             IGseekGlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(24.dp),
                 contentPadding = 18.dp
             ) {
                 FlowRow(
@@ -419,17 +655,17 @@ private fun AccentOnboardingStep(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     AccentPresetId.entries.forEach { preset ->
-                        val swatch = accentSwatchColor(preset, state.layoutPrefs.darkTheme)
+                        val swatch = accentSwatchColor(preset, darkTheme = true)
                         val active = chosen == preset
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(50))
                                 .clickable {
                                     chosen = preset
                                     viewModel.updateLayoutPrefs { it.copy(accent = preset) }
                                 },
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (active) swatch.copy(alpha = 0.18f) else palette.chipBg,
+                            shape = RoundedCornerShape(50),
+                            color = if (active) swatch.copy(alpha = 0.16f) else palette.chipBg,
                             border = BorderStroke(
                                 width = if (active) 1.5.dp else 1.dp,
                                 color = if (active) swatch else palette.glassBorder
@@ -449,9 +685,9 @@ private fun AccentOnboardingStep(
                                 ) {
                                     if (active) {
                                         Icon(
-                                            Icons.Rounded.Check,
+                                            imageVector = LucideIcons.Check,
                                             contentDescription = null,
-                                            tint = if (preset == AccentPresetId.BLACK && state.layoutPrefs.darkTheme) Color.Black else Color.White,
+                                            tint = if (preset == AccentPresetId.BLACK) Color.Black else Color.White,
                                             modifier = Modifier.size(11.dp)
                                         )
                                     }
@@ -470,15 +706,15 @@ private fun AccentOnboardingStep(
 
                 Button(
                     onClick = { viewModel.completeAccentOnboarding(chosen) },
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(50),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = accentSwatchColor(chosen, state.layoutPrefs.darkTheme),
-                        contentColor = if (chosen == AccentPresetId.BLACK && state.layoutPrefs.darkTheme) Color.Black else Color.White
+                        containerColor = palette.brand,
+                        contentColor = palette.brandOn
                     ),
                     modifier = Modifier.fillMaxWidth().height(50.dp)
                 ) {
                     Text(
-                        text = if (isEn) "Start using IGseek" else "Начать работу в IGseek",
+                        text = if (isEn) "Complete registration" else "Завершить регистрацию",
                         fontWeight = FontWeight.SemiBold
                     )
                 }

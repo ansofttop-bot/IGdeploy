@@ -9,20 +9,14 @@ import {
   shouldTryDirectDeepSeek,
   type UiModel,
 } from "./deepseek-models";
-import { callMistralFreeChat, callMistralFreeText } from "./mistral-free";
+import {
+  GEMINI_FREE_MODEL,
+  callGeminiFreeChatStream,
+  callGeminiFreeText,
+  resolveGeminiFreeModel,
+} from "./gemini-free";
 
 export type AiTier = "free" | "pro";
-
-export interface CustomAiProviderSpec {
-  id: string;
-  tier: AiTier;
-  baseUrl: string;
-  apiKey?: string;
-  model: string;
-  priority?: number;
-  supportsVision?: boolean;
-  timeoutMs?: number;
-}
 
 interface CircuitBreakerState {
   failures: number;
@@ -73,69 +67,6 @@ export function resetAiCircuitBreakers(): void {
   getBreakerRegistry().clear();
 }
 
-export function loadCustomAiProviders(tier: AiTier): CustomAiProviderSpec[] {
-  const specs: CustomAiProviderSpec[] = [];
-
-  // Built-in self-hosted OpenAI-compatible slots (vLLM / Ollama / SGLang / TGI)
-  const selfHostedUrl = (
-    tier === "free"
-      ? process.env.SELF_HOSTED_FREE_LLM_URL || process.env.SELF_HOSTED_LLM_URL || ""
-      : process.env.SELF_HOSTED_PRO_LLM_URL || ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
-
-  if (selfHostedUrl) {
-    specs.push({
-      id: `self-hosted-${tier}`,
-      tier,
-      baseUrl: selfHostedUrl,
-      apiKey: (process.env.SELF_HOSTED_LLM_API_KEY || "local-igseek").trim(),
-      model: (
-        tier === "free"
-          ? process.env.SELF_HOSTED_FREE_LLM_MODEL || process.env.SELF_HOSTED_LLM_MODEL || "qwen2.5:14b"
-          : process.env.SELF_HOSTED_PRO_LLM_MODEL || "deepseek-r1:32b"
-      ).trim(),
-      priority: 10,
-      timeoutMs: 35_000,
-    });
-  }
-
-  // Plug-in custom providers JSON array without code changes
-  const rawJson = (process.env.AI_CUSTOM_PROVIDERS_JSON || "").trim();
-  if (rawJson) {
-    try {
-      const parsed = JSON.parse(rawJson);
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          if (
-            item &&
-            typeof item.id === "string" &&
-            typeof item.baseUrl === "string" &&
-            typeof item.model === "string" &&
-            (item.tier === tier || item.tier === "both")
-          ) {
-            specs.push({
-              id: item.id,
-              tier,
-              baseUrl: item.baseUrl.replace(/\/+$/, ""),
-              apiKey: typeof item.apiKey === "string" ? item.apiKey : undefined,
-              model: item.model,
-              priority: typeof item.priority === "number" ? item.priority : 50,
-              supportsVision: Boolean(item.supportsVision),
-              timeoutMs: typeof item.timeoutMs === "number" ? item.timeoutMs : 30_000,
-            });
-          }
-        }
-      }
-    } catch {
-      // Ignore invalid JSON so free/pro defaults remain healthy
-    }
-  }
-
-  return specs.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50));
-}
-
 export interface RouteChatStreamParams {
   tier: AiTier;
   modelId?: string;
@@ -159,47 +90,11 @@ export interface RoutedStreamResult {
   tier: AiTier;
 }
 
-async function callOpenAiCompatibleProvider(
-  spec: CustomAiProviderSpec,
-  params: {
-    messages: Array<Record<string, unknown>>;
-    tools?: unknown[];
-    stream: boolean;
-    temperature: number;
-    maxTokens: number;
-    jsonMode?: boolean;
-    signal?: AbortSignal;
-  },
-): Promise<Response> {
-  const url = spec.baseUrl.endsWith("/chat/completions")
-    ? spec.baseUrl
-    : `${spec.baseUrl}/chat/completions`;
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  if (spec.apiKey) {
-    headers.authorization = `Bearer ${spec.apiKey}`;
-  }
-  return fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: spec.model,
-      stream: params.stream,
-      temperature: params.temperature,
-      max_tokens: params.maxTokens,
-      ...(params.tools && params.tools.length ? { tools: params.tools } : {}),
-      ...(params.jsonMode ? { response_format: { type: "json_object" } } : {}),
-      messages: params.messages,
-    }),
-    signal: params.signal ?? AbortSignal.timeout(spec.timeoutMs ?? 30_000),
-  });
-}
-
 /**
  * Tier-isolated AI streaming router:
- * - Free tier NEVER touches paid DeepSeek/APIMIRA keys — uses self-hosted free plugins -> Mistral Free -> Pollinations text fallback.
- * - Pro tier prioritizes cost-optimized Direct DeepSeek -> self-hosted Pro plugins -> APIMIRA resilient fallback chain.
+ * - Free tier: strictly Google Gemini (`gemini-4-hydrogen`) for text, tools, and attachments.
+ *   NEVER touches paid DeepSeek / ApiMira keys.
+ * - Pro tier: strictly DeepSeek (< V4.0) via Direct DeepSeek -> ApiMira DeepSeek fallback chain.
  */
 export async function routeChatStream(params: RouteChatStreamParams): Promise<RoutedStreamResult> {
   const temperature = params.temperature ?? 0.65;
@@ -207,45 +102,23 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
   const resolvedModelId = params.modelId ?? params.model ?? "instinct";
 
   if (params.tier === "free") {
-    const customFree = loadCustomAiProviders("free");
-    for (const provider of customFree) {
-      if (isProviderCircuitOpen(provider.id)) continue;
-      try {
-        const res = await callOpenAiCompatibleProvider(provider, {
-          messages: params.messages,
-          tools: params.tools,
-          stream: true,
-          temperature,
-          maxTokens,
-          signal: params.signal,
-        });
-        if (res.ok && res.body) {
-          recordProviderSuccess(provider.id);
-          return { response: res, providerId: provider.id, modelUsed: provider.model, tier: "free" };
-        }
-        recordProviderFailure(provider.id, res.status);
-      } catch (err: any) {
-        recordProviderFailure(provider.id, err?.message || "network_error");
-      }
-    }
-
-    const res = await callMistralFreeChat({
+    const modelUsed = resolveGeminiFreeModel();
+    const res = await callGeminiFreeChatStream({
       messages: params.messages,
       tools: params.tools as any,
-      hasVisionInput: params.hasVisionInput,
-      temperature,
+      reasoning: Boolean(params.reasoning),
       maxTokens,
       signal: params.signal,
     });
     return {
       response: res,
-      providerId: "mistral-free",
-      modelUsed: "mistral-free",
+      providerId: "gemini-free",
+      modelUsed,
       tier: "free",
     };
   }
 
-  // PRO TIER (strictly isolated from free pool unless explicitly configured)
+  // PRO TIER (strictly isolated DeepSeek < V4.0)
   const directKey = (params.directDeepSeekKey ?? process.env.DEEPSEEK_API_KEY ?? "").trim();
   const apimiraKey = (params.apimiraKey ?? process.env.APIMIRA_API_KEY ?? "").trim();
   const apimiraBase = (params.apimiraBaseUrl ?? process.env.APIMIRA_BASE_URL ?? "https://apimira.com/v1")
@@ -254,7 +127,6 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
 
   const errors: string[] = [];
 
-  // 1. Cost-optimal Direct DeepSeek first when healthy
   if (
     directKey &&
     shouldTryDirectDeepSeek(directKey, apimiraKey) &&
@@ -271,7 +143,7 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
         body: JSON.stringify({
           model: directModel,
           stream: true,
-          temperature,
+          ...(!params.reasoning ? { temperature } : {}),
           max_tokens: maxTokens,
           ...(params.tools && params.tools.length ? { tools: params.tools } : {}),
           messages: params.messages,
@@ -286,36 +158,12 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
       recordProviderFailure("deepseek-direct", res.status);
       errors.push(`direct:${res.status}`);
     } catch (err: any) {
+      if (params.signal?.aborted || err?.name === "AbortError") throw err;
       recordProviderFailure("deepseek-direct", err?.message || "network");
       errors.push(`direct:${err?.message || "err"}`);
     }
   }
 
-  // 2. Self-hosted / custom Pro plug-in providers
-  for (const provider of loadCustomAiProviders("pro")) {
-    if (isProviderCircuitOpen(provider.id)) continue;
-    try {
-      const res = await callOpenAiCompatibleProvider(provider, {
-        messages: params.messages,
-        tools: params.tools,
-        stream: true,
-        temperature,
-        maxTokens,
-        signal: params.signal,
-      });
-      if (res.ok && res.body) {
-        recordProviderSuccess(provider.id);
-        return { response: res, providerId: provider.id, modelUsed: provider.model, tier: "pro" };
-      }
-      recordProviderFailure(provider.id, res.status);
-      errors.push(`${provider.id}:${res.status}`);
-    } catch (err: any) {
-      recordProviderFailure(provider.id, err?.message || "network");
-      errors.push(`${provider.id}:${err?.message || "err"}`);
-    }
-  }
-
-  // 3. APIMIRA resilient fallback chain
   if (apimiraKey) {
     const uiModel: UiModel =
       resolvedModelId === "chat" || resolvedModelId === "f1" ? resolvedModelId : "instinct";
@@ -333,9 +181,8 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
           body: JSON.stringify({
             model: modelName,
             stream: true,
-            temperature,
+            ...(!params.reasoning ? { temperature, ...APIMIRA_NO_REASONING_PARAMS } : {}),
             max_tokens: maxTokens,
-            ...(!params.reasoning ? APIMIRA_NO_REASONING_PARAMS : {}),
             ...(params.tools && params.tools.length ? { tools: params.tools } : {}),
             messages: params.messages,
           }),
@@ -350,6 +197,7 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
         recordProviderFailure(pid, res.status);
         errors.push(`${pid}:${res.status}`);
       } catch (err: any) {
+        if (params.signal?.aborted || err?.name === "AbortError") throw err;
         recordProviderFailure(pid, err?.message || "network");
         errors.push(`${pid}:${err?.message || "err"}`);
       }
@@ -372,40 +220,14 @@ export async function routeTextCompletion(params: {
   const maxTokens = params.maxTokens ?? 1500;
 
   if (params.tier === "free") {
-    for (const provider of loadCustomAiProviders("free")) {
-      if (isProviderCircuitOpen(provider.id)) continue;
-      try {
-        const res = await callOpenAiCompatibleProvider(provider, {
-          messages: params.messages,
-          stream: false,
-          temperature,
-          maxTokens,
-          jsonMode: params.jsonMode,
-        });
-        if (res.ok) {
-          const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-          const text = json.choices?.[0]?.message?.content?.trim() || "";
-          if (text) {
-            recordProviderSuccess(provider.id);
-            return { text, providerId: provider.id };
-          }
-        }
-        recordProviderFailure(provider.id, res.status);
-      } catch (err: any) {
-        recordProviderFailure(provider.id, err?.message || "network");
-      }
-    }
-
     const text =
-      (await callMistralFreeText({
+      (await callGeminiFreeText({
         messages: params.messages,
-        temperature,
         maxTokens,
         jsonMode: params.jsonMode,
-        timeoutMs: params.timeoutMs ?? 24_000,
       })) || "";
-    if (!text) throw new Error("Free text providers unavailable");
-    return { text, providerId: "mistral-free" };
+    if (!text) throw new Error("Gemini Free text provider unavailable");
+    return { text, providerId: "gemini-free" };
   }
 
   const directKey = (process.env.DEEPSEEK_API_KEY || "").trim();
@@ -503,8 +325,8 @@ export function getAiRouterHealthSummary() {
     }
   }
   return {
-    freeCustomProviders: loadCustomAiProviders("free").map((p) => p.id),
-    proCustomProviders: loadCustomAiProviders("pro").map((p) => p.id),
+    freeProvider: `gemini-free (${GEMINI_FREE_MODEL})`,
+    proProvider: "deepseek (<4.0) + apimira",
     openCircuits,
   };
 }

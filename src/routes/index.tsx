@@ -142,7 +142,7 @@ const AGENTS = [
 ];
 
 const MODELS = [
-  { name: "IGseek 4.0 instinct", tag: "default", desc: "Flagship: depth and quality for complex tasks." },
+  { name: "IGseek 3.5 instinct", tag: "default", desc: "Flagship: depth and quality for complex tasks." },
   { name: "IGseek 3.2 chat", tag: "chat", desc: "Conversational model with long context and soft tone." },
   { name: "IGseek F1", tag: "flash", desc: "Ultra-fast answers for iterations and short queries." },
   { name: "IGseek Reasoner", tag: "reasoner", desc: "Reasoning mode with explicit chain of thought." },

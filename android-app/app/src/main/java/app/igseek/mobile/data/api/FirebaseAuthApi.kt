@@ -102,6 +102,41 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         }
     }
 
+    suspend fun signInWithGoogleIdToken(googleIdToken: String): AuthSession = withContext(Dispatchers.IO) {
+        signInWithGooglePostBody("id_token=$googleIdToken&providerId=google.com")
+    }
+
+    suspend fun signInWithGoogleAccessToken(accessToken: String): AuthSession = withContext(Dispatchers.IO) {
+        signInWithGooglePostBody("access_token=$accessToken&providerId=google.com")
+    }
+
+    private fun signInWithGooglePostBody(postBody: String): AuthSession {
+        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        val authDomain = BuildConfig.FIREBASE_AUTH_DOMAIN.ifBlank { "localhost" }
+        val body = JSONObject().apply {
+            put("postBody", postBody)
+            put("requestUri", "https://$authDomain")
+            put("returnIdpCredential", true)
+            put("returnSecureToken", true)
+        }
+        val req = Request.Builder()
+            .url("https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=$apiKey")
+            .post(body.toString().toRequestBody(jsonMedia))
+            .build()
+        return client.newCall(req).execute().use { res ->
+            val raw = res.body?.string().orEmpty()
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (!res.isSuccessful) {
+                val msg = obj?.optJSONObject("error")?.optString("message") ?: "Ошибка входа через Google (${res.code})"
+                throw IllegalStateException(translateAuthError(msg))
+            }
+            val parsed = obj ?: JSONObject()
+            val email = parsed.optString("email")
+            val fullName = parsed.optString("fullName").ifBlank { parsed.optString("displayName") }
+            parseAuthResponse(parsed, email, fullName)
+        }
+    }
+
     suspend fun sendPasswordReset(email: String) = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("requestType", "PASSWORD_RESET")

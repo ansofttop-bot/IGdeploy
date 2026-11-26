@@ -23,30 +23,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Build
-import androidx.compose.material.icons.rounded.Call
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.List
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -71,11 +60,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.igseek.mobile.data.models.CloudSyncStatus
+import androidx.compose.ui.unit.sp
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.ui.components.IGseekCanvas
 import app.igseek.mobile.ui.components.IGseekFoxLogo
+import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.IGseekWordmark
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.screens.AuthScreen
 import app.igseek.mobile.ui.screens.ChatScreen
 import app.igseek.mobile.ui.screens.DocsScreen
@@ -91,10 +83,12 @@ import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IGseekAppRoot(
     state: IGseekUiState,
-    viewModel: IGseekViewModel
+    viewModel: IGseekViewModel,
+    onLaunchGoogleSignIn: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val palette = LocalIGseekPalette.current
@@ -112,7 +106,11 @@ fun IGseekAppRoot(
             containerColor = palette.bg,
             snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { _ ->
-            AuthScreen(state = state, viewModel = viewModel)
+            AuthScreen(
+                state = state,
+                viewModel = viewModel,
+                onLaunchGoogleSignIn = onLaunchGoogleSignIn
+            )
         }
         return
     }
@@ -124,7 +122,7 @@ fun IGseekAppRoot(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        scrimColor = Color.Black.copy(alpha = 0.62f),
+        scrimColor = Color.Black.copy(alpha = 0.56f),
         drawerContent = {
             IGseekSidebarDrawer(
                 state = state,
@@ -136,21 +134,9 @@ fun IGseekAppRoot(
         IGseekCanvas {
             Scaffold(
                 containerColor = Color.Transparent,
-                snackbarHost = { SnackbarHost(snackbarHostState) },
-                bottomBar = {
-                    if (state.layoutPrefs.showBottomBar) {
-                        IGseekBottomBar(
-                            state = state,
-                            onSelectTab = { viewModel.selectTab(it) }
-                        )
-                    }
-                }
-            ) { innerPadding ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = innerPadding.calculateBottomPadding())
-                ) {
+                snackbarHost = { SnackbarHost(snackbarHostState) }
+            ) { _ ->
+                Box(modifier = Modifier.fillMaxSize()) {
                     when (state.activeTab) {
                         IGseekTab.CHAT -> ChatScreen(
                             state = state,
@@ -202,6 +188,14 @@ fun IGseekAppRoot(
             }
         }
     }
+
+    if (state.showProSheet) {
+        ProSubscriptionSheet(
+            state = state,
+            viewModel = viewModel,
+            onDismiss = { viewModel.closeProSheet() }
+        )
+    }
 }
 
 @Composable
@@ -228,7 +222,7 @@ private fun IGseekSidebarDrawer(
     ModalDrawerSheet(
         drawerContainerColor = palette.sidebarBg,
         drawerContentColor = palette.textPrimary,
-        modifier = Modifier.width(308.dp)
+        modifier = Modifier.width(304.dp)
     ) {
         Column(
             modifier = Modifier
@@ -237,7 +231,7 @@ private fun IGseekSidebarDrawer(
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
-            // Top Brand Row — exact match to IGseek website sidebar header
+            // Clean Website-Style Sidebar Header (no cluttered status dot)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -247,57 +241,36 @@ private fun IGseekSidebarDrawer(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
-                    IGseekFoxLogo(size = 26.dp, showGlow = false)
-                    Text(
-                        text = "IGseek",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    SyncDot(status = state.cloudSyncStatus)
+                    IGseekFoxLogo(size = 24.dp, showGlow = false)
+                    IGseekWordmark(fontSize = 20.sp)
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (state.session != null && !state.session.isGuest) {
-                        IconButton(
-                            onClick = { viewModel.syncAllFromCloud() },
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = "Sync",
-                                tint = palette.textMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "Close",
-                            tint = palette.textMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = LucideIcons.X,
+                        contentDescription = "Close",
+                        tint = palette.textMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 
             Spacer(Modifier.height(12.dp))
 
-            // Primary "Новый чат" glass CTA button
+            // Pill "Новый чат" button matching website
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(50))
                     .clickable {
                         viewModel.createNewChat()
                         onClose()
                     },
-                shape = RoundedCornerShape(14.dp),
-                color = palette.brandSoft,
+                shape = RoundedCornerShape(50),
+                color = if (palette.isDark) palette.brandSoft else palette.brand,
                 border = BorderStroke(1.dp, palette.brandBorder)
             ) {
                 Row(
@@ -306,17 +279,17 @@ private fun IGseekSidebarDrawer(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        Icons.Rounded.Add,
+                        imageVector = LucideIcons.SquarePen,
                         contentDescription = null,
-                        tint = palette.brand,
-                        modifier = Modifier.size(18.dp)
+                        tint = if (palette.isDark) palette.brand else palette.brandOn,
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(Modifier.width(7.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = if (isEn) "New Chat" else "Новый чат",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = palette.textPrimary
+                        color = if (palette.isDark) palette.textPrimary else palette.brandOn
                     )
                 }
             }
@@ -326,9 +299,8 @@ private fun IGseekSidebarDrawer(
             // Scrollable Workspaces + Projects + Chats
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                // Website Primary Navigation Workspaces
                 val primaryWorkspaces = listOf(
                     IGseekTab.CHAT,
                     IGseekTab.FLOW,
@@ -340,7 +312,7 @@ private fun IGseekSidebarDrawer(
                 )
                 items(primaryWorkspaces, key = { "nav_${it.key}" }) { tab ->
                     SidebarNavRow(
-                        icon = tabIcon(tab),
+                        icon = tabLucideIcon(tab),
                         label = tab.label(lang),
                         selected = state.activeTab == tab,
                         badge = when (tab) {
@@ -365,7 +337,7 @@ private fun IGseekSidebarDrawer(
                     )
                 }
 
-                // Projects (Folders) Row
+                // Projects (Folders)
                 item(key = "projects_header") {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
@@ -378,11 +350,11 @@ private fun IGseekSidebarDrawer(
                             color = palette.textMuted
                         )
                         Icon(
-                            Icons.Rounded.Add,
+                            imageVector = LucideIcons.Plus,
                             contentDescription = "New Project",
                             tint = palette.textMuted,
                             modifier = Modifier
-                                .size(18.dp)
+                                .size(17.dp)
                                 .clip(CircleShape)
                                 .clickable { showNewProjectDialog = true }
                         )
@@ -410,7 +382,7 @@ private fun IGseekSidebarDrawer(
                     Spacer(Modifier.height(10.dp))
                 }
 
-                // Search Chats Input
+                // Search Chats
                 item(key = "chat_search") {
                     OutlinedTextField(
                         value = searchQuery,
@@ -424,15 +396,15 @@ private fun IGseekSidebarDrawer(
                         },
                         leadingIcon = {
                             Icon(
-                                Icons.Rounded.Search,
+                                imageVector = LucideIcons.Search,
                                 contentDescription = null,
                                 tint = palette.textMuted,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                         },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodySmall.copy(color = palette.textPrimary),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(50),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.brandBorder,
                             unfocusedBorderColor = palette.glassBorder,
@@ -443,7 +415,6 @@ private fun IGseekSidebarDrawer(
                     )
                 }
 
-                // Chats Section Header
                 item(key = "chats_header") {
                     Text(
                         text = if (isEn) "RECENT CHATS" else "НЕДАВНИЕ ЧАТЫ",
@@ -458,7 +429,7 @@ private fun IGseekSidebarDrawer(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(11.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(if (isSelected) palette.brandSoft else Color.Transparent)
                             .clickable {
                                 viewModel.selectChat(chat.id)
@@ -477,35 +448,92 @@ private fun IGseekSidebarDrawer(
                             modifier = Modifier.weight(1f)
                         )
                         Icon(
-                            imageVector = if (chat.isSaved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            imageVector = if (chat.isSaved) LucideIcons.BookmarkFilled else LucideIcons.Bookmark,
                             contentDescription = "Save",
                             tint = if (chat.isSaved) palette.brand else palette.textMuted.copy(alpha = 0.65f),
                             modifier = Modifier
-                                .size(16.dp)
+                                .size(15.dp)
                                 .clickable { viewModel.toggleSaveChat(chat.id) }
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(9.dp))
                         Icon(
-                            imageVector = Icons.Rounded.Delete,
+                            imageVector = LucideIcons.Trash2,
                             contentDescription = "Delete",
                             tint = palette.textMuted.copy(alpha = 0.65f),
                             modifier = Modifier
-                                .size(16.dp)
+                                .size(15.dp)
                                 .clickable { viewModel.deleteChat(chat.id) }
                         )
                     }
                 }
             }
 
-            // Bottom Pinned Section — Memory, Settings, Pro & User Profile
+            // Bottom Pinned Footer
             HorizontalDivider(color = palette.divider, modifier = Modifier.padding(vertical = 8.dp))
+
+            // Small, unobtrusive IGseek Pro subscription button (Requirement #4)
+            if (!state.subscription.isPro) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .clickable {
+                            onClose()
+                            viewModel.openProSheet()
+                        },
+                    shape = RoundedCornerShape(13.dp),
+                    color = palette.brandSoft,
+                    border = BorderStroke(1.dp, palette.brandBorder)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Crown,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "IGseek Pro",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = "${state.subscription.priceRub} ₽",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textMuted
+                            )
+                            Icon(
+                                imageVector = LucideIcons.ChevronRight,
+                                contentDescription = null,
+                                tint = palette.textMuted,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 SidebarFooterChip(
-                    icon = Icons.Rounded.Star,
+                    icon = LucideIcons.Brain,
                     label = IGseekTab.MEMORY.label(lang),
                     selected = state.activeTab == IGseekTab.MEMORY,
                     onClick = {
@@ -515,7 +543,7 @@ private fun IGseekSidebarDrawer(
                     modifier = Modifier.weight(1f)
                 )
                 SidebarFooterChip(
-                    icon = Icons.Rounded.Settings,
+                    icon = LucideIcons.Settings,
                     label = IGseekTab.SETTINGS.label(lang),
                     selected = state.activeTab == IGseekTab.SETTINGS,
                     onClick = {
@@ -532,12 +560,12 @@ private fun IGseekSidebarDrawer(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(13.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .clickable {
                         viewModel.selectTab(IGseekTab.SETTINGS)
                         onClose()
                     },
-                shape = RoundedCornerShape(13.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = palette.chipBg,
                 border = BorderStroke(1.dp, palette.glassBorder)
             ) {
@@ -548,30 +576,31 @@ private fun IGseekSidebarDrawer(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = session?.displayName?.ifBlank { "IGseek User" } ?: "Гость",
+                            text = session?.displayName?.ifBlank { "IGseek User" } ?: "IGseek",
                             style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
                             color = palette.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = if (state.subscription.isPro) "IGseek Pro" else (session?.email ?: ""),
+                            text = session?.email ?: "",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (state.subscription.isPro) palette.brand else palette.textMuted,
+                            color = palette.textMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (state.subscription.isPro) palette.brandSoft else palette.surfaceElevated,
-                        border = BorderStroke(1.dp, if (state.subscription.isPro) palette.brandBorder else palette.glassBorder)
+                        shape = RoundedCornerShape(50),
+                        color = if (state.subscription.isPro) palette.brand else palette.surfaceElevated,
+                        border = BorderStroke(1.dp, if (state.subscription.isPro) palette.brand else palette.glassBorder)
                     ) {
                         Text(
                             text = if (state.subscription.isPro) "PRO" else "FREE",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (state.subscription.isPro) palette.brand else palette.textMuted,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            color = if (state.subscription.isPro) palette.brandOn else palette.textMuted,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                 }
@@ -590,7 +619,7 @@ private fun IGseekSidebarDrawer(
                     onValueChange = { newProjectName = it },
                     placeholder = { Text(if (isEn) "Work, Study, Startup…" else "Работа, Учёба, Стартап…") },
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -611,6 +640,131 @@ private fun IGseekSidebarDrawer(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProSubscriptionSheet(
+    state: IGseekUiState,
+    viewModel: IGseekViewModel,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+    val sub = state.subscription
+    var paymentMethod by remember { mutableStateOf(2) } // 2 = СБП, 11 = Карта
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = palette.sidebarBg,
+        contentColor = palette.textPrimary
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.brandSoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(LucideIcons.Crown, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                }
+                Column {
+                    Text("IGseek Pro", style = MaterialTheme.typography.titleLarge, color = palette.textPrimary)
+                    Text(
+                        text = "${sub.priceRub} ₽ / ${sub.durationDays} дней",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textMuted
+                    )
+                }
+            }
+
+            IGseekGlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                contentPadding = 14.dp
+            ) {
+                val perks = listOf(
+                    "Продвинутый уровень моделей без жёстких лимитов",
+                    "Улучшенная генерация изображений и быстрый веб-поиск",
+                    "Приоритетная работа Flow и Engine"
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    perks.forEach { perk ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp))
+                            Text(perk, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                    }
+                }
+            }
+
+            if (!sub.isPro) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IGseekGlassChip(
+                        label = "СБП (QR)",
+                        selected = paymentMethod == 2,
+                        onClick = { paymentMethod = 2 },
+                        modifier = Modifier.weight(1f)
+                    )
+                    IGseekGlassChip(
+                        label = "Банковская карта",
+                        selected = paymentMethod == 11,
+                        onClick = { paymentMethod = 11 },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Button(
+                    onClick = { viewModel.startProCheckout(paymentMethod) },
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.brand,
+                        contentColor = palette.brandOn
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Icon(LucideIcons.CreditCard, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Перейти к оплате · ${sub.priceRub} ₽", fontWeight = FontWeight.SemiBold)
+                }
+
+                val pendingTxn = sub.pendingTxnId
+                if (!pendingTxn.isNullOrBlank()) {
+                    OutlinedButton(
+                        onClick = { viewModel.verifyPendingPayment() },
+                        shape = RoundedCornerShape(50),
+                        border = BorderStroke(1.dp, palette.glassBorder),
+                        modifier = Modifier.fillMaxWidth().height(44.dp)
+                    ) {
+                        Text("Проверить статус оплаты", color = palette.textPrimary)
+                    }
+                }
+            } else {
+                Text(
+                    text = if (sub.daysLeft > 3650) "Подписка IGseek Pro активна бессрочно." else "Подписка активна · Осталось дней: ${sub.daysLeft}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.brand
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+        }
     }
 }
 
@@ -636,9 +790,9 @@ private fun SidebarNavRow(
             imageVector = icon,
             contentDescription = label,
             tint = if (selected) palette.brand else palette.textMuted,
-            modifier = Modifier.size(19.dp)
+            modifier = Modifier.size(18.dp)
         )
-        Spacer(Modifier.width(11.dp))
+        Spacer(Modifier.width(12.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
@@ -648,7 +802,7 @@ private fun SidebarNavRow(
         )
         if (!badge.isNullOrBlank()) {
             Surface(
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(50),
                 color = palette.chipBg,
                 border = BorderStroke(1.dp, palette.glassBorder)
             ) {
@@ -656,7 +810,7 @@ private fun SidebarNavRow(
                     text = badge,
                     style = MaterialTheme.typography.labelSmall,
                     color = palette.textMuted,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                 )
             }
         }
@@ -703,84 +857,14 @@ private fun SidebarFooterChip(
     }
 }
 
-@Composable
-private fun SyncDot(status: CloudSyncStatus) {
-    val color = when (status) {
-        CloudSyncStatus.SYNCED -> Color(0xFF10B981)
-        CloudSyncStatus.SYNCING -> Color(0xFFF59E0B)
-        CloudSyncStatus.OFFLINE, CloudSyncStatus.ERROR -> Color(0xFFEF4444)
-        CloudSyncStatus.LOCAL_ONLY, CloudSyncStatus.IDLE -> Color(0xFF71717A)
-    }
-    Box(
-        modifier = Modifier
-            .size(7.dp)
-            .clip(CircleShape)
-            .background(color)
-    )
-}
-
-@Composable
-private fun IGseekBottomBar(
-    state: IGseekUiState,
-    onSelectTab: (IGseekTab) -> Unit
-) {
-    val palette = LocalIGseekPalette.current
-    val lang = state.layoutPrefs.language
-    val tabs = state.layoutPrefs.tabOrder.ifEmpty {
-        listOf(IGseekTab.CHAT, IGseekTab.FLOW, IGseekTab.LIBRARY, IGseekTab.ENGINE)
-    }
-
-    Surface(
-        color = palette.sidebarBg.copy(alpha = 0.96f),
-        border = BorderStroke(1.dp, palette.divider)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            tabs.forEach { tab ->
-                val selected = state.activeTab == tab
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) palette.brandSoft else Color.Transparent)
-                        .clickable { onSelectTab(tab) }
-                        .padding(vertical = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Icon(
-                        imageVector = tabIcon(tab),
-                        contentDescription = tab.label(lang),
-                        tint = if (selected) palette.brand else palette.textMuted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        text = tab.label(lang),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (selected) palette.textPrimary else palette.textMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-    }
-}
-
-fun tabIcon(tab: IGseekTab): ImageVector = when (tab) {
-    IGseekTab.CHAT -> Icons.Rounded.Home
-    IGseekTab.FLOW -> Icons.Rounded.PlayArrow
-    IGseekTab.LIBRARY -> Icons.Rounded.List
-    IGseekTab.SAVED -> Icons.Rounded.Favorite
-    IGseekTab.ENGINE -> Icons.Rounded.Build
-    IGseekTab.WAVE -> Icons.Rounded.Call
-    IGseekTab.DOCS -> Icons.Rounded.Info
-    IGseekTab.MEMORY -> Icons.Rounded.Star
-    IGseekTab.SETTINGS -> Icons.Rounded.Settings
+fun tabLucideIcon(tab: IGseekTab): ImageVector = when (tab) {
+    IGseekTab.CHAT -> LucideIcons.MessageSquare
+    IGseekTab.FLOW -> LucideIcons.Workflow
+    IGseekTab.LIBRARY -> LucideIcons.Library
+    IGseekTab.SAVED -> LucideIcons.Bookmark
+    IGseekTab.ENGINE -> LucideIcons.Code2
+    IGseekTab.WAVE -> LucideIcons.AudioLines
+    IGseekTab.DOCS -> LucideIcons.FileCode
+    IGseekTab.MEMORY -> LucideIcons.Brain
+    IGseekTab.SETTINGS -> LucideIcons.Settings
 }

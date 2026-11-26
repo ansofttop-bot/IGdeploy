@@ -578,12 +578,13 @@
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
-/* Composer shell: strict containment and touch ergonomics without distorting internal symmetric padding. */
+/* Composer shell: strict containment and touch ergonomics without clipping wrapped buttons. */
 .igseek-chat-composer {
   width: 100%;
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
+  overflow: visible;
 }
 
 .igseek-chat-composer button {

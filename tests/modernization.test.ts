@@ -13,12 +13,30 @@ import {
 } from "../src/lib/object-storage";
 import { buildSanitizedSandboxEnv, isWithinDirectory } from "../src/lib/flow-terminal";
 import {
+  getAiRouterHealthSummary,
   isProviderCircuitOpen,
-  loadCustomAiProviders,
   recordProviderFailure,
   recordProviderSuccess,
   resetAiCircuitBreakers,
 } from "../src/lib/ai-router";
+import {
+  APIMIRA_DEEPSEEK_CHAT,
+  APIMIRA_DEEPSEEK_F1,
+  APIMIRA_DEEPSEEK_INSTINCT,
+  APIMIRA_DEEPSEEK_REASONER,
+  DEEPSEEK_DIRECT_CHAT,
+  DEEPSEEK_DIRECT_F1,
+  DEEPSEEK_DIRECT_INSTINCT,
+  DEEPSEEK_DIRECT_REASONER,
+  getApimiraFallbackChain,
+} from "../src/lib/deepseek-models";
+import {
+  PRO_HOURLY_PAID_IMAGE_LIMIT,
+  PRO_HOURLY_WINDOW_MS,
+  evaluateProHourlyImageRoute,
+  recordProHourlyImageGeneration,
+  resetProHourlyImageTracker,
+} from "../src/lib/photo-limits-server";
 import { signSubscriptionProof, verifySubscriptionProof } from "../src/lib/subscription-server";
 
 function signTestJwt(
@@ -172,7 +190,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
   assert.equal(isWithinDirectory("/tmp/ws-evil/file.txt", "/tmp/ws"), false);
 });
 
-test("AI Router: circuit breaker opens on billing/transient errors and isolates Free vs Pro", () => {
+test("AI Router & DeepSeek < V4.0: circuit breaker works and Pro models stay strictly below V4.0", () => {
   resetAiCircuitBreakers();
   recordProviderFailure("deepseek-direct", 402, 1000);
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), true);
@@ -180,22 +198,55 @@ test("AI Router: circuit breaker opens on billing/transient errors and isolates 
   recordProviderSuccess("deepseek-direct");
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), false);
 
-  const prev = process.env.AI_CUSTOM_PROVIDERS_JSON;
-  try {
-    process.env.AI_CUSTOM_PROVIDERS_JSON = JSON.stringify([
-      { id: "custom-free-1", tier: "free", baseUrl: "http://localhost:11434/v1", model: "qwen2.5:7b" },
-      { id: "custom-pro-1", tier: "pro", baseUrl: "http://localhost:8000/v1", model: "deepseek-r1:32b" },
-    ]);
-    const freeList = loadCustomAiProviders("free");
-    const proList = loadCustomAiProviders("pro");
-    assert.ok(freeList.some((p) => p.id === "custom-free-1"));
-    assert.ok(!freeList.some((p) => p.id === "custom-pro-1"));
-    assert.ok(proList.some((p) => p.id === "custom-pro-1"));
-    assert.ok(!proList.some((p) => p.id === "custom-free-1"));
-  } finally {
-    if (prev === undefined) delete process.env.AI_CUSTOM_PROVIDERS_JSON;
-    else process.env.AI_CUSTOM_PROVIDERS_JSON = prev;
+  const summary = getAiRouterHealthSummary();
+  assert.ok(summary && typeof summary === "object");
+
+  const allProDeepSeekModels = [
+    DEEPSEEK_DIRECT_INSTINCT,
+    DEEPSEEK_DIRECT_CHAT,
+    DEEPSEEK_DIRECT_F1,
+    DEEPSEEK_DIRECT_REASONER,
+    APIMIRA_DEEPSEEK_INSTINCT,
+    APIMIRA_DEEPSEEK_CHAT,
+    APIMIRA_DEEPSEEK_F1,
+    APIMIRA_DEEPSEEK_REASONER,
+    ...getApimiraFallbackChain("instinct", false),
+    ...getApimiraFallbackChain("instinct", true),
+  ];
+  assert.ok(allProDeepSeekModels.length >= 8);
+  for (const modelId of allProDeepSeekModels) {
+    assert.doesNotMatch(modelId, /v4(\.|$)/i, `Pro DeepSeek model must be < V4.0, got ${modelId}`);
   }
+});
+
+test("Pro Image Anti-Abuse: allows 4 GPT Image 2 generations per sliding hour, then falls back to Pollinations and auto-recovers", () => {
+  const actor = "pro-user-antiabuse-test";
+  resetProHourlyImageTracker(actor);
+  const t0 = 1_700_000_000_000;
+
+  assert.equal(PRO_HOURLY_PAID_IMAGE_LIMIT, 4);
+
+  // 4 generations within the hour use GPT Image 2
+  for (let i = 0; i < 4; i++) {
+    const route = evaluateProHourlyImageRoute(actor, t0 + i * 60_000);
+    assert.equal(route.usePollinationsFallback, false);
+    assert.equal(route.remainingPaid, 4 - i);
+    recordProHourlyImageGeneration(actor, t0 + i * 60_000);
+  }
+
+  // 5th generation inside the rolling hour switches to Pollinations with user-facing notice info
+  const blocked = evaluateProHourlyImageRoute(actor, t0 + 10 * 60_000);
+  assert.equal(blocked.usePollinationsFallback, true);
+  assert.equal(blocked.remainingPaid, 0);
+  assert.ok(blocked.retryAfterMinutes >= 49 && blocked.retryAfterMinutes <= 51);
+  assert.equal(blocked.resetAt, t0 + PRO_HOURLY_WINDOW_MS);
+
+  // Pollinations fallback does NOT record GPT Image 2 timestamps; once oldest timestamp ages past 60m, GPT Image 2 automatically returns
+  const recovered = evaluateProHourlyImageRoute(actor, t0 + PRO_HOURLY_WINDOW_MS + 1_000);
+  assert.equal(recovered.usePollinationsFallback, false);
+  assert.equal(recovered.remainingPaid, 1);
+
+  resetProHourlyImageTracker(actor);
 });
 
 test("Subscription HMAC Proof: bound strictly to owner UID and rejects tampering", () => {

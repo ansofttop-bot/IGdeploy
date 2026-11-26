@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -18,10 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Call
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -38,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
+import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
@@ -66,17 +64,17 @@ fun DocsScreen(
             ),
             DocGuideItem(
                 "Web Search Grounding",
-                "Enable the Search toggle inside the composer to fetch live web snippets and clickable sources directly inside the answer.",
+                "Tap the Globe icon in the composer to fetch live web snippets and clickable sources directly inside the answer.",
                 "Find the latest developments in solid-state batteries and summarize key milestones."
             ),
             DocGuideItem(
                 "Image Creation",
-                "Toggle Image mode in the composer (or type /img followed by a prompt) to generate high-resolution visuals and save them to Library.",
-                "/img minimal obsidian dark wallpaper with subtle crimson geometric light waves"
+                "Open the + menu in the composer and enable Image mode (or type /img followed by a prompt) to generate visuals and save them to Library.",
+                "/img minimal obsidian dark wallpaper with subtle geometric light waves"
             ),
             DocGuideItem(
                 "Reasoning Mode & F1",
-                "Turn on Think mode or switch to IGseek F1 to view the step-by-step reasoning accordion above the final answer.",
+                "Enable Think mode from the + menu or switch to IGseek F1 to view the step-by-step reasoning accordion above the final answer.",
                 "Solve a classic logic puzzle step by step and explain each deduction clearly."
             ),
             DocGuideItem(
@@ -89,22 +87,22 @@ fun DocsScreen(
         listOf(
             DocGuideItem(
                 "Прямая работа по API и облако",
-                "IGseek для Android делает прямые запросы к ИИ API и синхронизирует чаты, проекты, память, Library и Engine напрямую с вашим аккаунтом — без привязки к сайту.",
+                "IGseek для Android делает прямые запросы к API и синхронизирует чаты, проекты, память, Library и Engine напрямую с вашим аккаунтом.",
                 "Объясни главные преимущества нативных мобильных приложений перед веб-обёртками."
             ),
             DocGuideItem(
                 "Веб-поиск с источниками",
-                "Включите переключатель «Поиск» в поле ввода чата, чтобы IGseek находил актуальные данные в сети и прикреплял кликабельные источники.",
+                "Нажмите на значок глобуса в строке ввода, чтобы IGseek находил актуальные данные в сети и прикреплял кликабельные источники.",
                 "Найди актуальные факты о развитии твердотельных аккумуляторов и сделай краткую сводку."
             ),
             DocGuideItem(
                 "Генерация изображений",
-                "Нажмите «Фото» в строке ввода или начните запрос с /img — картинка создастся напрямую и автоматически сохранится в Library.",
+                "Откройте меню «+» в строке ввода и выберите «Изображение» (или начните запрос с /img) — картинка создастся напрямую и сохранится в Library.",
                 "/img минималистичная тёмная 3D-иллюстрация красной лисы в стиле матового стекла"
             ),
             DocGuideItem(
                 "Режим мышления и IGseek F1",
-                "Активируйте «Мысли» или выберите модель IGseek F1, чтобы видеть подробный ход рассуждений перед финальным ответом.",
+                "Включите «Мысли» в меню «+» или выберите модель IGseek F1, чтобы видеть подробный ход рассуждений перед финальным ответом.",
                 "Разбери по шагам сложную логическую задачу и проверь ответ на ошибки."
             ),
             DocGuideItem(
@@ -119,6 +117,7 @@ fun DocsScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -127,7 +126,12 @@ fun DocsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onOpenDrawer) {
-                Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                Icon(
+                    imageVector = LucideIcons.Menu,
+                    contentDescription = "Menu",
+                    tint = palette.textPrimary,
+                    modifier = Modifier.size(21.dp)
+                )
             }
             IGseekFoxLogo(size = 20.dp)
             Spacer(Modifier.width(8.dp))
@@ -154,26 +158,31 @@ fun DocsScreen(
                 IGseekGlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
-                    contentPadding = 15.dp
+                    contentPadding = 16.dp
                 ) {
                     Text(guide.title, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
                     Spacer(Modifier.height(5.dp))
                     Text(guide.description, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(11.dp))
+                            .clip(RoundedCornerShape(50))
                             .clickable { viewModel.startPromptInChat(guide.promptToTry) },
-                        shape = RoundedCornerShape(11.dp),
+                        shape = RoundedCornerShape(50),
                         color = palette.brandSoft,
                         border = BorderStroke(1.dp, palette.brandBorder)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp))
+                            Icon(
+                                imageVector = LucideIcons.Play,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(14.dp)
+                            )
                             Text(
                                 text = if (isEn) "Try in Chat" else "Попробовать в чате",
                                 style = MaterialTheme.typography.labelMedium,
@@ -200,6 +209,7 @@ fun WaveScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -208,7 +218,12 @@ fun WaveScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onOpenDrawer) {
-                Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.textPrimary)
+                Icon(
+                    imageVector = LucideIcons.Menu,
+                    contentDescription = "Menu",
+                    tint = palette.textPrimary,
+                    modifier = Modifier.size(21.dp)
+                )
             }
             IGseekFoxLogo(size = 20.dp)
             Spacer(Modifier.width(8.dp))
@@ -230,19 +245,24 @@ fun WaveScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    IGseekFoxLogo(size = 64.dp, showGlow = true)
+                    IGseekFoxLogo(size = 64.dp, showGlow = palette.isDark)
                     Spacer(Modifier.height(12.dp))
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(50),
                         color = palette.brandSoft,
                         border = BorderStroke(1.dp, palette.brandBorder)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Icon(Icons.Rounded.Call, contentDescription = null, tint = palette.brand, modifier = Modifier.size(13.dp))
+                            Icon(
+                                imageVector = LucideIcons.AudioLines,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(13.dp)
+                            )
                             Text(
                                 text = if (isEn) "COMING SOON" else "СКОРО",
                                 style = MaterialTheme.typography.labelSmall,
@@ -271,14 +291,19 @@ fun WaveScreen(
                     Spacer(Modifier.height(18.dp))
                     Button(
                         onClick = onBackToChat,
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(50),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = palette.brand,
                             contentColor = palette.brandOn
                         ),
-                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
                     ) {
-                        Text(if (isEn) "Open Chat with Voice Input" else "Перейти в чат с голосовым вводом", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = if (isEn) "Open Chat with Voice Input" else "Перейти в чат с голосовым вводом",
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }

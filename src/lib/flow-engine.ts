@@ -19,7 +19,7 @@ import {
   resolveEffectiveTemperature,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callMistralFreeText } from "./mistral-free";
+import { callGeminiFreeText } from "./gemini-free";
 import { routeTextCompletion } from "./ai-router";
 
 export type FlowModelId = "instinct" | "chat" | "f1";
@@ -264,15 +264,13 @@ Rules:
 
   if (context.useFreeModel) {
     try {
-      const freeText = await callMistralFreeText({
+      const freeText = await callGeminiFreeText({
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        temperature: temperature ?? 0.4,
         maxTokens: 2048,
         jsonMode: true,
-        timeoutMs: 25_000,
       });
       if (freeText) {
         const clean = freeText.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/```json\s*|```/gi, "").trim();
@@ -283,7 +281,7 @@ Rules:
         }
       }
     } catch (e) {
-      console.warn("Mistral Free planning failed:", e);
+      console.warn("Gemini Free planning failed:", e);
     }
     const slug = sanitizeLibraryFilename(goal.slice(0, 28)).replace(/\.[^.]+$/, "") || "flow_report";
     return {

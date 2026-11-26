@@ -153,8 +153,26 @@ async function extractDataUrlFromResponse(res: Response): Promise<string> {
   throw new Error("GPT Image 2 did not return image bytes");
 }
 
+function composeSignal(externalSignal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+  const ac = new AbortController();
+  const onAbort = () => ac.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) ac.abort(externalSignal.reason);
+    else externalSignal.addEventListener("abort", onAbort, { once: true });
+  }
+  const timer = setTimeout(() => ac.abort(new Error("gpt_image_timeout")), IMAGE_TIMEOUT_MS);
+  return {
+    signal: ac.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 export async function generateImageWithGptImage2(
   prompt: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{ dataUrl: string; source: "apimira-gpt-image-2" }> {
   const { apiKey, baseUrl } = getApimiraConfig();
   const cleanPrompt = prompt.trim().slice(0, MAX_PROMPT_LENGTH);
@@ -169,30 +187,36 @@ export async function generateImageWithGptImage2(
     size: "1024x1024",
   });
 
-  const res = await fetchWithTransientRetry(`${baseUrl}/images/generations`, () => ({
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: payload,
-    signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-  }));
+  const { signal, cleanup } = composeSignal(options?.signal);
+  try {
+    const res = await fetchWithTransientRetry(`${baseUrl}/images/generations`, () => ({
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: payload,
+      signal,
+    }));
 
-  if (!res.ok) {
-    throw new Error(await parseApimiraError(res));
+    if (!res.ok) {
+      throw new Error(await parseApimiraError(res));
+    }
+
+    const dataUrl = await extractDataUrlFromResponse(res);
+    return {
+      dataUrl,
+      source: "apimira-gpt-image-2",
+    };
+  } finally {
+    cleanup();
   }
-
-  const dataUrl = await extractDataUrlFromResponse(res);
-  return {
-    dataUrl,
-    source: "apimira-gpt-image-2",
-  };
 }
 
 export async function editImageWithGptImage2(
   prompt: string,
   sourceImages: SourceImageInput[],
+  options?: { signal?: AbortSignal },
 ): Promise<{ dataUrl: string; source: "apimira-gpt-image-2" }> {
   const { apiKey, baseUrl } = getApimiraConfig();
   const cleanPrompt = prompt.trim().slice(0, MAX_PROMPT_LENGTH);
@@ -226,24 +250,29 @@ export async function editImageWithGptImage2(
     files,
   );
 
-  const res = await fetchWithTransientRetry(`${baseUrl}/images/edits`, () => ({
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": contentType,
-      "Content-Length": String(body.length),
-    },
-    body: new Uint8Array(body),
-    signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS),
-  }));
+  const { signal, cleanup } = composeSignal(options?.signal);
+  try {
+    const res = await fetchWithTransientRetry(`${baseUrl}/images/edits`, () => ({
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": contentType,
+        "Content-Length": String(body.length),
+      },
+      body: new Uint8Array(body),
+      signal,
+    }));
 
-  if (!res.ok) {
-    throw new Error(await parseApimiraError(res));
+    if (!res.ok) {
+      throw new Error(await parseApimiraError(res));
+    }
+
+    const dataUrl = await extractDataUrlFromResponse(res);
+    return {
+      dataUrl,
+      source: "apimira-gpt-image-2",
+    };
+  } finally {
+    cleanup();
   }
-
-  const dataUrl = await extractDataUrlFromResponse(res);
-  return {
-    dataUrl,
-    source: "apimira-gpt-image-2",
-  };
 }
