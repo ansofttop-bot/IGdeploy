@@ -127,27 +127,30 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun dismissIncomingShare() = _state.update { it.copy(incomingShare = null) }
 
     fun applyIncomingShareToChat(payload: SharedIncomingPayload) {
+        val att = payload.attachment
+        val sharedText = payload.text
         _state.update {
             it.copy(
                 incomingShare = null,
                 activeTab = IGseekTab.CHAT,
-                pendingAttachments = if (payload.attachment != null) it.pendingAttachments + payload.attachment else it.pendingAttachments
+                pendingAttachments = if (att != null) it.pendingAttachments + att else it.pendingAttachments
             )
         }
-        if (!payload.text.isNullOrBlank()) sendMessage(payload.text)
+        if (!sharedText.isNullOrBlank()) sendMessage(sharedText)
         else _state.update { it.copy(toastMessage = "Вложение добавлено в чат") }
     }
 
     fun saveIncomingShareToLibrary(payload: SharedIncomingPayload) {
         _state.update { it.copy(incomingShare = null, activeTab = IGseekTab.LIBRARY) }
         val att = payload.attachment
+        val sharedText = payload.text
         if (att != null) {
             val rawB64 = att.dataUrl.substringAfter("base64,", "")
             val bytes = runCatching { android.util.Base64.decode(rawB64, android.util.Base64.DEFAULT) }
                 .getOrElse { att.dataUrl.toByteArray() }
             uploadToLibrary(att.name, att.mimeType, bytes, att.dataUrl)
-        } else if (!payload.text.isNullOrBlank()) {
-            uploadToLibrary("shared_note_${System.currentTimeMillis()}.txt", "text/plain", payload.text.toByteArray(Charsets.UTF_8), "")
+        } else if (!sharedText.isNullOrBlank()) {
+            uploadToLibrary("shared_note_${System.currentTimeMillis()}.txt", "text/plain", sharedText.toByteArray(Charsets.UTF_8), "")
         }
     }
 

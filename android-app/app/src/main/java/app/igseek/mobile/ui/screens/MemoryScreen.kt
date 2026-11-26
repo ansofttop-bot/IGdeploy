@@ -116,14 +116,15 @@ fun MemoryScreen(
                 }
             }
 
+            val memoryError = state.memoryError
             if (state.memoryLoading) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
                     }
                 }
-            } else if (!state.memoryError.isNullOrBlank()) {
-                item { Text(state.memoryError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+            } else if (!memoryError.isNullOrBlank()) {
+                item { Text(memoryError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
             } else if (state.memories.isEmpty()) {
                 item {
                     Text(

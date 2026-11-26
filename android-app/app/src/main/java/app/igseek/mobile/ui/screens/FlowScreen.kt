@@ -104,10 +104,11 @@ fun FlowScreen(
                 }
             }
 
-            if (!flow.error.isNullOrBlank()) {
+            val flowError = flow.error
+            if (!flowError.isNullOrBlank()) {
                 item {
                     Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f), modifier = Modifier.fillMaxWidth()) {
-                        Text(flow.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
+                        Text(flowError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(14.dp))
                     }
                 }
             }

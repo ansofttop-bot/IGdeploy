@@ -156,12 +156,13 @@ fun LibraryScreen(
                 }
             }
 
+            val libraryError = state.libraryError
             if (state.libraryLoading) {
                 Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-            } else if (!state.libraryError.isNullOrBlank()) {
-                Text(state.libraryError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            } else if (!libraryError.isNullOrBlank()) {
+                Text(libraryError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
             } else if (filtered.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
@@ -205,8 +206,9 @@ fun LibraryScreen(
                             modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(12.dp))
                         )
                     }
-                    if (!item.content.isNullOrBlank()) {
-                        Text(item.content, style = MaterialTheme.typography.bodyMedium)
+                    val itemContent = item.content
+                    if (!itemContent.isNullOrBlank()) {
+                        Text(itemContent, style = MaterialTheme.typography.bodyMedium)
                     } else if (bitmap == null) {
                         Text(
                             text = "Тип: ${item.mimeType}\nРазмер: ${formatSize(item.sizeBytes)}\nИсточник: ${item.source}",
@@ -257,6 +259,6 @@ private fun formatSize(bytes: Long): String {
     return when {
         bytes < 1024 -> "$bytes Б"
         bytes < 1024 * 1024 -> "${bytes / 1024} КБ"
-        else -> String.format("%.1f МБ", bytes / (1024.0 * 1024.0))
+        else -> String.format(java.util.Locale.US, "%.1f МБ", bytes / (1024.0 * 1024.0))
     }
 }

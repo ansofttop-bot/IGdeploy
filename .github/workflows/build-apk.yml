@@ -60,7 +60,7 @@ jobs:
           if [ -n "$INPUT_API_URL" ]; then
             EXTRA_ARGS="-PIGSEEK_API_BASE_URL=${INPUT_API_URL}"
           fi
-          gradle -p android-app testDebugUnitTest assembleDebug $EXTRA_ARGS --no-daemon --stacktrace
+          gradle -p android-app testDebugUnitTest assembleDebug $EXTRA_ARGS --no-daemon --console=plain
 
       - name: Stage & Verify Compiled APK
         run: |

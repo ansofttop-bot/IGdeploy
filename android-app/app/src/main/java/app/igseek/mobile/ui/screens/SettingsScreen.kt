@@ -154,9 +154,12 @@ fun SettingsScreen(
 
             item {
                 SettingsSectionCard(title = "Внешний вид IGseek") {
-                    ToggleRow("Тёмная тема", "Фирменная тёмная палитра IGseek", prefs.darkTheme) { en ->
-                        viewModel.updateLayoutPrefs { it.copy(darkTheme = en) }
-                    }
+                    ToggleRow(
+                        title = "Тёмная тема",
+                        subtitle = "Фирменная тёмная палитра IGseek",
+                        checked = prefs.darkTheme,
+                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(darkTheme = en) } }
+                    )
                     Spacer(Modifier.height(6.dp))
                     Text("Цветовой акцент", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -181,21 +184,30 @@ fun SettingsScreen(
 
             item {
                 SettingsSectionCard(title = "Настройка мобильного интерфейса") {
-                    ToggleRow("Компактная плотность чата", "Больше сообщений на экране смартфона", prefs.compactDensity) { en ->
-                        viewModel.updateLayoutPrefs { it.copy(compactDensity = en) }
-                    }
-                    ToggleRow("Быстрые подсказки на пустом экране", "Показывать готовые кнопки запуска в новом чате", prefs.showQuickPrompts) { en ->
-                        viewModel.updateLayoutPrefs { it.copy(showQuickPrompts = en) }
-                    }
-                    ToggleRow("Тактильный отклик", "Вибрация при отправке сообщений", prefs.hapticsEnabled) { en ->
-                        viewModel.updateLayoutPrefs { it.copy(hapticsEnabled = en) }
-                    }
+                    ToggleRow(
+                        title = "Компактная плотность чата",
+                        subtitle = "Больше сообщений на экране смартфона",
+                        checked = prefs.compactDensity,
+                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(compactDensity = en) } }
+                    )
+                    ToggleRow(
+                        title = "Быстрые подсказки на пустом экране",
+                        subtitle = "Показывать готовые кнопки запуска в новом чате",
+                        checked = prefs.showQuickPrompts,
+                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(showQuickPrompts = en) } }
+                    )
+                    ToggleRow(
+                        title = "Тактильный отклик",
+                        subtitle = "Вибрация при отправке сообщений",
+                        checked = prefs.hapticsEnabled,
+                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(hapticsEnabled = en) } }
+                    )
                     ToggleRow(
                         title = "Биометрическая блокировка входа",
                         subtitle = "Отпечаток пальца или Face ID при открытии приложения",
                         checked = prefs.biometricLockEnabled,
-                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(biometricLockEnabled = en) } },
-                        leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                        onCheckedChange = { en -> viewModel.updateLayoutPrefs { it.copy(biometricLockEnabled = en) } }
                     )
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -255,8 +267,8 @@ private fun ToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    leadingIcon: (@Composable () -> Unit)? = null
+    leadingIcon: (@Composable () -> Unit)? = null,
+    onCheckedChange: (Boolean) -> Unit
 ) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (leadingIcon != null) leadingIcon()

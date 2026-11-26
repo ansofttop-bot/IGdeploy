@@ -193,9 +193,10 @@ fun AuthScreen(
                     shape = RoundedCornerShape(14.dp)
                 )
 
-                if (!state.authError.isNullOrBlank()) {
+                val authError = state.authError
+                if (!authError.isNullOrBlank()) {
                     Text(
-                        text = state.authError,
+                        text = authError,
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelMedium
                     )
