@@ -32,9 +32,32 @@ function getGeminiClient(): GoogleGenAI | null {
 }
 
 const DEFAULT_TRANSCRIBE_MODELS = ["gemini-3.5-transcribe", "gemini-2.5-flash"];
+const TRANSCRIBE_WINDOW_MS = 5 * 60_000;
+const TRANSCRIBE_MAX_REQ_PER_WINDOW = 25;
+const transcribeRateBuckets = new Map<string, number[]>();
+
+function isTranscribeRateLimited(req: Request): boolean {
+  const fwd = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "unknown";
+  const ip = fwd.split(",")[0].trim() || "unknown";
+  const now = Date.now();
+  const recent = (transcribeRateBuckets.get(ip) || []).filter((ts) => now - ts < TRANSCRIBE_WINDOW_MS);
+  if (recent.length >= TRANSCRIBE_MAX_REQ_PER_WINDOW) {
+    transcribeRateBuckets.set(ip, recent);
+    return true;
+  }
+  recent.push(now);
+  transcribeRateBuckets.set(ip, recent);
+  return false;
+}
 
 export async function handleTranscribePost(req: Request): Promise<Response> {
   try {
+    if (isTranscribeRateLimited(req)) {
+      return Response.json(
+        { error: "Too many voice transcription requests. Please try again in a few minutes." },
+        { status: 429 },
+      );
+    }
     const body = (await req.json().catch(() => null)) as {
       audioBase64?: string;
       mimeType?: string;

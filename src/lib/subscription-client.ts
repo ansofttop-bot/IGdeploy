@@ -126,17 +126,22 @@ export async function startPlategaCheckout(
   const returnUrl = `${origin}/app`;
   const failedUrl = `${origin}/app`;
 
+  const fiveMinBucket = Math.floor(Date.now() / (5 * 60_000));
+  const idempotencyKey = `web_${options.uid.slice(0, 12)}_m${options.paymentMethod}_b${fiveMinBucket}`;
+
   const res = await fetch("/api/create-payment", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
+      "Idempotency-Key": idempotencyKey,
     },
     body: JSON.stringify({
       paymentMethod: options.paymentMethod,
       email: options.email,
       returnUrl,
       failedUrl,
+      idempotencyKey,
     }),
   });
 

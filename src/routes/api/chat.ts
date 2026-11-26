@@ -21,8 +21,8 @@ import { isChinaSensitive } from "../../lib/sensitive-topics";
 import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/apimira-image";
 import {
   buildReferenceAwarePollinationsPrompt,
-  callMistralFreeChat,
 } from "../../lib/mistral-free";
+import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithPollinations } from "../../lib/pollinations-image";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
 import {
@@ -1736,7 +1736,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   if (streamClosed || streamAbort.signal.aborted) break;
                   try {
                     const apiMsgs = toApiMessages(att.msgs);
-                    const upstream = await callMistralFreeChat({
+                    const routed = await routeChatStream({
+                      tier: "free",
+                      model: parsed.model,
+                      reasoning: false,
                       messages: apiMsgs,
                       tools: att.useTools && att.useTools.length ? att.useTools : undefined,
                       temperature: effectiveTemperature,
@@ -1744,26 +1747,40 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       hasVisionInput: hasEditableImageContext,
                       signal: streamAbort.signal,
                     });
-                    const outcome = await consumeOpenAiSse(upstream, forwardText);
+                    const outcome = await consumeOpenAiSse(routed.response, forwardText);
                     if (outcome.assistantText || outcome.toolCalls.length > 0) {
                       return outcome;
                     }
-                    lastErr = new Error("Mistral Free returned an empty response");
+                    lastErr = new Error("Free AI provider returned an empty response");
                   } catch (mistralErr) {
                     lastErr = mistralErr;
                     const errText = mistralErr instanceof Error ? mistralErr.message : String(mistralErr);
-                    console.warn("[chat] Mistral Free attempt failed:", errText);
+                    console.warn("[chat] Free tier router attempt failed:", errText);
                     // Never double-hit a rate-limited or timed-out free endpoint — fail fast
                     if (/(429|402|rate limit|cooldown|timeout|aborted)/i.test(errText)) {
                       break;
                     }
                   }
                 }
-                throw lastErr instanceof Error ? lastErr : new Error("mistral_free_unavailable");
+                throw lastErr instanceof Error ? lastErr : new Error("free_ai_unavailable");
               }
 
               if (!deepseekKey && !apimiraKey) {
-                throw new Error("DeepSeek / APIMIRA provider is not configured on the server");
+                const routedPro = await routeChatStream({
+                  tier: "pro",
+                  model: parsed.model,
+                  reasoning: effectiveReasoning,
+                  messages: toApiMessages(messages),
+                  tools: tools.length ? tools : undefined,
+                  temperature: effectiveTemperature,
+                  maxTokens: 4096,
+                  hasVisionInput: hasEditableImageContext,
+                  signal: streamAbort.signal,
+                });
+                const outcome = await consumeOpenAiSse(routedPro.response, forwardText);
+                if (outcome.assistantText || outcome.toolCalls.length > 0) {
+                  return outcome;
+                }
               }
 
               if (shouldTryDirectDeepSeek(deepseekKey, apimiraKey)) {

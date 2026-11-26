@@ -53,7 +53,7 @@ export async function handleGitHubAuth(request: Request): Promise<Response> {
             </div>
             <script>
               if (window.opener) {
-                window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR', error: ${JSON.stringify(error)} }, '*');
+                window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR', error: ${JSON.stringify(error)} }, window.location.origin);
               }
             </script>
           </body>
@@ -153,7 +153,7 @@ export async function handleGitHubAuth(request: Request): Promise<Response> {
                   code: ${JSON.stringify(code)},
                   token: ${JSON.stringify(token || "")},
                   user: ${userProfile ? JSON.stringify(userProfile) : "null"}
-                }, '*');
+                }, window.location.origin);
                 setTimeout(() => window.close(), 600);
               } else {
                 window.location.href = '/app';

@@ -20,6 +20,7 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 import { callMistralFreeText } from "./mistral-free";
+import { routeTextCompletion } from "./ai-router";
 
 export type FlowModelId = "instinct" | "chat" | "f1";
 
@@ -120,7 +121,9 @@ async function generateTextWithDeepSeek(
   const temperature = modelTemperatureFor(opts?.model);
 
   if (opts?.useFreeModel) {
-    const freeText = await callMistralFreeText({
+    const routedFree = await routeTextCompletion({
+      tier: "free",
+      modelId: opts?.model,
       messages: [
         { role: "system", content: directive },
         { role: "user", content: prompt },
@@ -129,7 +132,7 @@ async function generateTextWithDeepSeek(
       maxTokens: 3000,
       timeoutMs: 30_000,
     });
-    return freeText ? freeText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : null;
+    return routedFree?.text ? routedFree.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : null;
   }
 
   const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim();

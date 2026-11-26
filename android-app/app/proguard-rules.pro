@@ -1,0 +1,3 @@
+-keep class app.igseek.mobile.data.models.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

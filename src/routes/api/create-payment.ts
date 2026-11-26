@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getUserFromToken } from "../../lib/memory-server";
+import { extractIdempotencyKey, withIdempotentExecution } from "../../lib/idempotency-server";
 import {
   PRO_CURRENCY,
   PRO_PRICE_RUB,
@@ -54,33 +55,51 @@ export async function handleCreatePaymentRequest(request: Request): Promise<Resp
     failedUrlObj.searchParams.set("payment", "failed");
 
     const email = typeof body.email === "string" ? body.email.trim().slice(0, 120) : undefined;
+    const fiveMinBucket = Math.floor(Date.now() / (5 * 60_000));
+    const idemKey =
+      extractIdempotencyKey(request, body) || `auto_m${paymentMethod}_b${fiveMinBucket}`;
 
-    const txn = await createPlategaTransaction({
-      uid: authed.id,
-      email,
-      paymentMethod,
-      returnUrl: returnUrlObj.toString(),
-      failedUrl: failedUrlObj.toString(),
-    });
+    const { value: payload, replayed } = await withIdempotentExecution(
+      {
+        scope: "create_payment",
+        actorId: authed.id,
+        key: idemKey,
+        ttlMs: 5 * 60_000,
+      },
+      async () => {
+        const txn = await createPlategaTransaction({
+          uid: authed.id,
+          email,
+          paymentMethod,
+          returnUrl: returnUrlObj.toString(),
+          failedUrl: failedUrlObj.toString(),
+        });
 
-    await Promise.allSettled([
-      savePaymentRecordInFirestore(authed, {
-        txnId: txn.transactionId,
-        amount: PRO_PRICE_RUB,
-        currency: PRO_CURRENCY,
-        status: txn.status,
-        purpose: "subscription_pro_30d",
-      }),
-      markPendingTransactionOnProfile(authed, txn.transactionId),
-    ]);
+        await Promise.allSettled([
+          savePaymentRecordInFirestore(authed, {
+            txnId: txn.transactionId,
+            amount: PRO_PRICE_RUB,
+            currency: PRO_CURRENCY,
+            status: txn.status,
+            purpose: "subscription_pro_30d",
+          }),
+          markPendingTransactionOnProfile(authed, txn.transactionId),
+        ]);
 
-    return Response.json({
-      transactionId: txn.transactionId,
-      paymentUrl: txn.paymentUrl,
-      status: txn.status,
-      amount: PRO_PRICE_RUB,
-      currency: PRO_CURRENCY,
-    });
+        return {
+          transactionId: txn.transactionId,
+          paymentUrl: txn.paymentUrl,
+          status: txn.status,
+          amount: PRO_PRICE_RUB,
+          currency: PRO_CURRENCY,
+        };
+      },
+    );
+
+    return Response.json(
+      { ...payload, idempotentReplay: replayed },
+      { headers: { "x-idempotent-replay": replayed ? "true" : "false" } },
+    );
   } catch (err: any) {
     console.error("[create-payment] Error:", err);
     return Response.json(

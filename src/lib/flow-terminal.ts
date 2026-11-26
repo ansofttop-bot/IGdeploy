@@ -52,6 +52,49 @@ function sanitizeProjectId(projectId?: string | null): string | null {
   return clean || null;
 }
 
+export function isWithinDirectory(candidatePath: string, baseDir: string): boolean {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedCandidate = path.resolve(candidatePath);
+  if (resolvedCandidate === resolvedBase) return true;
+  const prefix = resolvedBase.endsWith(path.sep) ? resolvedBase : `${resolvedBase}${path.sep}`;
+  return resolvedCandidate.startsWith(prefix);
+}
+
+const SANDBOX_ENV_SECRET_RE =
+  /(KEY|SECRET|TOKEN|PASSWORD|PASS|CREDENTIAL|AUTH|DATABASE|POSTGRES|PG_|PLATEGA|FIREBASE|DEEPSEEK|APIMIRA|GEMINI|OPENAI|MISTRAL|GITHUB|S3_|AWS_|VERCEL)/i;
+
+export function buildSanitizedSandboxEnv(
+  sourceEnv: Record<string, string | undefined>,
+  workspaceDir: string,
+  libraryDir: string,
+  extraEnv?: Record<string, string>,
+): Record<string, string> {
+  const clean: Record<string, string> = {};
+  const allowlist = new Set(["PATH", "LANG", "LC_ALL", "TERM", "TZ", "NODE_ENV"]);
+  for (const [k, v] of Object.entries(sourceEnv)) {
+    if (typeof v !== "string") continue;
+    if (allowlist.has(k) && !SANDBOX_ENV_SECRET_RE.test(k)) {
+      clean[k] = v;
+    }
+  }
+  if (!clean.PATH) {
+    clean.PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  }
+  clean.PAGER = "cat";
+  clean.CI = "true";
+  clean.USER = "arch";
+  clean.HOME = workspaceDir;
+  clean.FLOW_LIBRARY_DIR = libraryDir;
+  if (extraEnv) {
+    for (const [k, v] of Object.entries(extraEnv)) {
+      if (!SANDBOX_ENV_SECRET_RE.test(k)) {
+        clean[k] = v;
+      }
+    }
+  }
+  return clean;
+}
+
 export function sanitizeLibraryFilename(filename: string): string {
   const base = path.basename(filename).trim();
   const safe = base.replace(/[^a-zA-Z0-9._\-а-яА-ЯёЁ\s]/g, "_").replace(/\s+/g, "_");
@@ -237,7 +280,7 @@ export async function readLibraryFileOnDisk(
   const candidates = [targetExact, path.resolve(libDir, sanitizeLibraryFilename(filename))];
 
   for (const candidate of candidates) {
-    if (!candidate.startsWith(libDir)) continue;
+    if (!isWithinDirectory(candidate, libDir)) continue;
     try {
       const stat = await fs.stat(candidate);
       if (!stat.isFile()) continue;
@@ -299,7 +342,7 @@ export async function deleteLibraryFileOnDisk(
     path.resolve(libDir, sanitizeLibraryFilename(filename)),
   ];
   for (const candidate of candidates) {
-    if (!candidate.startsWith(libDir)) continue;
+    if (!isWithinDirectory(candidate, libDir)) continue;
     try {
       await fs.unlink(candidate);
       return true;
@@ -319,14 +362,14 @@ export async function renameLibraryFileOnDisk(
   const libDir = await initLibraryDirectory(projectId, userScope);
   const safeNew = sanitizeLibraryFilename(newName);
   const newPath = path.resolve(libDir, safeNew);
-  if (!newPath.startsWith(libDir)) return false;
+  if (!isWithinDirectory(newPath, libDir)) return false;
 
   const candidates = [
     path.resolve(libDir, path.basename(oldName)),
     path.resolve(libDir, sanitizeLibraryFilename(oldName)),
   ];
   for (const oldPath of candidates) {
-    if (!oldPath.startsWith(libDir)) continue;
+    if (!isWithinDirectory(oldPath, libDir)) continue;
     try {
       await fs.access(oldPath);
       await fs.rename(oldPath, newPath);
@@ -441,7 +484,7 @@ export async function executeTerminalCommand(
   let currentRunDir = workspaceDir;
   if (options.cwd) {
     const candidate = path.resolve(workspaceDir, options.cwd);
-    if (candidate.startsWith(workspaceDir)) {
+    if (isWithinDirectory(candidate, workspaceDir)) {
       try {
         const stat = await fs.stat(candidate);
         if (stat.isDirectory()) {
@@ -529,7 +572,7 @@ HOME_URL="https://archlinux.org/"`,
     if (rawDest && rawDest !== "~") {
       destDir = path.resolve(currentRunDir, rawDest);
     }
-    if (!destDir.startsWith(workspaceDir)) {
+    if (!isWithinDirectory(destDir, workspaceDir)) {
       destDir = workspaceDir;
     }
 
@@ -578,15 +621,7 @@ HOME_URL="https://archlinux.org/"`,
       timeout,
       killSignal: "SIGKILL",
       maxBuffer: 5 * 1024 * 1024,
-      env: {
-        ...process.env,
-        PAGER: "cat",
-        CI: "true",
-        USER: "arch",
-        HOME: workspaceDir,
-        FLOW_LIBRARY_DIR: libraryDir,
-        ...options.env,
-      },
+      env: buildSanitizedSandboxEnv(process.env, workspaceDir, libraryDir, options.env),
       shell: "/bin/bash",
     });
 
@@ -597,7 +632,7 @@ HOME_URL="https://archlinux.org/"`,
     if (pwdMarkerIndex !== -1) {
       const pwdLine = cleanStdout.slice(pwdMarkerIndex + 12).trim();
       cleanStdout = cleanStdout.slice(0, pwdMarkerIndex);
-      if (pwdLine.startsWith(workspaceDir)) {
+      if (isWithinDirectory(pwdLine, workspaceDir)) {
         const rel = path.relative(workspaceDir, pwdLine);
         detectedNewCwd = rel ? rel : "~";
       }

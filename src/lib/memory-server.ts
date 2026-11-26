@@ -12,6 +12,7 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 import { callMistralFreeText } from "./mistral-free";
+import { verifyFirebaseIdToken } from "./auth-server";
 
 export type MemoryAttachment = {
   name: string;
@@ -69,24 +70,18 @@ export async function getUserFromToken(token: string): Promise<AuthedUser | null
   try {
     const parts = token.split(".");
     if (parts.length === 3) {
-      let decoded = "";
-      try {
-        decoded = Buffer.from(parts[1], "base64url").toString("utf-8");
-      } catch {
-        decoded = Buffer.from(parts[1], "base64").toString("utf-8");
+      const verified = await verifyFirebaseIdToken(token);
+      if (verified?.uid) {
+        return { id: verified.uid, client: null, token, isJwt: true };
       }
-      const payload = JSON.parse(decoded);
-      const uid = payload.sub || payload.user_id;
-      if (uid && typeof uid === "string") {
-        return { id: uid, client: null, token, isJwt: true };
-      }
+      return null;
     }
     if (isLocalFallbackToken(token)) {
       return { id: token, client: null, token, isJwt: false };
     }
     return null;
   } catch (err) {
-    console.error("getUserFromToken parse error", err);
+    console.error("getUserFromToken verification error", err);
     return null;
   }
 }
