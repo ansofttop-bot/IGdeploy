@@ -27,9 +27,11 @@ val firebaseOAuthClientId = (providers.gradleProperty("IGSEEK_GOOGLE_CLIENT_ID")
     ?: firebaseJson["oAuthClientId"]?.toString()
     ?: "").replace("\"", "")
 val defaultApiBaseUrl = (providers.gradleProperty("IGSEEK_API_BASE_URL").orNull
-    ?: "").replace("\"", "")
+    ?: "https://i-gdeploy-luan.vercel.app")
+    .replace("\"", "")
+    .trimEnd('/')
 val defaultAuthBridgeUrl = (providers.gradleProperty("IGSEEK_AUTH_BRIDGE_URL").orNull
-    ?: defaultApiBaseUrl.ifBlank { "https://ais-pre-g5szmpaehma6dlxdblddls-406232471255.europe-west2.run.app" })
+    ?: defaultApiBaseUrl.ifBlank { "https://i-gdeploy-luan.vercel.app" })
     .replace("\"", "")
     .trimEnd('/')
 

@@ -142,8 +142,16 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     // ==================== OPTIONAL GATEWAY & SESSION ====================
 
     fun getServerBaseUrl(): String {
-        return prefs.getString("server_base_url", null)?.trim()?.trimEnd('/')
-            ?: BuildConfig.DEFAULT_API_BASE_URL.trim().trimEnd('/')
+        val saved = prefs.getString("server_base_url", null)?.trim()?.trimEnd('/').orEmpty()
+        val isStale = saved.isBlank() ||
+            saved.contains("ais-pre-", ignoreCase = true) ||
+            saved.contains("ais-dev-", ignoreCase = true) ||
+            saved.contains("igeek-chat.lovable.app", ignoreCase = true)
+        return if (isStale) {
+            BuildConfig.DEFAULT_API_BASE_URL.trim().trimEnd('/')
+        } else {
+            saved
+        }
     }
 
     fun setServerBaseUrl(url: String) {

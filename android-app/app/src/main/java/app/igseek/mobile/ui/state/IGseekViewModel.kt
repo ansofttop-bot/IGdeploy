@@ -952,8 +952,10 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         attachments: List<ChatAttachment>,
         idempotencyKey: String
     ) {
+        api.cancelActiveStream()
         activeStreamJob?.cancel()
-        val job = viewModelScope.launch {
+        var launchedJob: kotlinx.coroutines.Job? = null
+        launchedJob = viewModelScope.launch {
             val assistantId = newSafeId("msg")
             var assistantMsg = ChatMessageItem(
                 id = assistantId,
@@ -971,7 +973,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
 
-            val session = getFreshSession()
+            val session = kotlinx.coroutines.withTimeoutOrNull(1200L) { getFreshSession() } ?: _state.value.session
             val memories = _state.value.memories
             val language = _state.value.layoutPrefs.language
 
@@ -1019,7 +1021,6 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     isError = false
                 )
                 store.upsertMessage(assistantMsg)
-                // Auto-save generated images into Library
                 assistantMsg.images.forEach { img ->
                     saveGeneratedImageToLibrary(img, silent = true)
                 }
@@ -1066,8 +1067,11 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
             }
+            if (activeStreamJob === launchedJob) {
+                activeStreamJob = null
+            }
         }
-        activeStreamJob = job
+        activeStreamJob = launchedJob
     }
 
     private fun updateStreamingMessageInUi(msg: ChatMessageItem) {

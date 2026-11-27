@@ -234,10 +234,38 @@ async function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function getModelCooldownMap(): Map<string, number> {
+  const g = globalThis as typeof globalThis & {
+    __igseekOpenRouterModelCooldowns?: Map<string, number>;
+  };
+  if (!g.__igseekOpenRouterModelCooldowns) {
+    g.__igseekOpenRouterModelCooldowns = new Map();
+  }
+  return g.__igseekOpenRouterModelCooldowns;
+}
+
+function isOpenRouterModelCoolingDown(modelId: string, now = Date.now()): boolean {
+  const until = getModelCooldownMap().get(modelId);
+  if (!until) return false;
+  if (until <= now) {
+    getModelCooldownMap().delete(modelId);
+    return false;
+  }
+  return true;
+}
+
+function markOpenRouterModelCooldown(modelId: string, cooldownMs = 60_000): void {
+  getModelCooldownMap().set(modelId, Date.now() + cooldownMs);
+}
+
+function clearOpenRouterModelCooldown(modelId: string): void {
+  getModelCooldownMap().delete(modelId);
+}
+
 async function fetchWithHeaderTimeout(
   url: string,
   init: RequestInit,
-  headerTimeoutMs = 18_000,
+  headerTimeoutMs = 12_000,
   externalSignal?: AbortSignal,
 ): Promise<Response> {
   if (externalSignal?.aborted) throw createAbortError();
@@ -315,16 +343,19 @@ export async function callOpenRouterDeepSeekStream(params: {
   if (params.signal?.aborted) throw createAbortError();
 
   const baseUrl = getOpenRouterBaseUrl();
-  const candidates = getOpenRouterFallbackChain(
+  const rawCandidates = getOpenRouterFallbackChain(
     params.tier,
     params.uiModel ?? "instinct",
     Boolean(params.reasoning),
   );
+  const healthyCandidates = rawCandidates.filter((m) => !isOpenRouterModelCoolingDown(m));
+  const candidates = healthyCandidates.length > 0 ? healthyCandidates : rawCandidates;
 
   let upstream: Response | null = null;
   let usedModel = candidates[0];
   let lastStatus = 500;
   let lastErrBody = "";
+  let lastNetworkErr: Error | null = null;
 
   outer: for (const modelId of candidates) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -343,18 +374,27 @@ export async function callOpenRouterDeepSeekStream(params: {
         omitReasoningParam,
       });
 
-      const res = await fetchWithHeaderTimeout(
-        `${baseUrl}/chat/completions`,
-        {
-          method: "POST",
-          headers: buildOpenRouterHeaders(apiKey),
-          body: JSON.stringify(payload),
-        },
-        params.reasoning ? 28_000 : 18_000,
-        params.signal,
-      );
+      let res: Response;
+      try {
+        res = await fetchWithHeaderTimeout(
+          `${baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: buildOpenRouterHeaders(apiKey),
+            body: JSON.stringify(payload),
+          },
+          params.reasoning ? 22_000 : 12_000,
+          params.signal,
+        );
+      } catch (reqErr: any) {
+        if (params.signal?.aborted || reqErr?.name === "AbortError") throw reqErr;
+        lastNetworkErr = reqErr instanceof Error ? reqErr : new Error(String(reqErr));
+        markOpenRouterModelCooldown(modelId, 45_000);
+        break;
+      }
 
       if (res.ok && res.body) {
+        clearOpenRouterModelCooldown(modelId);
         upstream = res;
         usedModel = modelId;
         break outer;
@@ -369,17 +409,19 @@ export async function callOpenRouterDeepSeekStream(params: {
       if (attempt === 0 && res.status === 400 && /reasoning|thinking|parameter/i.test(lastErrBody)) {
         continue;
       }
-      if (attempt === 0 && (res.status === 429 || res.status >= 500)) {
-        const retrySec = Number(res.headers.get("retry-after") || "0");
-        const waitMs = res.status === 429 && retrySec > 0 && retrySec <= 8 ? retrySec * 1000 : 750;
-        await abortableSleep(waitMs, params.signal);
-        continue;
+      // On 429/5xx, put this shard in brief cooldown and immediately fail over to the next candidate
+      if (res.status === 429 || res.status >= 500) {
+        markOpenRouterModelCooldown(modelId, res.status === 429 ? 45_000 : 60_000);
+        break;
       }
       break;
     }
   }
 
   if (!upstream || !upstream.body) {
+    if (lastNetworkErr && !lastErrBody) {
+      throw lastNetworkErr;
+    }
     throw new Error(formatOpenRouterError(lastStatus, lastErrBody));
   }
 
@@ -541,6 +583,17 @@ export async function callOpenRouterDeepSeekStream(params: {
             } catch {
               continue;
             }
+            if (parsed?.error) {
+              const errCode = Number(parsed.error?.code || 502);
+              const errMsg = formatOpenRouterError(
+                Number.isFinite(errCode) ? errCode : 502,
+                JSON.stringify(parsed),
+              );
+              markOpenRouterModelCooldown(usedModel, 45_000);
+              emit({ error: { message: errMsg, code: errCode } });
+              finish();
+              return;
+            }
             const choice = parsed?.choices?.[0];
             if (!choice) continue;
             const delta = choice.delta || {};
@@ -589,6 +642,12 @@ export async function callOpenRouterDeepSeekStream(params: {
       } catch (err) {
         if (!closed && !params.signal?.aborted) {
           console.error("[openrouter-deepseek] stream error:", err);
+          markOpenRouterModelCooldown(usedModel, 45_000);
+          emit({
+            error: {
+              message: err instanceof Error ? err.message : "OpenRouter stream interrupted",
+            },
+          });
           finish();
         }
       } finally {
@@ -626,7 +685,9 @@ export async function callOpenRouterDeepSeekText(params: {
   if (!apiKey || params.signal?.aborted) return null;
 
   const baseUrl = getOpenRouterBaseUrl();
-  const candidates = getOpenRouterFallbackChain(params.tier, params.uiModel ?? "instinct", false);
+  const rawCandidates = getOpenRouterFallbackChain(params.tier, params.uiModel ?? "instinct", false);
+  const healthy = rawCandidates.filter((m) => !isOpenRouterModelCoolingDown(m));
+  const candidates = healthy.length > 0 ? healthy : rawCandidates;
 
   for (const modelId of candidates) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -650,7 +711,7 @@ export async function callOpenRouterDeepSeekText(params: {
             headers: buildOpenRouterHeaders(apiKey),
             body: JSON.stringify(payload),
           },
-          params.timeoutMs ?? 25_000,
+          params.timeoutMs ?? 15_000,
           params.signal,
         );
 
@@ -661,9 +722,8 @@ export async function callOpenRouterDeepSeekText(params: {
           if (attempt === 0 && res.status === 400 && /reasoning|response_format|parameter/i.test(errBody)) {
             continue;
           }
-          if (attempt === 0 && (res.status === 429 || res.status >= 500)) {
-            await abortableSleep(700, params.signal);
-            continue;
+          if (res.status === 429 || res.status >= 500) {
+            markOpenRouterModelCooldown(modelId, 45_000);
           }
           break;
         }
@@ -674,10 +734,14 @@ export async function callOpenRouterDeepSeekText(params: {
         const raw = (json.choices?.[0]?.message?.content ?? "")
           .replace(/<think>[\s\S]*?<\/think>/gi, "")
           .trim();
-        if (raw) return raw;
+        if (raw) {
+          clearOpenRouterModelCooldown(modelId);
+          return raw;
+        }
         break;
       } catch (err) {
         if ((err as Error)?.name === "AbortError") return null;
+        markOpenRouterModelCooldown(modelId, 45_000);
         console.warn(`[openrouter-text] ${modelId} exception:`, (err as Error)?.message || err);
         break;
       }

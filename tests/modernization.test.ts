@@ -285,6 +285,20 @@ test("AI Router & OpenRouter DeepSeek < V4.0: circuit breaker works, Free & Pro 
   for (const modelId of allProDeepSeekModels) {
     assert.doesNotMatch(modelId, /v4(\.|$)/i, `Pro DeepSeek model must be < V4.0, got ${modelId}`);
   }
+
+  const chatRouteSrc = fs.readFileSync(path.resolve("src/routes/api/chat.ts"), "utf8");
+  assert.doesNotMatch(chatRouteSrc, /generateImageWithGptImage2|editImageWithGptImage2/);
+  assert.match(chatRouteSrc, /generateImageWithPollinations/);
+
+  const aiRouterSrc = fs.readFileSync(path.resolve("src/lib/ai-router.ts"), "utf8");
+  assert.doesNotMatch(aiRouterSrc, /callGroqFreeChatStream|callGroqFreeText/);
+
+  const androidApiSrc = fs.readFileSync(
+    path.resolve("android-app/app/src/main/java/app/igseek/mobile/data/api/IGseekApiClient.kt"),
+    "utf8",
+  );
+  assert.doesNotMatch(androidApiSrc, /text\.pollinations\.ai/);
+  assert.match(androidApiSrc, /image\.pollinations\.ai/);
 });
 
 test("Pro Image Anti-Abuse: allows 4 GPT Image 2 generations per sliding hour, then falls back to Pollinations and auto-recovers", () => {

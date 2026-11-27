@@ -111,7 +111,7 @@ export async function generateImageWithPollinations(
   if (!cleanPrompt) {
     throw new Error("Empty image generation prompt.");
   }
-  const timeoutMs = options?.timeoutMs ?? 45_000;
+  const timeoutMs = options?.timeoutMs ?? 25_000;
 
   let lastErr: unknown = null;
   for (const model of ["flux", "turbo"] as const) {

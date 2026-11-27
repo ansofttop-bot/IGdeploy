@@ -476,7 +476,7 @@ fun SettingsScreen(
                 }
             }
 
-            // Advanced API Routing (Optional — hidden by default since Direct API works out-of-the-box)
+            // IGseek Backend Server URL (OpenRouter DeepSeek < V4.0 + Pollinations Images)
             item {
                 IGseekGlassCard(
                     modifier = Modifier
@@ -492,16 +492,12 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (isEn) "API Mode (Direct)" else "Режим API (Прямой)",
+                                text = if (isEn) "Connection" else "Подключение",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = palette.textPrimary
                             )
                             Text(
-                                text = if (state.serverBaseUrl.isBlank()) {
-                                    if (isEn) "Direct API mode without website dependency" else "Прямые запросы к API без привязки к сайту"
-                                } else {
-                                    if (isEn) "Gateway: ${state.serverBaseUrl}" else "Шлюз: ${state.serverBaseUrl}"
-                                },
+                                text = if (isEn) "Automatic (IGseek Cloud: DeepSeek + Pollinations)" else "Автоматическое (DeepSeek + Pollinations)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.textMuted
                             )
@@ -518,9 +514,9 @@ fun SettingsScreen(
                         Spacer(Modifier.height(12.dp))
                         Text(
                             text = if (isEn) {
-                                "Optional. Leave empty for direct autonomous API mode. Set a custom gateway URL only if using your own backend."
+                                "Works automatically out of the box. Only change this if you move to a different domain."
                             } else {
-                                "Необязательно. Оставьте поле пустым для прямой автономной работы по API. Укажите свой шлюз, только если используете собственный бэкенд."
+                                "Работает автоматически из коробки. Менять нужно только при переезде на другой домен."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = palette.textMuted
@@ -531,7 +527,7 @@ fun SettingsScreen(
                             onValueChange = { gatewayDraft = it },
                             placeholder = {
                                 Text(
-                                    text = if (isEn) "Empty = Direct API" else "Пусто = Прямой режим API",
+                                    text = "https://i-gdeploy-luan.vercel.app",
                                     color = palette.textMuted
                                 )
                             },
@@ -568,7 +564,7 @@ fun SettingsScreen(
                                     border = BorderStroke(1.dp, palette.glassBorder),
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Text(if (isEn) "Direct API" else "Прямой API", color = palette.textPrimary)
+                                    Text(if (isEn) "Reset" else "Сбросить", color = palette.textPrimary)
                                 }
                             }
                         }

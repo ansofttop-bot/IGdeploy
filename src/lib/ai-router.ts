@@ -10,12 +10,6 @@ import {
   type UiModel,
 } from "./deepseek-models";
 import {
-  GROQ_FREE_MODEL,
-  callGroqFreeChatStream,
-  callGroqFreeText,
-  isGroqFreeConfigured,
-} from "./groq-free";
-import {
   OPENROUTER_FREE_INSTINCT,
   OPENROUTER_PRO_INSTINCT,
   OPENROUTER_PRO_REASONER,
@@ -101,9 +95,8 @@ export interface RoutedStreamResult {
 /**
  * Tiered DeepSeek (< V4.0) AI streaming router via OpenRouter:
  * - Free tier: lowest-cost DeepSeek < V4.0 models (`deepseek/deepseek-v3.2`, `deepseek/deepseek-v3.2-exp`, `deepseek/deepseek-chat-v3-0324`).
- *   Optional Groq fallback only if OPENROUTER_API_KEY is missing or fails.
  * - Pro tier: stronger yet economical DeepSeek < V4.0 models (`deepseek/deepseek-v3.1-terminus`, `deepseek/deepseek-chat-v3.1`, `deepseek/deepseek-chat-v3-0324`, `deepseek/deepseek-r1-0528`).
- *   Optional fallback to Direct DeepSeek / ApiMira DeepSeek (< V4.0).
+ * Never silently downgrades to OpenAI / ChatGPT models.
  */
 export async function routeChatStream(params: RouteChatStreamParams): Promise<RoutedStreamResult> {
   const temperature = params.temperature ?? 0.65;
@@ -140,24 +133,10 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
       }
     }
 
-    if (isGroqFreeConfigured()) {
-      const res = await callGroqFreeChatStream({
-        messages: params.messages,
-        tools: params.tools as any,
-        reasoning: Boolean(params.reasoning),
-        temperature,
-        maxTokens,
-        signal: params.signal,
-      });
-      return {
-        response: res,
-        providerId: "groq-free",
-        modelUsed: GROQ_FREE_MODEL,
-        tier: "free",
-      };
-    }
-
     if (openRouterErr instanceof Error) throw openRouterErr;
+    if (isProviderCircuitOpen("openrouter-free")) {
+      throw new Error("OpenRouter временно перегружен. Повторите запрос через пару секунд.");
+    }
     throw new Error("OPENROUTER_API_KEY не настроен на сервере.");
   }
 
@@ -304,15 +283,7 @@ export async function routeTextCompletion(params: {
   }
 
   if (params.tier === "free") {
-    const text =
-      (await callGroqFreeText({
-        messages: params.messages,
-        maxTokens,
-        temperature,
-        jsonMode: params.jsonMode,
-      })) || "";
-    if (!text) throw new Error("Free text provider unavailable (configure OPENROUTER_API_KEY)");
-    return { text, providerId: "groq-free" };
+    throw new Error("Free OpenRouter DeepSeek unavailable (configure OPENROUTER_API_KEY)");
   }
 
   const directKey = (process.env.DEEPSEEK_API_KEY || "").trim();
@@ -412,7 +383,7 @@ export function getAiRouterHealthSummary() {
   return {
     freeProvider: isOpenRouterConfigured()
       ? `openrouter-free (${OPENROUTER_FREE_INSTINCT})`
-      : `groq-free (${GROQ_FREE_MODEL})`,
+      : "openrouter-free (OPENROUTER_API_KEY missing)",
     proProvider: isOpenRouterConfigured()
       ? `openrouter-pro (${OPENROUTER_PRO_INSTINCT}, ${OPENROUTER_PRO_REASONER})`
       : "deepseek (<4.0) + apimira",

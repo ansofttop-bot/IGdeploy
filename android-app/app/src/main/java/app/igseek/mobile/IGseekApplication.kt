@@ -27,9 +27,11 @@ class IGseekApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         okHttpClient = OkHttpClient.Builder()
+            .connectionPool(okhttp3.ConnectionPool(5, 30, TimeUnit.SECONDS))
             .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(45, TimeUnit.SECONDS)
+            .readTimeout(65, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(90, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
 

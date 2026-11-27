@@ -18,12 +18,7 @@ import {
 } from "../../lib/memory-server";
 import { checkContent, refusalMessage } from "../../lib/content-filters";
 import { isChinaSensitive } from "../../lib/sensitive-topics";
-import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/apimira-image";
-import {
-  buildReferenceAwarePollinationsPrompt,
-  callGroqFreeChatStream,
-  isGroqFreeConfigured,
-} from "../../lib/groq-free";
+import { buildReferenceAwarePollinationsPrompt } from "../../lib/groq-free";
 import {
   callOpenRouterDeepSeekStream,
   isOpenRouterConfigured,
@@ -31,12 +26,6 @@ import {
 import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithPollinations } from "../../lib/pollinations-image";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
-import {
-  PRO_HOURLY_PAID_IMAGE_LIMIT,
-  evaluateProHourlyImageRoute,
-  recordProHourlyImageGeneration,
-  resolvePhotoQuotaActorKey,
-} from "../../lib/photo-limits-server";
 import { searchWebLive, searchWebRich } from "../../lib/web-search";
 import {
   extractLibraryText,
@@ -164,7 +153,7 @@ const IMAGE_TOOL = {
   type: "function" as const,
   function: {
     name: "generate_image",
-    description: "Generate a NEW image from scratch using ChatGPT Image 2. Use edit_image instead when editing an existing photo.",
+    description: "Generate a NEW image from scratch using Pollinations. Use edit_image instead when editing an existing photo.",
     parameters: {
       type: "object",
       properties: {
@@ -650,11 +639,6 @@ function toApiMessages(
   });
 }
 
-async function generateImage(prompt: string, signal?: AbortSignal): Promise<string> {
-  const res = await generateImageWithGptImage2(prompt, { signal });
-  return res.dataUrl;
-}
-
 async function streamFallbackToClient(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   send: (event: string, data: string) => void,
@@ -681,16 +665,7 @@ async function streamFallbackToClient(
     }
   }
 
-  if (!upstream && useFreeModels) {
-    if (isGroqFreeConfigured()) {
-      upstream = await callGroqFreeChatStream({
-        messages,
-        reasoning: false,
-        maxTokens: 4096,
-        signal,
-      });
-    }
-  } else if (!upstream) {
+  if (!upstream && !useFreeModels) {
     const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
     const apimiraKey = process.env.APIMIRA_API_KEY?.trim() || "";
     const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
@@ -1103,7 +1078,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
                 ])
               : null;
-            const photoQuotaActorKey = resolvePhotoQuotaActorKey(request, authed?.id, parsed.deviceFp);
 
             const [memories, initialLibraryItems, userTierInfo]: [
               MemoryRow[],
@@ -1412,6 +1386,8 @@ export async function handleChatPost(request: Request): Promise<Response> {
               let reasoningText = "";
               const CHUNK_STALL_TIMEOUT_MS = 18_000;
 
+              let streamChunkError: string | null = null;
+
               const processLines = (lines: string[]) => {
                 for (const raw of lines) {
                   const line = raw.trim();
@@ -1420,6 +1396,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   if (!payload || payload === "[DONE]") continue;
                   try {
                     const json = JSON.parse(payload) as {
+                      error?: { message?: string };
                       choices?: Array<{
                         delta?: {
                           content?: unknown;
@@ -1439,6 +1416,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         finish_reason?: string | null;
                       }>;
                     };
+                    if (json.error?.message) {
+                      streamChunkError = json.error.message;
+                      continue;
+                    }
                     const choice = json.choices?.[0];
                     const delta = choice?.delta ?? choice?.message;
                     if (choice?.finish_reason) finishReason = choice.finish_reason;
@@ -1511,6 +1492,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   type: "function" as const,
                   function: { name: v.name, arguments: v.args },
                 }));
+
+              if (streamChunkError && !assistantText && toolCalls.length === 0) {
+                throw new Error(streamChunkError);
+              }
 
               return { finishReason, toolCalls, assistantText, reasoningText };
             }
@@ -2043,58 +2028,27 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       const imageTitle = String(parsedArgs.title ?? "Generated image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
 
-                      let usePollinations = useFreeModels;
-                      let proHourlyFallback = false;
-                      let fallbackNoticeSent = false;
-                      if (isProUser) {
-                        const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
-                        if (proRoute.usePollinationsFallback) {
-                          usePollinations = true;
-                          proHourlyFallback = true;
-                          fallbackNoticeSent = true;
-                          send(
-                            "image_fallback_notice",
-                            JSON.stringify({
-                              reason: "pro_hourly_limit",
-                              limit: PRO_HOURLY_PAID_IMAGE_LIMIT,
-                              retryAfterMinutes: proRoute.retryAfterMinutes,
-                              resetAt: proRoute.resetAt,
-                              message: `Лимит GPT Image 2 (${PRO_HOURLY_PAID_IMAGE_LIMIT} изображений за час) временно исчерпан — используется облегчённая модель Pollinations. GPT Image 2 вернётся автоматически через ~${proRoute.retryAfterMinutes} мин.`,
-                            }),
-                          );
-                        }
-                      }
-
-                      // Under the hood on Free plan (or Pro fallback): if the user uploaded a reference image,
-                      // Gemini Vision analyzes the reference and synthesizes a detailed English prompt for Pollinations.
+                      // Pollinations handles image generation across ALL plans (Free & Pro).
                       const attachedReferenceImages = (parsed.userAttachments ?? [])
                         .filter((a) => a.dataUrl?.startsWith("data:image/"))
                         .map((a) => ({ dataUrl: a.dataUrl, mimeType: a.type }));
 
-                      let dataUrl: string;
-                      if (usePollinations) {
-                        const finalPrompt =
-                          attachedReferenceImages.length > 0
-                            ? await buildReferenceAwarePollinationsPrompt({
-                                sourceImages: attachedReferenceImages,
-                                editPrompt: parsedArgs.prompt,
-                                extraDescription: parsedArgs.description,
-                                useDeepSeekSynthesis: proHourlyFallback,
-                                deepseekKey,
-                                apimiraKey,
-                                apimiraBaseUrl,
-                                signal: streamAbort.signal,
-                              })
-                            : parsedArgs.prompt;
-                        dataUrl = (
-                          await generateImageWithPollinations(finalPrompt, { signal: streamAbort.signal })
-                        ).dataUrl;
-                      } else {
-                        dataUrl = await generateImage(parsedArgs.prompt, streamAbort.signal);
-                        if (isProUser) {
-                          recordProHourlyImageGeneration(photoQuotaActorKey);
-                        }
-                      }
+                      const finalPrompt =
+                        attachedReferenceImages.length > 0
+                          ? await buildReferenceAwarePollinationsPrompt({
+                              sourceImages: attachedReferenceImages,
+                              editPrompt: parsedArgs.prompt,
+                              extraDescription: parsedArgs.description,
+                              useDeepSeekSynthesis: isProUser,
+                              deepseekKey,
+                              apimiraKey,
+                              apimiraBaseUrl,
+                              signal: streamAbort.signal,
+                            })
+                          : parsedArgs.prompt;
+                      const dataUrl = (
+                        await generateImageWithPollinations(finalPrompt, { signal: streamAbort.signal })
+                      ).dataUrl;
 
                       lastGeneratedImageDataUrl = dataUrl;
                       lastGeneratedImageState = {
@@ -2117,7 +2071,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
-                          ...(fallbackNoticeSent ? { lightweightFallbackUsed: true } : {}),
                           message: `Изображение «${image.title}» сгенерировано и показано пользователю карточкой. Не описывай картинку подробно — просто кратко подтверди.`,
                         }),
                       });
@@ -2145,58 +2098,24 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         lastGeneratedImageState,
                       );
 
-                      let usePollinations = useFreeModels;
-                      let proHourlyFallback = false;
-                      if (isProUser) {
-                        const proRoute = evaluateProHourlyImageRoute(photoQuotaActorKey);
-                        if (proRoute.usePollinationsFallback) {
-                          usePollinations = true;
-                          proHourlyFallback = true;
-                          send(
-                            "image_fallback_notice",
-                            JSON.stringify({
-                              reason: "pro_hourly_limit",
-                              limit: PRO_HOURLY_PAID_IMAGE_LIMIT,
-                              retryAfterMinutes: proRoute.retryAfterMinutes,
-                              resetAt: proRoute.resetAt,
-                              message: `Лимит GPT Image 2 (${PRO_HOURLY_PAID_IMAGE_LIMIT} изображений за час) временно исчерпан — используется облегчённая модель Pollinations. GPT Image 2 вернётся автоматически через ~${proRoute.retryAfterMinutes} мин.`,
-                            }),
-                          );
-                        }
-                      }
-
-                      if (!usePollinations && sourceImages.length === 0) {
-                        throw new Error("No source image found for editing");
-                      }
+                      // Pollinations handles image editing across ALL plans (Free & Pro).
                       const imageTitle = String(parsedArgs.title ?? "Edited image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
 
-                      let editedDataUrl: string;
-                      if (usePollinations) {
-                        const synthesizedPrompt = await buildReferenceAwarePollinationsPrompt({
-                          sourceImages,
-                          sourceImageDataUrl: sourceImages[0]?.dataUrl ?? null,
-                          editPrompt: parsedArgs.prompt,
-                          extraDescription: parsedArgs.description,
-                          useDeepSeekSynthesis: proHourlyFallback,
-                          deepseekKey,
-                          apimiraKey,
-                          apimiraBaseUrl,
-                          signal: streamAbort.signal,
-                        });
-                        editedDataUrl = (
-                          await generateImageWithPollinations(synthesizedPrompt, { signal: streamAbort.signal })
-                        ).dataUrl;
-                      } else {
-                        editedDataUrl = (
-                          await editImageWithGptImage2(parsedArgs.prompt, sourceImages, {
-                            signal: streamAbort.signal,
-                          })
-                        ).dataUrl;
-                        if (isProUser) {
-                          recordProHourlyImageGeneration(photoQuotaActorKey);
-                        }
-                      }
+                      const synthesizedPrompt = await buildReferenceAwarePollinationsPrompt({
+                        sourceImages,
+                        sourceImageDataUrl: sourceImages[0]?.dataUrl ?? null,
+                        editPrompt: parsedArgs.prompt,
+                        extraDescription: parsedArgs.description,
+                        useDeepSeekSynthesis: isProUser,
+                        deepseekKey,
+                        apimiraKey,
+                        apimiraBaseUrl,
+                        signal: streamAbort.signal,
+                      });
+                      const editedDataUrl = (
+                        await generateImageWithPollinations(synthesizedPrompt, { signal: streamAbort.signal })
+                      ).dataUrl;
 
                       lastGeneratedImageDataUrl = editedDataUrl;
                       lastGeneratedImageState = {
@@ -2219,7 +2138,6 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
-                          ...(proHourlyFallback ? { lightweightFallbackUsed: true } : {}),
                           message: `Изображение «${image.title}» отредактировано по запросу и показано пользователю карточкой. Кратко подтверди, что правка выполнена.`,
                         }),
                       });
@@ -3000,7 +2918,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
               }
               console.error("stream error", err);
               if (!lastGeneratedImageDataUrl && !finalAssistantText) {
-                const errDetail = err instanceof Error ? err.message.slice(0, 120) : "stream_failed";
+                const errDetail = err instanceof Error ? err.message.slice(0, 260) : "stream_failed";
                 send("error", JSON.stringify(errDetail || "stream_failed"));
               } else {
                 send("done", "1");
