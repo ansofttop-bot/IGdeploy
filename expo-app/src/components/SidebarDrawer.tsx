@@ -15,7 +15,7 @@ import {
   Trash2,
   Workflow,
   X,
-} from "lucide-react-native";
+} from "./Icons";
 import React, { useMemo, useState } from "react";
 import {
   Animated,

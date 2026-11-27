@@ -23,7 +23,7 @@ class ModelsUnitTest {
     @Test
     fun defaultLayoutHasFourQuickBarTabsAndAllNineWorkspacesExist() {
         val prefs = MobileLayoutPrefs()
-        assertFalse(prefs.showBottomBar)
+        assertTrue(prefs.showBottomBar)
         assertEquals(4, prefs.tabOrder.size)
         assertEquals(IGseekTab.CHAT, prefs.tabOrder.first())
         assertEquals(9, IGseekTab.entries.size)

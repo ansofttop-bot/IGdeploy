@@ -1,6 +1,5 @@
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import {
   Code2,
@@ -18,7 +17,7 @@ import {
   Trash2,
   Upload,
   X,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React, { useMemo, useState } from "react";
 import {
   Image,
@@ -99,7 +98,9 @@ export const LibraryScreen: React.FC = () => {
       const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
       if (res.canceled || !res.assets?.[0]) return;
       const asset = res.assets[0];
-      const text = await FileSystem.readAsStringAsync(asset.uri).catch(() => "");
+      const text = await fetch(asset.uri)
+        .then((r) => r.text())
+        .catch(() => "");
       const isCode = /\.(ts|tsx|js|jsx|py|kt|swift|html|css|json|sql)$/i.test(asset.name);
       addLibraryFile({
         name: asset.name,

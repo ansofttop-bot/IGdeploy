@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import { Check, Copy } from "lucide-react-native";
+import { Check, Copy } from "./Icons";
 import React, { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { AppColors } from "../theme/theme";

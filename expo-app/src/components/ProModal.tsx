@@ -1,4 +1,4 @@
-import { CheckCircle2, Crown, KeyRound, Sparkles, X } from "lucide-react-native";
+import { CheckCircle2, Crown, KeyRound, Sparkles, X } from "./Icons";
 import React, { useState } from "react";
 import {
   ActivityIndicator,

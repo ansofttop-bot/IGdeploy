@@ -1,6 +1,5 @@
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import * as WebBrowser from "expo-web-browser";
 import {
@@ -23,7 +22,7 @@ import {
   Square,
   SquarePen,
   X,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -180,17 +179,27 @@ export const ChatScreen: React.FC = () => {
       const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
       if (res.canceled || !res.assets?.[0]) return;
       const asset = res.assets[0];
-      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      }).catch(() => "");
       const mime = asset.mimeType || "application/octet-stream";
+      let dataUrl = asset.uri;
+      try {
+        const blob = await (await fetch(asset.uri)).blob();
+        dataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () =>
+            resolve(typeof reader.result === "string" ? reader.result : asset.uri);
+          reader.onerror = () => resolve(asset.uri);
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        dataUrl = asset.uri;
+      }
       setAttachments((prev) => [
         ...prev,
         {
           id: `att_${Date.now()}`,
           name: asset.name || "file",
           mimeType: mime,
-          dataUrl: b64 ? `data:${mime};base64,${b64}` : asset.uri,
+          dataUrl,
           sizeBytes: asset.size,
         },
       ]);

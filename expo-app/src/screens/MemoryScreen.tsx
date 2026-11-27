@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import { Brain, Copy, Menu, MessageSquare, Plus, Search, Trash2, X } from "lucide-react-native";
+import { Brain, Copy, Menu, MessageSquare, Plus, Search, Trash2, X } from "../components/Icons";
 import React, { useMemo, useState } from "react";
 import {
   Modal,

@@ -12,7 +12,7 @@ import {
   Sparkles,
   Workflow,
   XCircle,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React, { useState } from "react";
 import {
   ActivityIndicator,

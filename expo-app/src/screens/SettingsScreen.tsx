@@ -10,7 +10,7 @@ import {
   Settings,
   Smartphone,
   Sun,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React from "react";
 import {
   ActivityIndicator,

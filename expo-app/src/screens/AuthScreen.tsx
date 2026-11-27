@@ -1,4 +1,4 @@
-import { ArrowRight, Globe, Lock, Mail, Moon, Sun, User } from "lucide-react-native";
+import { ArrowRight, Globe, Lock, Mail, Moon, Sun, User } from "../components/Icons";
 import React, { useState } from "react";
 import {
   ActivityIndicator,

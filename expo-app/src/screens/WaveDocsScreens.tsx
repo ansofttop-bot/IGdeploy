@@ -10,7 +10,7 @@ import {
   Radio,
   Shield,
   Sparkles,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React, { useEffect, useRef } from "react";
 import {
   Animated,

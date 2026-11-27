@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import { Bookmark, Copy, Menu, MessageSquare, Share2, Trash2 } from "lucide-react-native";
+import { Bookmark, Copy, Menu, MessageSquare, Share2, Trash2 } from "../components/Icons";
 import React, { useMemo, useState } from "react";
 import { ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { useApp } from "../state/AppContext";

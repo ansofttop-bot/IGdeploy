@@ -9,7 +9,7 @@ import {
   Send,
   Sparkles,
   Trash2,
-} from "lucide-react-native";
+} from "../components/Icons";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,

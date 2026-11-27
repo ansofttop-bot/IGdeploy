@@ -9,14 +9,14 @@
 - **Единый аккаунт и облачная синхронизация**: Google + Почта/Пароль + Firestore (общая база с Web и Android APK).
 - **Ключи подписки IGseek Pro** (`IGSK-XXXX-XXXX-XXXX`): активация и мгновенная синхронизация на всех платформах.
 
-## Как запустить на iPhone (Expo Go)
+## Запуск без ПК (прямая ссылка для Expo Go)
 1. Установите **Expo Go** из App Store (или Google Play).
-2. В терминале выполните:
+2. Откройте ссылку с телефона и нажмите **Open in Expo Go**:
+   `https://snack.expo.dev/FBMVtm_JQSy57x_KIoKpa`
 
+## Локальный запуск с ПК
 ```bash
 cd expo-app
 npm install
 npx expo start --tunnel
 ```
-
-3. Отсканируйте появившийся QR-код камерой iPhone — приложение откроется в Expo Go.
