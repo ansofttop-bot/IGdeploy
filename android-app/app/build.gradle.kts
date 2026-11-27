@@ -20,6 +20,9 @@ val firebaseWebApiKey = (providers.gradleProperty("IGSEEK_FIREBASE_API_KEY").orN
 val firebaseProjectId = (providers.gradleProperty("IGSEEK_FIREBASE_PROJECT_ID").orNull
     ?: firebaseJson["projectId"]?.toString()
     ?: "").replace("\"", "")
+val firebaseDatabaseId = (providers.gradleProperty("IGSEEK_FIREBASE_DATABASE_ID").orNull
+    ?: firebaseJson["firestoreDatabaseId"]?.toString()
+    ?: "(default)").replace("\"", "").ifBlank { "(default)" }
 val firebaseAuthDomain = (providers.gradleProperty("IGSEEK_FIREBASE_AUTH_DOMAIN").orNull
     ?: firebaseJson["authDomain"]?.toString()
     ?: "").replace("\"", "")
@@ -43,8 +46,8 @@ android {
         applicationId = "app.igseek.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 202
-        versionName = "2.1.1"
+        versionCode = 204
+        versionName = "2.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -55,6 +58,7 @@ android {
         buildConfigField("String", "DEFAULT_AUTH_BRIDGE_URL", "\"$defaultAuthBridgeUrl\"")
         buildConfigField("String", "FIREBASE_WEB_API_KEY", "\"$firebaseWebApiKey\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
+        buildConfigField("String", "FIREBASE_DATABASE_ID", "\"$firebaseDatabaseId\"")
         buildConfigField("String", "FIREBASE_AUTH_DOMAIN", "\"$firebaseAuthDomain\"")
         buildConfigField("String", "FIREBASE_OAUTH_CLIENT_ID", "\"$firebaseOAuthClientId\"")
     }

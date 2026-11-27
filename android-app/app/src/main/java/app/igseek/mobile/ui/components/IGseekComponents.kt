@@ -1,5 +1,7 @@
 package app.igseek.mobile.ui.components
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -11,18 +13,24 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -34,7 +42,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -52,13 +59,58 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.igseek.mobile.R
+import app.igseek.mobile.data.models.IGseekTab
+import app.igseek.mobile.ui.tabLucideIcon
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
+
+/**
+ * Opens the native Android Share Sheet for any text payload.
+ */
+fun sharePlainText(context: Context, title: String, text: String) {
+    runCatching {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(intent, title))
+    }
+}
+
+/**
+ * Formats relative timestamps for mobile cards (e.g., "2 ч назад", "just now").
+ */
+fun formatRelativeTime(timestampMs: Long, isEn: Boolean): String {
+    if (timestampMs <= 0L) return ""
+    val diffSec = ((System.currentTimeMillis() - timestampMs) / 1000L).coerceAtLeast(0L)
+    return when {
+        diffSec < 60L -> if (isEn) "just now" else "только что"
+        diffSec < 3600L -> {
+            val m = diffSec / 60L
+            if (isEn) "${m}m ago" else "$m мин"
+        }
+        diffSec < 86400L -> {
+            val h = diffSec / 3600L
+            if (isEn) "${h}h ago" else "$h ч"
+        }
+        diffSec < 86400L * 7L -> {
+            val d = diffSec / 86400L
+            if (isEn) "${d}d ago" else "$d д"
+        }
+        else -> {
+            val w = diffSec / (86400L * 7L)
+            if (isEn) "${w}w ago" else "$w нед"
+        }
+    }
+}
 
 /**
  * Real IGseek curling Fox logo tinted to match the website's `.logo-mark`.
@@ -189,7 +241,8 @@ fun GoogleGIcon(modifier: Modifier = Modifier.size(18.dp)) {
 }
 
 /**
- * Website-authentic radial glow canvas on dark obsidian, pure clean surface on light mode.
+ * Refined IGseek background canvas with subtle top ambient illumination in dark mode
+ * and crisp editorial surface in light mode.
  */
 @Composable
 fun IGseekCanvas(
@@ -202,10 +255,10 @@ fun IGseekCanvas(
             .fillMaxSize()
             .background(palette.bg)
             .background(
-                brush = Brush.radialGradient(
-                    colors = listOf(palette.brandGlow, Color.Transparent),
-                    center = Offset(540f, 120f),
-                    radius = 900f
+                brush = Brush.verticalGradient(
+                    0f to palette.brandGlow,
+                    0.32f to Color.Transparent,
+                    1f to Color.Transparent
                 )
             )
     } else {
@@ -214,6 +267,383 @@ fun IGseekCanvas(
             .background(palette.bg)
     }
     Box(modifier = baseModifier, content = content)
+}
+
+/**
+ * Unified native mobile top bar across all workspace tabs (44dp+ touch targets, crisp subtitle).
+ */
+@Composable
+fun IGseekTopBar(
+    title: String,
+    subtitle: String? = null,
+    onOpenDrawer: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    val palette = LocalIGseekPalette.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(
+            onClick = onOpenDrawer,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Icon(
+                imageVector = LucideIcons.Menu,
+                contentDescription = "Menu",
+                tint = palette.textPrimary,
+                modifier = Modifier.size(21.dp)
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                color = palette.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            content = actions
+        )
+    }
+}
+
+/**
+ * Tactile segmented control for switching views or filters cleanly without pill clutter.
+ */
+@Composable
+fun IGseekSegmentedControl(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.chipBg,
+        border = BorderStroke(1.dp, palette.glassBorder)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            options.forEachIndexed { index, label ->
+                val selected = index == selectedIndex
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(11.dp))
+                        .clickable { onSelect(index) },
+                    shape = RoundedCornerShape(11.dp),
+                    color = if (selected) {
+                        if (palette.isDark) palette.surfaceElevated else palette.brand
+                    } else {
+                        Color.Transparent
+                    },
+                    border = if (selected && palette.isDark) {
+                        BorderStroke(1.dp, palette.glassBorder)
+                    } else null
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 9.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = when {
+                                selected && !palette.isDark -> palette.brandOn
+                                selected -> palette.textPrimary
+                                else -> palette.textMuted
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Compact tactile search field used across Library, Memory, Saved, and Docs.
+ */
+@Composable
+fun IGseekSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = palette.glassBg,
+        border = BorderStroke(1.dp, palette.glassBorder)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Icon(
+                imageVector = LucideIcons.Search,
+                contentDescription = null,
+                tint = palette.textMuted,
+                modifier = Modifier.size(16.dp)
+            )
+            Box(modifier = Modifier.weight(1f)) {
+                if (query.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
+                    cursorBrush = SolidColor(palette.brand),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (query.isNotEmpty()) {
+                Icon(
+                    imageVector = LucideIcons.X,
+                    contentDescription = "Clear",
+                    tint = palette.textMuted,
+                    modifier = Modifier
+                        .size(17.dp)
+                        .clip(CircleShape)
+                        .clickable { onQueryChange("") }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Editorial natural-case section header with optional right meta text or action.
+ */
+@Composable
+fun IGseekSectionHeader(
+    title: String,
+    trailing: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = palette.textPrimary
+        )
+        if (!trailing.isNullOrBlank()) {
+            Text(
+                text = trailing,
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.textMuted
+            )
+        }
+    }
+}
+
+/**
+ * Clean minimalist empty state with soft icon container and optional CTA button.
+ */
+@Composable
+fun IGseekEmptyState(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = palette.glassBg,
+        border = BorderStroke(1.dp, palette.glassBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(palette.brandSoft),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = palette.brand,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = palette.textPrimary,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.textMuted,
+                textAlign = TextAlign.Center
+            )
+            if (!actionLabel.isNullOrBlank() && onAction != null) {
+                Spacer(Modifier.height(4.dp))
+                Button(
+                    onClick = onAction,
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.brand,
+                        contentColor = palette.brandOn
+                    )
+                ) {
+                    Text(actionLabel, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Signature mobile floating glass navigation dock for effortless 1-handed workspace switching.
+ */
+@Composable
+fun IGseekFloatingDock(
+    tabs: List<IGseekTab>,
+    activeTab: IGseekTab,
+    lang: String,
+    onSelectTab: (IGseekTab) -> Unit,
+    onOpenMenu: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalIGseekPalette.current
+    val dockTabs = remember(tabs) {
+        val base = if (tabs.size >= 3) tabs.take(4) else listOf(
+            IGseekTab.CHAT,
+            IGseekTab.FLOW,
+            IGseekTab.LIBRARY,
+            IGseekTab.ENGINE
+        )
+        base
+    }
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = if (palette.isDark) Color(0xFF141419).copy(alpha = 0.96f) else Color.White.copy(alpha = 0.97f),
+        border = BorderStroke(1.dp, palette.composerBorder),
+        shadowElevation = if (palette.isDark) 10.dp else 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            dockTabs.forEach { tab ->
+                val selected = tab == activeTab
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (selected) palette.brandSoft else Color.Transparent)
+                        .clickable { onSelectTab(tab) }
+                        .padding(vertical = 7.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Icon(
+                        imageVector = tabLucideIcon(tab),
+                        contentDescription = tab.label(lang),
+                        tint = if (selected) palette.brand else palette.textMuted,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    Text(
+                        text = tab.label(lang),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) palette.textPrimary else palette.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(0.85f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable(onClick = onOpenMenu)
+                    .padding(vertical = 7.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Icon(
+                    imageVector = LucideIcons.LayoutGrid,
+                    contentDescription = if (lang == "en") "All" else "Ещё",
+                    tint = palette.textMuted,
+                    modifier = Modifier.size(19.dp)
+                )
+                Text(
+                    text = if (lang == "en") "More" else "Ещё",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.textMuted,
+                    maxLines = 1
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -245,7 +675,7 @@ fun IGseekGlassCard(
 }
 
 /**
- * Interactive pill chip matching IGseek website chips.
+ * Interactive filter chip matching IGseek website chips.
  */
 @Composable
 fun IGseekGlassChip(

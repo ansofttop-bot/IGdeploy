@@ -176,17 +176,18 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
 
     private fun isOperationNotAllowed(code: String): Boolean =
         code.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ||
-            code.contains("ADMIN_RESTRICTED_OPERATION", ignoreCase = true)
+            code.contains("ADMIN_RESTRICTED_OPERATION", ignoreCase = true) ||
+            code.contains("PASSWORD_LOGIN_DISABLED", ignoreCase = true)
 
     private fun translateAuthError(code: String): String = when {
         code.contains("INVALID_LOGIN_CREDENTIALS") || code.contains("INVALID_PASSWORD") -> "Неверный email или пароль"
-        code.contains("EMAIL_EXISTS") -> "Этот email уже зарегистрирован"
+        code.contains("EMAIL_EXISTS") -> "Аккаунт с этим email уже зарегистрирован. Перейдите на вкладку «Вход»."
         code.contains("EMAIL_NOT_FOUND") -> "Аккаунт с таким email не найден"
         code.contains("INVALID_EMAIL") -> "Введите корректный адрес email"
         code.contains("WEAK_PASSWORD") -> "Пароль должен содержать минимум 6 символов"
         code.contains("USER_DISABLED") -> "Этот аккаунт временно отключён"
         code.contains("TOO_MANY_ATTEMPTS") -> "Слишком много попыток, попробуйте чуть позже"
-        isOperationNotAllowed(code) -> "Вход по паролю недоступен на сервере Firebase — используется локальный аккаунт"
+        isOperationNotAllowed(code) -> "Вход и регистрация по почте ещё не включены в Firebase Console (Authentication → Sign-in method → Email/Password). Пока используйте «Войти через Google» — с ним сразу работает облачная синхронизация."
         else -> code
     }
 }

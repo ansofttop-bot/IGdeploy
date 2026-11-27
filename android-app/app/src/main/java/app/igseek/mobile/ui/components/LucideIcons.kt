@@ -436,4 +436,110 @@ object LucideIcons {
             filledPaths = listOf("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z")
         )
     }
+
+    val LayoutGrid: ImageVector by lazy {
+        lucide(
+            name = "LayoutGrid",
+            paths = listOf(
+                "M4 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z",
+                "M15 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z",
+                "M15 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1Z",
+                "M4 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1Z"
+            )
+        )
+    }
+
+    val ListIcon: ImageVector by lazy {
+        lucide(
+            name = "ListIcon",
+            paths = listOf("M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01")
+        )
+    }
+
+    val Upload: ImageVector by lazy {
+        lucide(
+            name = "Upload",
+            paths = listOf("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m17 8-5-5-5 5", "M12 3v12")
+        )
+    }
+
+    val Zap: ImageVector by lazy {
+        lucide(
+            name = "Zap",
+            paths = listOf("M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z")
+        )
+    }
+
+    val Radio: ImageVector by lazy {
+        lucide(
+            name = "Radio",
+            paths = listOf(
+                "M4.9 19.1C1 15.2 1 8.8 4.9 4.9",
+                "M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5",
+                "M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
+                "M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5",
+                "M19.1 4.9C23 8.8 23 15.1 19.1 19"
+            )
+        )
+    }
+
+    val Volume2: ImageVector by lazy {
+        lucide(
+            name = "Volume2",
+            paths = listOf(
+                "M11 5L6 9H2v6h4l5 4V5Z",
+                "M15.54 8.46a5 5 0 0 1 0 7.07",
+                "M19.07 4.93a10 10 0 0 1 0 14.14"
+            )
+        )
+    }
+
+    val FileText: ImageVector by lazy {
+        lucide(
+            name = "FileText",
+            paths = listOf(
+                "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z",
+                "M14 2v4a2 2 0 0 0 2 2h4",
+                "M10 9H8",
+                "M16 13H8",
+                "M16 17H8"
+            )
+        )
+    }
+
+    val ArrowUpRight: ImageVector by lazy {
+        lucide(
+            name = "ArrowUpRight",
+            paths = listOf("M7 7h10v10", "M7 17 17 7")
+        )
+    }
+
+    val Terminal: ImageVector by lazy {
+        lucide(
+            name = "Terminal",
+            paths = listOf("m4 17 6-6-6-6", "M12 19h8")
+        )
+    }
+
+    val Smartphone: ImageVector by lazy {
+        lucide(
+            name = "Smartphone",
+            paths = listOf("M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z", "M12 18h.01")
+        )
+    }
+
+    val Cloud: ImageVector by lazy {
+        lucide(
+            name = "Cloud",
+            paths = listOf("M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z")
+        )
+    }
+
+    val RotateCcw: ImageVector by lazy {
+        lucide(
+            name = "RotateCcw",
+            paths = listOf("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5")
+        )
+    }
 }
+

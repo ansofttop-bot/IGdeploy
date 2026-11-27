@@ -190,6 +190,17 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     // ==================== CLOUD FIRESTORE SYNC ====================
 
+    private var lastCloudSyncAtMs: Long = 0L
+
+    fun syncAllFromCloudIfStale(minIntervalMs: Long = 20_000L) {
+        val now = System.currentTimeMillis()
+        val session = _state.value.session ?: return
+        if (!session.isCloudSynced || !_state.value.isOnline) return
+        if (_state.value.cloudSyncStatus == CloudSyncStatus.SYNCING) return
+        if (now - lastCloudSyncAtMs < minIntervalMs) return
+        syncAllFromCloud()
+    }
+
     fun syncAllFromCloud() {
         viewModelScope.launch {
             val session = getFreshSession() ?: return@launch
@@ -217,6 +228,41 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 val remoteMemories = memoriesDef.await()
                 val remoteLibrary = libraryDef.await()
                 val remoteEngine = engineDef.await()
+
+                val remoteProjectIds = remoteProjects.map { it.id }.toSet()
+                val remoteChatIds = remoteChats.map { it.id }.toSet()
+                val remoteMemoryIds = remoteMemories.map { it.id }.toSet()
+                val remoteLibraryIds = remoteLibrary.map { it.id }.toSet()
+                val remoteEngineIds = remoteEngine.map { it.id }.toSet()
+
+                // Push any local-only items up to Firestore so cross-device sync is truly bi-directional
+                val localProjectsBefore = store.listProjects()
+                localProjectsBefore.filter { it.id !in remoteProjectIds }.forEach { proj ->
+                    runCatching { firestore.syncProject(session, proj) }
+                }
+
+                val localChatsBefore = store.listChats()
+                localChatsBefore.filter { it.id !in remoteChatIds }.forEach { chat ->
+                    val localMsgs = store.listMessages(chat.id)
+                    if (localMsgs.isNotEmpty() || chat.title != "Новый чат") {
+                        runCatching { firestore.syncChat(session, chat) }
+                        localMsgs.forEachIndexed { idx, msg ->
+                            if (!msg.isError) {
+                                runCatching { firestore.syncMessage(session, msg, idx + 1) }
+                            }
+                        }
+                    }
+                }
+
+                _state.value.memories.filter { it.id !in remoteMemoryIds }.forEach { mem ->
+                    runCatching { firestore.syncMemory(session, mem) }
+                }
+                _state.value.libraryFiles.filter { it.id !in remoteLibraryIds }.forEach { item ->
+                    runCatching { firestore.syncLibraryFile(session, item) }
+                }
+                store.listEngineProjects().filter { it.id !in remoteEngineIds }.forEach { eng ->
+                    runCatching { firestore.syncEngineProject(session, eng) }
+                }
 
                 // Merge Projects
                 remoteProjects.forEach { store.upsertProject(it) }
@@ -268,15 +314,25 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     store.saveLayoutPrefs(updatedLayout)
                 }
 
-                val activeId = _state.value.activeChatId.takeIf { id -> mergedChats.any { it.id == id } }
-                    ?: mergedChats.first().id
-                var activeMessages = store.listMessages(activeId)
-                if (activeMessages.isEmpty()) {
-                    val remoteMsgs = firestore.fetchMessagesForChat(session, activeId)
-                    remoteMsgs.forEach { store.upsertMessage(it) }
-                    activeMessages = store.listMessages(activeId)
+                // Prefer most recently updated remote chat if current active chat is empty placeholder
+                val currentActiveId = _state.value.activeChatId
+                val currentLocalMsgs = if (currentActiveId.isNotBlank()) store.listMessages(currentActiveId) else emptyList()
+                val activeId = if (currentActiveId.isNotBlank() && mergedChats.any { it.id == currentActiveId } && (currentLocalMsgs.isNotEmpty() || remoteChats.isEmpty())) {
+                    currentActiveId
+                } else {
+                    mergedChats.first().id
                 }
 
+                // ALWAYS pull remote messages for the active chat so messages from Web appear immediately
+                val remoteMsgs = runCatching { firestore.fetchMessagesForChat(session, activeId) }.getOrDefault(emptyList())
+                val remoteMsgIds = remoteMsgs.map { it.id }.toSet()
+                store.listMessages(activeId).filter { it.id !in remoteMsgIds && !it.isError }.forEachIndexed { idx, msg ->
+                    runCatching { firestore.syncMessage(session, msg, idx + 1) }
+                }
+                remoteMsgs.forEach { store.upsertMessage(it) }
+                val activeMessages = store.listMessages(activeId)
+
+                lastCloudSyncAtMs = System.currentTimeMillis()
                 _state.update { st ->
                     st.copy(
                         cloudSyncStatus = CloudSyncStatus.SYNCED,
@@ -342,18 +398,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _state.update { it.copy(isAuthLoading = true, authError = null) }
             runCatching {
-                try {
-                    authApi.signInWithEmail(cleanEmail, password)
-                } catch (err: Throwable) {
-                    val localMatch = store.authenticateLocalEmailAccount(cleanEmail, password)
-                    if (localMatch != null) {
-                        localMatch
-                    } else if (err is FirebaseOperationNotAllowedException) {
-                        throw IllegalStateException("Аккаунт с этим email не найден. Перейдите на вкладку «Регистрация» или войдите через Google.")
-                    } else {
-                        throw err
-                    }
-                }
+                authApi.signInWithEmail(cleanEmail, password)
             }.onSuccess { session ->
                 store.saveSession(session)
                 _state.update {
@@ -388,12 +433,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _state.update { it.copy(isAuthLoading = true, authError = null) }
             runCatching {
-                try {
-                    authApi.signUpWithEmail(cleanEmail, password, cleanName)
-                } catch (_: FirebaseOperationNotAllowedException) {
-                    // Matches web firebase-service.ts fallback when Firebase Email/Password provider is disabled
-                    store.registerLocalEmailAccount(cleanEmail, password, cleanName)
-                }
+                authApi.signUpWithEmail(cleanEmail, password, cleanName)
             }.onSuccess { session ->
                 store.saveSession(session)
                 _state.update {
@@ -741,11 +781,11 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 activeTab = IGseekTab.CHAT
             )
         }
-        if (localMsgs.isEmpty() && _state.value.isOnline) {
+        if (_state.value.isOnline) {
             viewModelScope.launch {
                 val session = getFreshSession() ?: return@launch
-                if (session.isGuest) return@launch
-                val remoteMsgs = firestore.fetchMessagesForChat(session, chatId)
+                if (!session.isCloudSynced) return@launch
+                val remoteMsgs = runCatching { firestore.fetchMessagesForChat(session, chatId) }.getOrDefault(emptyList())
                 if (remoteMsgs.isNotEmpty()) {
                     remoteMsgs.forEach { store.upsertMessage(it) }
                     if (_state.value.activeChatId == chatId) {

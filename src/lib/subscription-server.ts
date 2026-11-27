@@ -65,7 +65,22 @@ export class LicenseKeyError extends Error {
   }
 }
 
-const EPHEMERAL_FALLBACK_SECRET = crypto.randomBytes(32).toString("hex");
+// Deterministic fallback secret derived from project/database identity so separate
+// Vercel serverless instances (/api/subscription, /api/chat, cold starts) verify
+// the exact same HMAC proof even when SUBSCRIPTION_SIGNING_SECRET is not set.
+const DETERMINISTIC_FALLBACK_SECRET = crypto
+  .createHash("sha256")
+  .update(
+    [
+      "igseek-pro-hmac-v2",
+      PROJECT_ID,
+      DATABASE_ID,
+      (firebaseConfig as any).appId || "",
+      (process.env.OPENROUTER_API_KEY || "").slice(0, 16),
+    ].join("|"),
+    "utf8",
+  )
+  .digest("hex");
 const TIER_CACHE = new Map<string, { isPro: boolean; expiresAtMs: number; checkedAt: number }>();
 const TIER_CACHE_TTL_MS = 45_000;
 
@@ -79,7 +94,7 @@ const RATE_LIMIT_MAX_FAILURES = 10;
 function getSigningSecret(): string {
   const explicit = (process.env.SUBSCRIPTION_SIGNING_SECRET || "").trim();
   if (explicit) return explicit;
-  return EPHEMERAL_FALLBACK_SECRET;
+  return DETERMINISTIC_FALLBACK_SECRET;
 }
 
 export function signSubscriptionProof(payload: SignedProofPayload): string {

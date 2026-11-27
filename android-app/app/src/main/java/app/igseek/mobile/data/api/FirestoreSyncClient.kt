@@ -34,15 +34,16 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val projectId: String = BuildConfig.FIREBASE_PROJECT_ID.trim()
+    private val databaseId: String = BuildConfig.FIREBASE_DATABASE_ID.trim().ifBlank { "(default)" }
 
     val isConfigured: Boolean
         get() = projectId.isNotBlank()
 
     private fun docsBaseUrl(): String =
-        "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents"
+        "https://firestore.googleapis.com/v1/projects/$projectId/databases/$databaseId/documents"
 
     private fun canSync(session: AuthSession?): Boolean {
-        return isConfigured && session != null && !session.isGuest && session.idToken.isNotBlank() && session.uid.isNotBlank()
+        return isConfigured && session != null && session.isCloudSynced && session.uid.isNotBlank()
     }
 
     private fun sanitizeDocId(rawId: String): String {
@@ -94,6 +95,8 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         limit: Int = 100
     ): List<Pair<String, JSONObject>> {
         val results = LinkedHashMap<String, JSONObject>()
+        var anySucceeded = false
+        var lastError: Throwable? = null
         for (ownerField in listOf("user_id", "userId")) {
             val queryBody = JSONObject().put(
                 "structuredQuery",
@@ -120,8 +123,12 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
                 .build()
             runCatching {
                 client.newCall(req).execute().use { res ->
-                    if (!res.isSuccessful) return@use
                     val raw = res.body?.string().orEmpty()
+                    if (!res.isSuccessful) {
+                        lastError = IllegalStateException("Firestore $collectionId HTTP ${res.code}: ${raw.take(160)}")
+                        return@use
+                    }
+                    anySucceeded = true
                     val arr = JSONArray(raw)
                     for (i in 0 until arr.length()) {
                         val row = arr.optJSONObject(i) ?: continue
@@ -133,7 +140,10 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
                         }
                     }
                 }
-            }
+            }.onFailure { lastError = it }
+        }
+        if (!anySucceeded && lastError != null) {
+            throw lastError!!
         }
         return results.entries.map { it.key to it.value }
     }
@@ -366,6 +376,23 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
             put("content", strVal(msg.content.take(900_000)))
             if (msg.reasoning.isNotBlank()) {
                 put("reasoning", strVal(msg.reasoning.take(400_000)))
+            }
+            if (msg.images.isNotEmpty()) {
+                val imgValues = JSONArray()
+                var totalImgChars = 0
+                for (img in msg.images.take(6)) {
+                    if (img.dataUrl.length > 220_000 || totalImgChars + img.dataUrl.length > 550_000) continue
+                    totalImgChars += img.dataUrl.length
+                    val mapFields = JSONObject().apply {
+                        put("id", strVal(img.id.take(120)))
+                        put("title", strVal(img.title.take(200)))
+                        put("dataUrl", strVal(img.dataUrl))
+                    }
+                    imgValues.put(JSONObject().put("mapValue", JSONObject().put("fields", mapFields)))
+                }
+                if (imgValues.length() > 0) {
+                    put("images", JSONObject().put("arrayValue", JSONObject().put("values", imgValues)))
+                }
             }
             put("position", intVal(position.toLong()))
             put("created_at", strVal(iso))

@@ -1,7 +1,5 @@
 package app.igseek.mobile
 
-import android.accounts.AccountManager
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -10,10 +8,10 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,27 +57,18 @@ class MainActivity : FragmentActivity() {
 
     private val viewModel: IGseekViewModel by viewModels()
     private var isUnlocked by mutableStateOf(true)
+    private var awaitingCustomTabAuth: Boolean = false
 
-    // Native Android system dialog showing all Google accounts registered on the device
-    private val systemGoogleAccountPicker = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.trim().orEmpty()
-            if (email.isNotBlank()) {
-                val displayName = email.substringBefore("@").replace('.', ' ')
-                    .split(" ")
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ") { part ->
-                        part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-                    }
-                    .ifBlank { email.substringBefore("@") }
-                viewModel.signInWithDeviceGoogleAccount(email = email, displayName = displayName)
-            } else {
+    override fun onResume() {
+        super.onResume()
+        if (awaitingCustomTabAuth) {
+            awaitingCustomTabAuth = false
+            // If user closed Chrome Custom Tab without completing auth, stop loading spinner cleanly
+            if (viewModel.state.value.session == null && viewModel.state.value.isGoogleAuthLoading) {
                 viewModel.setGoogleAuthLoading(false)
             }
         } else {
-            viewModel.setGoogleAuthLoading(false)
+            viewModel.syncAllFromCloudIfStale()
         }
     }
 
@@ -153,7 +142,7 @@ class MainActivity : FragmentActivity() {
     private fun launchGoogleSignIn() {
         val clientId = BuildConfig.FIREBASE_OAUTH_CLIENT_ID.trim()
         if (clientId.isBlank()) {
-            launchSystemDeviceAccountPicker()
+            launchInAppGoogleAuthBridge()
             return
         }
 
@@ -161,7 +150,7 @@ class MainActivity : FragmentActivity() {
             viewModel.setGoogleAuthLoading(true)
             val credentialManager = CredentialManager.create(this@MainActivity)
 
-            // 1. Try native Google Sign-In bottom sheet / dialog via Credential Manager
+            // 1. Try native Google Sign-In bottom sheet via Android Credential Manager (real Firebase ID token)
             val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(false)
@@ -194,32 +183,45 @@ class MainActivity : FragmentActivity() {
                     val googleCred = GoogleIdTokenCredential.createFrom(credential.data)
                     viewModel.signInWithGoogleIdToken(googleCred.idToken)
                 } else {
-                    launchSystemDeviceAccountPicker()
+                    launchInAppGoogleAuthBridge()
                 }
             } catch (_: GetCredentialCancellationException) {
                 viewModel.setGoogleAuthLoading(false)
             } catch (_: Exception) {
-                // Opens the native Android system dialog listing registered Google accounts on the device (NO browser!)
-                launchSystemDeviceAccountPicker()
+                // Fallback to in-app Chrome Custom Tab Firebase Auth bridge on our Vercel domain
+                // so Android ALWAYS receives a real Firebase Auth token & exact same UID as the web app for cloud sync!
+                launchInAppGoogleAuthBridge()
             }
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun launchSystemDeviceAccountPicker() {
+    private fun launchInAppGoogleAuthBridge() {
+        val bridgeBase = viewModel.getAuthBridgeBaseUrl().trim().trimEnd('/')
+        if (bridgeBase.isBlank()) {
+            viewModel.onGoogleAuthError("Не настроен адрес сервера авторизации IGseek")
+            return
+        }
+        val state = viewModel.createAndStoreOAuthState()
+        val authUrl = Uri.parse("$bridgeBase/login")
+            .buildUpon()
+            .appendQueryParameter("mobile_auth", "1")
+            .appendQueryParameter("state", state)
+            .build()
+
+        awaitingCustomTabAuth = true
         runCatching {
-            val intent = AccountManager.newChooseAccountIntent(
-                null,
-                null,
-                arrayOf("com.google"),
-                null,
-                null,
-                null,
-                null
-            )
-            systemGoogleAccountPicker.launch(intent)
+            val customTabs = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .setShareState(CustomTabsIntent.SHARE_STATE_OFF)
+                .build()
+            customTabs.launchUrl(this, authUrl)
         }.onFailure {
-            viewModel.onGoogleAuthError("Не удалось открыть системное окно выбора аккаунта Google на устройстве")
+            runCatching {
+                startActivity(Intent(Intent.ACTION_VIEW, authUrl))
+            }.onFailure {
+                awaitingCustomTabAuth = false
+                viewModel.onGoogleAuthError("Не удалось открыть окно входа через Google")
+            }
         }
     }
 
@@ -230,6 +232,7 @@ class MainActivity : FragmentActivity() {
         // app.igseek.mobile://auth#firebase_id_token=...&refresh_token=...&uid=...&email=...&name=...&state=...
         val dataUri = intent.data
         if (dataUri != null && dataUri.scheme == "app.igseek.mobile" && dataUri.host == "auth") {
+            awaitingCustomTabAuth = false
             // Clear intent data immediately so config changes or activity resume never re-trigger this deep link
             intent.data = null
             setIntent(intent)

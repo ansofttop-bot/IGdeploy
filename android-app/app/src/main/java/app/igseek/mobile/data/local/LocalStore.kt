@@ -367,7 +367,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 language = o.optString("language", "ru").ifBlank { "ru" },
                 compactDensity = o.optBoolean("compactDensity", false),
                 showQuickPrompts = o.optBoolean("showQuickPrompts", true),
-                showBottomBar = o.optBoolean("showBottomBar", false),
+                showBottomBar = o.optBoolean("showBottomBar", true),
                 biometricLockEnabled = o.optBoolean("biometricLockEnabled", false),
                 hapticsEnabled = o.optBoolean("hapticsEnabled", true),
                 tabOrder = effectiveTabs

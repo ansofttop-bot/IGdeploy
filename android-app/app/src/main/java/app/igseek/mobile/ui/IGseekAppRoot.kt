@@ -37,7 +37,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -66,9 +65,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.ui.components.IGseekCanvas
+import app.igseek.mobile.ui.components.IGseekFloatingDock
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
+import app.igseek.mobile.ui.components.IGseekSearchField
 import app.igseek.mobile.ui.components.IGseekWordmark
 import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.screens.AuthScreen
@@ -122,6 +123,7 @@ fun IGseekAppRoot(
     val scope = rememberCoroutineScope()
     val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
     val closeDrawer: () -> Unit = { scope.launch { drawerState.close() } }
+    val showDock = state.layoutPrefs.showBottomBar && state.activeTab != IGseekTab.CHAT
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -137,9 +139,27 @@ fun IGseekAppRoot(
         IGseekCanvas {
             Scaffold(
                 containerColor = Color.Transparent,
-                snackbarHost = { SnackbarHost(snackbarHostState) }
-            ) { _ ->
-                Box(modifier = Modifier.fillMaxSize()) {
+                snackbarHost = { SnackbarHost(snackbarHostState) },
+                bottomBar = {
+                    if (showDock) {
+                        Box(modifier = Modifier.navigationBarsPadding()) {
+                            IGseekFloatingDock(
+                                tabs = state.layoutPrefs.tabOrder,
+                                activeTab = state.activeTab,
+                                lang = state.layoutPrefs.language,
+                                onSelectTab = { viewModel.selectTab(it) },
+                                onOpenMenu = openDrawer
+                            )
+                        }
+                    }
+                }
+            ) { innerPadding ->
+                val bottomInset = if (showDock) innerPadding.calculateBottomPadding() else 0.dp
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = bottomInset)
+                ) {
                     when (state.activeTab) {
                         IGseekTab.CHAT -> ChatScreen(
                             state = state,
@@ -168,6 +188,7 @@ fun IGseekAppRoot(
                         )
                         IGseekTab.WAVE -> WaveScreen(
                             state = state,
+                            viewModel = viewModel,
                             onOpenDrawer = openDrawer,
                             onBackToChat = { viewModel.selectTab(IGseekTab.CHAT) }
                         )
@@ -225,7 +246,7 @@ private fun IGseekSidebarDrawer(
     ModalDrawerSheet(
         drawerContainerColor = palette.sidebarBg,
         drawerContentColor = palette.textPrimary,
-        modifier = Modifier.width(304.dp)
+        modifier = Modifier.width(308.dp)
     ) {
         Column(
             modifier = Modifier
@@ -234,7 +255,6 @@ private fun IGseekSidebarDrawer(
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
-            // Clean Website-Style Sidebar Header (no cluttered status dot)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -250,7 +270,7 @@ private fun IGseekSidebarDrawer(
 
                 IconButton(
                     onClick = onClose,
-                    modifier = Modifier.size(34.dp)
+                    modifier = Modifier.size(38.dp)
                 ) {
                     Icon(
                         imageVector = LucideIcons.X,
@@ -263,16 +283,16 @@ private fun IGseekSidebarDrawer(
 
             Spacer(Modifier.height(12.dp))
 
-            // Pill "Новый чат" button matching website
+            // Primary "New Chat" action
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(50))
+                    .clip(RoundedCornerShape(14.dp))
                     .clickable {
                         viewModel.createNewChat()
                         onClose()
                     },
-                shape = RoundedCornerShape(50),
+                shape = RoundedCornerShape(14.dp),
                 color = if (palette.isDark) palette.brandSoft else palette.brand,
                 border = BorderStroke(1.dp, palette.brandBorder)
             ) {
@@ -299,7 +319,6 @@ private fun IGseekSidebarDrawer(
 
             Spacer(Modifier.height(12.dp))
 
-            // Scrollable Workspaces + Projects + Chats
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -308,24 +327,25 @@ private fun IGseekSidebarDrawer(
                     IGseekTab.CHAT,
                     IGseekTab.FLOW,
                     IGseekTab.LIBRARY,
-                    IGseekTab.SAVED,
                     IGseekTab.ENGINE,
+                    IGseekTab.SAVED,
                     IGseekTab.WAVE,
                     IGseekTab.DOCS
                 )
                 items(primaryWorkspaces, key = { "nav_${it.key}" }) { tab ->
+                    val meta = when (tab) {
+                        IGseekTab.LIBRARY -> state.libraryFiles.size.takeIf { it > 0 }?.toString()
+                        IGseekTab.ENGINE -> state.engineProjects.size.takeIf { it > 0 }?.toString()
+                        IGseekTab.SAVED -> (state.chats.count { it.isSaved } + state.bookmarkedMessages.size)
+                            .takeIf { it > 0 }?.toString()
+                        IGseekTab.WAVE -> if (isEn) "Voice" else "Голос"
+                        else -> null
+                    }
                     SidebarNavRow(
                         icon = tabLucideIcon(tab),
                         label = tab.label(lang),
                         selected = state.activeTab == tab,
-                        badge = when (tab) {
-                            IGseekTab.WAVE -> if (isEn) "Soon" else "Скоро"
-                            IGseekTab.SAVED -> {
-                                val count = state.chats.count { it.isSaved } + state.bookmarkedMessages.size
-                                if (count > 0) count.toString() else null
-                            }
-                            else -> null
-                        },
+                        metaText = meta,
                         onClick = {
                             viewModel.selectTab(tab)
                             onClose()
@@ -348,19 +368,30 @@ private fun IGseekSidebarDrawer(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = if (isEn) "PROJECTS" else "ПРОЕКТЫ",
-                            style = MaterialTheme.typography.labelSmall,
+                            text = if (isEn) "Folders" else "Папки",
+                            style = MaterialTheme.typography.labelMedium,
                             color = palette.textMuted
                         )
-                        Icon(
-                            imageVector = LucideIcons.Plus,
-                            contentDescription = "New Project",
-                            tint = palette.textMuted,
+                        Row(
                             modifier = Modifier
-                                .size(17.dp)
-                                .clip(CircleShape)
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { showNewProjectDialog = true }
-                        )
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Plus,
+                                contentDescription = "New Folder",
+                                tint = palette.textMuted,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (isEn) "Add" else "Новая",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textMuted
+                            )
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                     Row(
@@ -387,41 +418,18 @@ private fun IGseekSidebarDrawer(
 
                 // Search Chats
                 item(key = "chat_search") {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = {
-                            Text(
-                                text = if (isEn) "Search chats…" else "Поиск чатов…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.textMuted
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = LucideIcons.Search,
-                                contentDescription = null,
-                                tint = palette.textMuted,
-                                modifier = Modifier.size(15.dp)
-                            )
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(color = palette.textPrimary),
-                        shape = RoundedCornerShape(50),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = palette.brandBorder,
-                            unfocusedBorderColor = palette.glassBorder,
-                            focusedContainerColor = palette.chipBg,
-                            unfocusedContainerColor = palette.chipBg
-                        ),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    IGseekSearchField(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        placeholder = if (isEn) "Search chats…" else "Поиск чатов…",
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
 
                 item(key = "chats_header") {
                     Text(
-                        text = if (isEn) "RECENT CHATS" else "НЕДАВНИЕ ЧАТЫ",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = if (isEn) "Recent chats" else "Недавние чаты",
+                        style = MaterialTheme.typography.labelMedium,
                         color = palette.textMuted,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                     )
@@ -438,7 +446,7 @@ private fun IGseekSidebarDrawer(
                                 viewModel.selectChat(chat.id)
                                 onClose()
                             }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -458,7 +466,7 @@ private fun IGseekSidebarDrawer(
                                 .size(15.dp)
                                 .clickable { viewModel.toggleSaveChat(chat.id) }
                         )
-                        Spacer(Modifier.width(9.dp))
+                        Spacer(Modifier.width(10.dp))
                         Icon(
                             imageVector = LucideIcons.Trash2,
                             contentDescription = "Delete",
@@ -471,10 +479,8 @@ private fun IGseekSidebarDrawer(
                 }
             }
 
-            // Bottom Pinned Footer
             HorizontalDivider(color = palette.divider, modifier = Modifier.padding(vertical = 8.dp))
 
-            // Small, unobtrusive IGseek Pro subscription button (Requirement #4)
             if (!state.subscription.isPro) {
                 Surface(
                     modifier = Modifier
@@ -490,7 +496,7 @@ private fun IGseekSidebarDrawer(
                     border = BorderStroke(1.dp, palette.brandBorder)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -516,7 +522,7 @@ private fun IGseekSidebarDrawer(
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                text = if (isEn) "Key" else "По ключу",
+                                text = if (isEn) "Activate" else "По ключу",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textMuted
                             )
@@ -560,6 +566,8 @@ private fun IGseekSidebarDrawer(
             Spacer(Modifier.height(8.dp))
 
             val session = state.session
+            val displayName = session?.displayName?.ifBlank { "IGseek User" } ?: "IGseek"
+            val initial = displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "I"
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -575,37 +583,46 @@ private fun IGseekSidebarDrawer(
                 Row(
                     modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(if (state.subscription.isPro) palette.brandSoft else palette.surfaceElevated),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = initial,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (state.subscription.isPro) palette.brand else palette.textPrimary
+                        )
+                    }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = session?.displayName?.ifBlank { "IGseek User" } ?: "IGseek",
+                            text = displayName,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = palette.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        val planSuffix = if (state.subscription.isPro) "Pro" else "Free"
                         Text(
-                            text = session?.email ?: "",
+                            text = "${session?.email?.ifBlank { if (isEn) "Guest" else "Гость" } ?: ""} · $planSuffix",
                             style = MaterialTheme.typography.labelSmall,
                             color = palette.textMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = if (state.subscription.isPro) palette.brand else palette.surfaceElevated,
-                        border = BorderStroke(1.dp, if (state.subscription.isPro) palette.brand else palette.glassBorder)
-                    ) {
-                        Text(
-                            text = if (state.subscription.isPro) "PRO" else "FREE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (state.subscription.isPro) palette.brandOn else palette.textMuted,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = LucideIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = palette.textMuted,
+                        modifier = Modifier.size(15.dp)
+                    )
                 }
             }
         }
@@ -615,7 +632,7 @@ private fun IGseekSidebarDrawer(
         AlertDialog(
             onDismissRequest = { showNewProjectDialog = false },
             containerColor = palette.surfaceElevated,
-            title = { Text(if (isEn) "New Project Folder" else "Новый проект", color = palette.textPrimary) },
+            title = { Text(if (isEn) "New Folder" else "Новая папка", color = palette.textPrimary) },
             text = {
                 OutlinedTextField(
                     value = newProjectName,
@@ -677,7 +694,7 @@ private fun ProSubscriptionSheet(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(38.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(palette.brandSoft),
                     contentAlignment = Alignment.Center
@@ -773,7 +790,7 @@ private fun ProSubscriptionSheet(
                 Text(
                     text = err,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFEF4444)
+                    color = palette.danger
                 )
             }
 
@@ -828,7 +845,7 @@ private fun SidebarNavRow(
     icon: ImageVector,
     label: String,
     selected: Boolean,
-    badge: String?,
+    metaText: String?,
     onClick: () -> Unit
 ) {
     val palette = LocalIGseekPalette.current
@@ -838,7 +855,7 @@ private fun SidebarNavRow(
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) palette.brandSoft else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 9.dp),
+            .padding(horizontal = 11.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -855,19 +872,12 @@ private fun SidebarNavRow(
             color = if (selected) palette.textPrimary else palette.textSecondary,
             modifier = Modifier.weight(1f)
         )
-        if (!badge.isNullOrBlank()) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = palette.chipBg,
-                border = BorderStroke(1.dp, palette.glassBorder)
-            ) {
-                Text(
-                    text = badge,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.textMuted,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                )
-            }
+        if (!metaText.isNullOrBlank()) {
+            Text(
+                text = metaText,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) palette.brand else palette.textMuted
+            )
         }
     }
 }
@@ -919,7 +929,7 @@ fun tabLucideIcon(tab: IGseekTab): ImageVector = when (tab) {
     IGseekTab.SAVED -> LucideIcons.Bookmark
     IGseekTab.ENGINE -> LucideIcons.Code2
     IGseekTab.WAVE -> LucideIcons.AudioLines
-    IGseekTab.DOCS -> LucideIcons.FileCode
+    IGseekTab.DOCS -> LucideIcons.FileText
     IGseekTab.MEMORY -> LucideIcons.Brain
     IGseekTab.SETTINGS -> LucideIcons.Settings
 }

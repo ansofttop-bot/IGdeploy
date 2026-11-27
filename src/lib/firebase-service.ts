@@ -1359,11 +1359,11 @@ export function formatAuthError(err: unknown, lang: string = 'en'): string {
       ar: 'إعادة تعيين كلمة المرور عبر البريد غير متاحة حاليًا. تواصل مع الدعم أو أنشئ حسابًا جديدًا.',
     },
     'operation-not-allowed': {
-      en: 'Password sign-in is unavailable for this account (it may have been created with Google). Please register a new email or sign in with Google on the web.',
-      ru: 'Вход по паролю для этого аккаунта недоступен (возможно, он создан через Google). Зарегистрируйте другой email или войдите через Google на сайте.',
-      es: 'El acceso con contraseña no está disponible para esta cuenta (pudo haberse creado con Google). Registra otro correo o entra con Google en la web.',
-      fr: 'La connexion par mot de passe est indisponible pour ce compte (peut-être créé avec Google). Utilisez un autre e-mail ou Google sur le web.',
-      ar: 'الدخول بكلمة المرور غير متاح لهذا الحساب (ربما أُنشيء عبر Google). سجّل ببريد آخر أو ادخل عبر Google على الموقع.',
+      en: 'Email/Password sign-in is not enabled in Firebase Console yet (Authentication → Sign-in method → Email/Password). Use "Sign in with Google" for instant cloud sync across all devices.',
+      ru: 'Вход и регистрация по почте ещё не включены в Firebase Console (Authentication → Sign-in method → Email/Password). Пока войдите через Google — он сразу синхронизирует все данные между сайтом и Android.',
+      es: 'El acceso con correo y contraseña aún no está activado en Firebase Console. Usa «Iniciar sesión con Google» para sincronizar en todos tus dispositivos.',
+      fr: 'La connexion par e-mail/mot de passe n’est pas encore activée dans la console Firebase. Utilisez « Se connecter avec Google » pour la synchronisation cloud.',
+      ar: 'تسجيل الدخول بالبريد وكلمة المرور غير مفعّل بعد في Firebase Console. استخدم «تسجيل الدخول عبر Google» للمزامنة السحابية.',
     },
     'invalid-credential': {
       en: 'Invalid email address or password. Please check your details.',
@@ -1667,21 +1667,12 @@ export const firebaseClient = {
         };
       } catch (err: any) {
         const code = err?.code || '';
-        const localResult = await tryLocalSignIn();
-        if (localResult.found) {
-          if (localResult.valid) {
-            return {
-              data: { user: localResult.user, session: userToSession(localResult.user) },
-              error: null,
-            };
-          }
-          return {
-            data: { user: null, session: null },
-            error: makeAuthError('auth/invalid-credential'),
-          };
-        }
-
-        if (code === 'auth/operation-not-allowed' || code === 'auth/admin-restricted-operation') {
+        const msg = String(err?.message || '');
+        if (
+          code === 'auth/operation-not-allowed' ||
+          code === 'auth/admin-restricted-operation' ||
+          msg.includes('PASSWORD_LOGIN_DISABLED')
+        ) {
           return {
             data: { user: null, session: null },
             error: makeAuthError('auth/operation-not-allowed'),
@@ -1775,78 +1766,20 @@ export const firebaseClient = {
         };
       } catch (err: any) {
         const code = err?.code || '';
-        const shouldUseLocalAccountFallback =
+        const msg = String(err?.message || '');
+        if (
           code === 'auth/operation-not-allowed' ||
-          code === 'auth/admin-restricted-operation';
-
-        if (!shouldUseLocalAccountFallback) {
+          code === 'auth/admin-restricted-operation' ||
+          msg.includes('PASSWORD_LOGIN_DISABLED')
+        ) {
           return {
             data: { user: null, session: null },
-            error: err,
+            error: makeAuthError('auth/operation-not-allowed'),
           };
         }
-
-        const accounts = readLocalAccounts();
-        if (accounts[emailKey]) {
-          return {
-            data: { user: null, session: null },
-            error: makeAuthError('auth/email-already-in-use'),
-          };
-        }
-
-        const uid = `local_${safeBase64Id(emailKey)}_${Date.now().toString(36)}`;
-        const salt = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-        const passwordHash = await hashPassword(password, salt);
-        const nowIso = new Date().toISOString();
-
-        accounts[emailKey] = {
-          uid,
-          email: cleanEmail,
-          displayName: name,
-          salt,
-          passwordHash,
-          createdAt: nowIso,
-        };
-        writeLocalAccounts(accounts);
-
-        const preFp = await withTimeout(getDeviceFingerprint(), 1500).catch(() => '');
-        const { usage: baselineUsage, resetAt: baselineResetAt } = await withTimeout(
-          resolveRegistrationPromptUsage(uid, preFp),
-          2500,
-        ).catch(() => ({
-          usage: { engine: 0, chat: 0, flow: 0, image: 0 },
-          resetAt: { engine: 0, chat: 0, flow: 0, image: 0 },
-        }));
-        const baselinePayload = { ...baselineUsage, resetAt: baselineResetAt };
-
-        const profiles = readLocalCollection('profiles');
-        profiles[uid] = {
-          id: uid,
-          display_name: name,
-          displayName: name,
-          email: cleanEmail,
-          theme: options?.data?.theme || readPreferredTheme(),
-          lang: options?.data?.lang || readPreferredLang(),
-          accent: options?.data?.accent || 'default',
-          needs_accent_onboarding: options?.data?.needs_accent_onboarding ?? false,
-          defaults_v2_migrated: true,
-          model: 'instinct',
-          agent: 'universal',
-          plan: 'free',
-          pro_lifetime: false,
-          prompt_usage: baselinePayload,
-          promptUsage: baselinePayload,
-          created_at: nowIso,
-          updated_at: nowIso,
-        };
-        writeLocalCollection('profiles', profiles);
-
-        const localUser = setLocalFallbackUser(uid, cleanEmail, name);
-        notifyAuthListeners('SIGNED_IN', localUser);
-
         return {
-          data: { user: localUser, session: userToSession(localUser) },
-          error: null,
+          data: { user: null, session: null },
+          error: err,
         };
       } finally {
         resolveSetup();

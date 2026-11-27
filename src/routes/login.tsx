@@ -21,13 +21,25 @@ function isSafeNext(v: string | undefined): v is string {
   return typeof v === "string" && v.startsWith("/") && !v.startsWith("//");
 }
 
-function buildAndroidAuthDeepLink(params: {
+function isSafeMobileRedirectUri(raw: string | undefined): raw is string {
+  if (!raw || typeof raw !== "string") return false;
+  const trimmed = raw.trim();
+  return (
+    trimmed.startsWith("app.igseek.mobile://") ||
+    trimmed.startsWith("igseek://") ||
+    trimmed.startsWith("exp://") ||
+    trimmed.startsWith("exps://")
+  );
+}
+
+function buildMobileAuthDeepLink(params: {
   firebaseIdToken: string;
   refreshToken: string;
   uid: string;
   email: string;
   name: string;
   state: string;
+  redirectUri?: string;
 }): string {
   const hash = new URLSearchParams({
     firebase_id_token: params.firebaseIdToken,
@@ -37,20 +49,82 @@ function buildAndroidAuthDeepLink(params: {
     name: params.name,
     ...(params.state ? { state: params.state } : {}),
   }).toString();
-  return `app.igseek.mobile://auth#${hash}`;
+  const base = isSafeMobileRedirectUri(params.redirectUri)
+    ? params.redirectUri.trim().split("#")[0]
+    : "app.igseek.mobile://auth";
+  return `${base}#${hash}`;
 }
 
 const MOBILE_AUTH_STORAGE_KEY = "igseek:mobile_auth_pending";
 const MOBILE_AUTH_STATE_KEY = "igseek:mobile_auth_state";
+const MOBILE_AUTH_REDIRECT_KEY = "igseek:mobile_auth_redirect";
+
+function persistMobileBridgeState(state: string, redirectUri?: string) {
+  if (typeof window === "undefined") return;
+  const safeRedirect = isSafeMobileRedirectUri(redirectUri) ? redirectUri.trim() : "";
+  try {
+    window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
+    if (state) window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, state);
+    if (safeRedirect) window.sessionStorage.setItem(MOBILE_AUTH_REDIRECT_KEY, safeRedirect);
+  } catch {}
+  try {
+    window.localStorage.setItem(MOBILE_AUTH_STORAGE_KEY, String(Date.now()));
+    if (state) window.localStorage.setItem(MOBILE_AUTH_STATE_KEY, state);
+    if (safeRedirect) window.localStorage.setItem(MOBILE_AUTH_REDIRECT_KEY, safeRedirect);
+  } catch {}
+}
+
+function readMobileBridgeState(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const s = window.sessionStorage.getItem(MOBILE_AUTH_STATE_KEY);
+    if (s) return s;
+  } catch {}
+  try {
+    return window.localStorage.getItem(MOBILE_AUTH_STATE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function readMobileBridgeRedirect(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const r = window.sessionStorage.getItem(MOBILE_AUTH_REDIRECT_KEY);
+    if (isSafeMobileRedirectUri(r || undefined)) return r!;
+  } catch {}
+  try {
+    const r = window.localStorage.getItem(MOBILE_AUTH_REDIRECT_KEY);
+    if (isSafeMobileRedirectUri(r || undefined)) return r!;
+  } catch {}
+  return "";
+}
+
+function clearMobileBridgeState() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
+    window.sessionStorage.removeItem(MOBILE_AUTH_STATE_KEY);
+    window.sessionStorage.removeItem(MOBILE_AUTH_REDIRECT_KEY);
+  } catch {}
+  try {
+    window.localStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
+    window.localStorage.removeItem(MOBILE_AUTH_STATE_KEY);
+    window.localStorage.removeItem(MOBILE_AUTH_REDIRECT_KEY);
+  } catch {}
+}
 
 function isMobileBridgeSession(searchMobileAuth?: string): boolean {
   if (searchMobileAuth === "1") return true;
   if (typeof window === "undefined") return false;
   try {
-    return window.sessionStorage.getItem(MOBILE_AUTH_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
+    if (window.sessionStorage.getItem(MOBILE_AUTH_STORAGE_KEY) === "1") return true;
+  } catch {}
+  try {
+    const ts = Number(window.localStorage.getItem(MOBILE_AUTH_STORAGE_KEY) || "0");
+    if (ts > 0 && Date.now() - ts < 10 * 60_000) return true;
+  } catch {}
+  return false;
 }
 
 export const Route = createFileRoute("/login")({
@@ -65,19 +139,17 @@ export const Route = createFileRoute("/login")({
       { name: "twitter:card", content: "summary" },
     ],
   }),
-  validateSearch: (s: Record<string, unknown>) => ({
+  validateSearch: (
+    s: Record<string, unknown>
+  ): { next: string; mobile_auth: string; state: string; redirect_uri?: string } => ({
     next: typeof s.next === "string" ? s.next : "",
     mobile_auth: typeof s.mobile_auth === "string" ? s.mobile_auth : "",
     state: typeof s.state === "string" ? s.state : "",
+    ...(typeof s.redirect_uri === "string" && s.redirect_uri ? { redirect_uri: s.redirect_uri } : {}),
   }),
   beforeLoad: async ({ search }) => {
     if (typeof window !== "undefined" && search.mobile_auth === "1") {
-      try {
-        window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
-        if (search.state) {
-          window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, search.state);
-        }
-      } catch {}
+      persistMobileBridgeState(search.state, search.redirect_uri);
       return;
     }
     if (isMobileBridgeSession(search.mobile_auth)) return;
@@ -90,21 +162,22 @@ export const Route = createFileRoute("/login")({
   component: LoginPage,
 });
 
-function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
+function MobileGoogleAuthBridge({
+  oauthState,
+  redirectUri,
+}: {
+  oauthState: string;
+  redirectUri?: string;
+}) {
   const t = useT();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deepLink, setDeepLink] = useState<string | null>(null);
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
-  const [resolvedState] = useState<string>(() => {
-    if (oauthState) return oauthState;
-    if (typeof window !== "undefined") {
-      try {
-        return window.sessionStorage.getItem(MOBILE_AUTH_STATE_KEY) || "";
-      } catch {}
-    }
-    return "";
-  });
+  const [resolvedState] = useState<string>(() => oauthState || readMobileBridgeState());
+  const [resolvedRedirect] = useState<string>(() =>
+    isSafeMobileRedirectUri(redirectUri) ? redirectUri.trim() : readMobileBridgeRedirect(),
+  );
 
   const handoffUser = async (
     user: NonNullable<typeof auth.currentUser>,
@@ -114,37 +187,36 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
     const refreshToken = (user as any).refreshToken || "";
     const email = user.email || "";
     const name = user.displayName || email.split("@")[0] || "User";
-    const link = buildAndroidAuthDeepLink({
+    const link = buildMobileAuthDeepLink({
       firebaseIdToken: idToken,
       refreshToken,
       uid: user.uid,
       email,
       name,
       state: resolvedState,
+      redirectUri: resolvedRedirect,
     });
     setSignedInEmail(email || name);
     setDeepLink(link);
     setBusy(false);
     if (autoOpenApp) {
-      try {
-        window.sessionStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
-        window.sessionStorage.removeItem(MOBILE_AUTH_STATE_KEY);
-      } catch {}
+      clearMobileBridgeState();
       window.location.assign(link);
     }
   };
 
   useEffect(() => {
     let active = true;
-    try {
-      window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
-      if (oauthState) {
-        window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, oauthState);
-      }
-    } catch {}
+    persistMobileBridgeState(oauthState || resolvedState);
 
     (async () => {
       try {
+        if (typeof (auth as any).authStateReady === "function") {
+          await Promise.race([
+            (auth as any).authStateReady(),
+            new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+          ]).catch(() => {});
+        }
         const redirectRes = await getRedirectResult(auth).catch(() => null);
         if (!active) return;
         if (redirectRes?.user) {
@@ -153,7 +225,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
           return;
         }
         if (auth.currentUser) {
-          // Existing browser session -> prepare deep link button WITHOUT auto-looping
+          // Existing browser session -> prepare instant one-tap deep link button WITHOUT auto-looping
           await handoffUser(auth.currentUser, false);
           return;
         }
@@ -171,12 +243,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
   const startGoogleSignIn = async (forceAccountPicker = false) => {
     setBusy(true);
     setError(null);
-    try {
-      window.sessionStorage.setItem(MOBILE_AUTH_STORAGE_KEY, "1");
-      if (resolvedState) {
-        window.sessionStorage.setItem(MOBILE_AUTH_STATE_KEY, resolvedState);
-      }
-    } catch {}
+    persistMobileBridgeState(resolvedState);
 
     try {
       if (forceAccountPicker && auth.currentUser) {
@@ -227,12 +294,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
           </div>
           <a
             href={deepLink}
-            onClick={() => {
-              try {
-                window.sessionStorage.removeItem(MOBILE_AUTH_STORAGE_KEY);
-                window.sessionStorage.removeItem(MOBILE_AUTH_STATE_KEY);
-              } catch {}
-            }}
+            onClick={() => clearMobileBridgeState()}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground text-background text-sm font-semibold hover:opacity-90 transition-opacity"
           >
             <span>{t("Open IGseek app")}</span>
@@ -265,7 +327,7 @@ function MobileGoogleAuthBridge({ oauthState }: { oauthState: string }) {
 }
 
 function LoginPage() {
-  const { next, mobile_auth, state } = Route.useSearch();
+  const { next, mobile_auth, state, redirect_uri } = Route.useSearch();
   const isMobileBridge = isMobileBridgeSession(mobile_auth);
   const safeNext = isSafeNext(next) ? next : "/app";
   const navigate = useNavigate();
@@ -339,7 +401,7 @@ function LoginPage() {
       />
 
       {isMobileBridge ? (
-        <MobileGoogleAuthBridge oauthState={state} />
+        <MobileGoogleAuthBridge oauthState={state} redirectUri={redirect_uri} />
       ) : (
         <AuthCard
           onSuccess={() => {

@@ -42,6 +42,8 @@ data class IGseekPalette(
     val logoTint: Color,
     val divider: Color,
     val danger: Color = Color(0xFFEF4444),
+    val success: Color = Color(0xFF10B981),
+    val warning: Color = Color(0xFFF59E0B),
     val canvas: Color = bg
 )
 
@@ -74,61 +76,67 @@ fun buildIGseekPalette(darkTheme: Boolean, accent: AccentPresetId): IGseekPalett
         val pureBlack = Color(0xFF000000)
         return IGseekPalette(
             isDark = false,
-            bg = Color(0xFFFCFBFA),
-            sidebarBg = Color(0xFFF6F5F4),
+            bg = Color(0xFFF8F8FA),
+            sidebarBg = Color(0xFFF3F3F6),
             surfaceElevated = Color(0xFFFFFFFF),
             glassBg = Color(0xFFFFFFFF),
-            glassBorder = Color(0xFF000000).copy(alpha = 0.09f),
+            glassBorder = Color(0xFF09090B).copy(alpha = 0.085f),
             composerBg = Color(0xFFFFFFFF),
-            composerBorder = Color(0xFF000000).copy(alpha = 0.13f),
-            chipBg = Color(0xFF000000).copy(alpha = 0.045f),
-            chipBorder = Color(0xFF000000).copy(alpha = 0.10f),
+            composerBorder = Color(0xFF09090B).copy(alpha = 0.13f),
+            chipBg = Color(0xFF09090B).copy(alpha = 0.045f),
+            chipBorder = Color(0xFF09090B).copy(alpha = 0.10f),
             textPrimary = Color(0xFF09090B),
             textSecondary = Color(0xFF3F3F46),
             textMuted = Color(0xFF71717A),
             brand = pureBlack,
             brandOn = Color.White,
-            brandSoft = pureBlack.copy(alpha = 0.07f),
-            brandBorder = pureBlack.copy(alpha = 0.18f),
+            brandSoft = pureBlack.copy(alpha = 0.065f),
+            brandBorder = pureBlack.copy(alpha = 0.16f),
             brandGlow = Color.Transparent,
             userBubbleBg = pureBlack,
             userBubbleText = Color.White,
             userBubbleBorder = pureBlack,
-            codeBg = Color(0xFF141416),
+            codeBg = Color(0xFF111114),
             logoTint = pureBlack,
-            divider = Color(0xFF000000).copy(alpha = 0.08f)
+            divider = Color(0xFF09090B).copy(alpha = 0.075f),
+            danger = Color(0xFFDC2626),
+            success = Color(0xFF059669),
+            warning = Color(0xFFD97706)
         )
     }
 
     val brand = accentSwatchColor(accent, darkTheme = true)
-    val brandOn = if (accent == AccentPresetId.BLACK) Color(0xFF0C0B0B) else Color.White
+    val brandOn = if (accent == AccentPresetId.BLACK) Color(0xFF09090B) else Color.White
     val logoTint = if (accent == AccentPresetId.BLACK) Color(0xFFF4F4F5) else brand
 
     return IGseekPalette(
         isDark = true,
-        bg = Color(0xFF0C0B0B),
-        sidebarBg = Color(0xFF111010),
-        surfaceElevated = Color(0xFF171515),
-        glassBg = Color(0xFF151414).copy(alpha = 0.84f),
+        bg = Color(0xFF09090B),
+        sidebarBg = Color(0xFF0E0E11),
+        surfaceElevated = Color(0xFF17171C),
+        glassBg = Color(0xFF131317).copy(alpha = 0.92f),
         glassBorder = Color.White.copy(alpha = 0.085f),
-        composerBg = Color(0xFF161515).copy(alpha = 0.94f),
+        composerBg = Color(0xFF15151A).copy(alpha = 0.96f),
         composerBorder = Color.White.copy(alpha = 0.11f),
-        chipBg = Color.White.copy(alpha = 0.05f),
-        chipBorder = Color.White.copy(alpha = 0.09f),
-        textPrimary = Color(0xFFF4F4F5),
-        textSecondary = Color(0xFFC4C4C9),
-        textMuted = Color(0xFF8B8B92),
+        chipBg = Color.White.copy(alpha = 0.055f),
+        chipBorder = Color.White.copy(alpha = 0.095f),
+        textPrimary = Color(0xFFF4F4F6),
+        textSecondary = Color(0xFFC8C8D0),
+        textMuted = Color(0xFF8A8A96),
         brand = brand,
         brandOn = brandOn,
         brandSoft = brand.copy(alpha = 0.14f),
         brandBorder = brand.copy(alpha = 0.34f),
-        brandGlow = brand.copy(alpha = 0.13f),
+        brandGlow = brand.copy(alpha = 0.11f),
         userBubbleBg = brand.copy(alpha = 0.17f),
-        userBubbleText = Color(0xFFF4F4F5),
+        userBubbleText = Color(0xFFF4F4F6),
         userBubbleBorder = brand.copy(alpha = 0.32f),
-        codeBg = Color(0xFF0A0909),
+        codeBg = Color(0xFF0B0B0E),
         logoTint = logoTint,
-        divider = Color.White.copy(alpha = 0.075f)
+        divider = Color.White.copy(alpha = 0.075f),
+        danger = Color(0xFFEF4444),
+        success = Color(0xFF10B981),
+        warning = Color(0xFFF59E0B)
     )
 }
 
@@ -136,8 +144,8 @@ private val IGseekTypography = Typography(
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 25.sp,
-        lineHeight = 31.sp,
+        fontSize = 24.sp,
+        lineHeight = 30.sp,
         letterSpacing = (-0.5).sp
     ),
     titleLarge = TextStyle(

@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "IGseek",
+    "slug": "igseek",
+    "version": "2.2.0",
+    "orientation": "portrait",
+    "scheme": "igseek",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.igseek.ios"
+    },
+    "android": {
+      "package": "app.igseek.expo",
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
+  }
+}
