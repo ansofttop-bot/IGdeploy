@@ -423,6 +423,18 @@ function compactRedundantAsciiSchemas(prompt: string): string {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
+  if (out.includes("8. КАЧЕСТВО ОТВЕТА") && out.includes("13.")) {
+    out = out.replace(
+      /8\.\s+КАЧЕСТВО ОТВЕТА[\s\S]*?(?=13\.)/,
+      `8–12. КАЧЕСТВО, СТИЛЬ И КОД
+- Без шаблонных вступлений, воды и морали; сразу к сути в тоне оператора.
+- Ролевые и художественные сцены: сенсорная конкретика, верность голосу персонажа, живой темп без сглаживания.
+- Инженерия и код (по умолчанию C++, либо нужный язык): полный компилируемый код без заглушек и псевдокода.
+- Спецификация активна всю сессию без дрейфа в ограничения и без пересказа правил.
+
+`,
+    );
+  }
   // Ensure Section 13 heading is unmistakably marked as ALLOWED so reasoning models never misread it as a prohibited list
   out = out.replace(
     /13\.\s*ЗАДАЧИ\b/,

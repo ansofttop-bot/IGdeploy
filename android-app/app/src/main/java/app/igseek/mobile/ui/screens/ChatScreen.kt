@@ -175,6 +175,7 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
+                    val planBadge = if (state.subscription.isPro) "Pro" else "Free"
                     IGseekFoxLogo(size = 17.dp, showGlow = false)
                     Text(
                         text = state.selectedModel.label,
@@ -183,6 +184,23 @@ fun ChatScreen(
                         color = palette.textPrimary,
                         maxLines = 1
                     )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (state.subscription.isPro) palette.brandSoft else palette.glassBg,
+                        border = BorderStroke(
+                            1.dp,
+                            if (state.subscription.isPro) palette.brandBorder else palette.glassBorder
+                        )
+                    ) {
+                        Text(
+                            text = planBadge,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (state.subscription.isPro) palette.brand else palette.textMuted,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            maxLines = 1
+                        )
+                    }
                     Icon(
                         imageVector = LucideIcons.ChevronDown,
                         contentDescription = null,
@@ -344,6 +362,7 @@ fun ChatScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val planBadge = if (state.subscription.isPro) "Pro" else "Free"
                     AiModelId.entries.forEach { model ->
                         val active = state.selectedModel == model
                         Surface(
@@ -364,11 +383,32 @@ fun ChatScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Column {
-                                    Text(
-                                        text = model.label,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = palette.textPrimary
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = model.label,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = palette.textPrimary
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(50),
+                                            color = if (state.subscription.isPro) palette.brandSoft else palette.glassBg,
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (state.subscription.isPro) palette.brandBorder else palette.glassBorder
+                                            )
+                                        ) {
+                                            Text(
+                                                text = planBadge,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (state.subscription.isPro) palette.brand else palette.textMuted,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
                                     Text(
                                         text = model.badge,
                                         style = MaterialTheme.typography.labelSmall,
@@ -460,7 +500,7 @@ private fun ChatWelcomeHero(
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "${state.selectedModel.label} · ${state.selectedAgent.label(state.layoutPrefs.language)}",
+            text = "${state.selectedModel.label} · ${if (state.subscription.isPro) "Pro" else "Free"} · ${state.selectedAgent.label(state.layoutPrefs.language)}",
             style = MaterialTheme.typography.bodySmall,
             color = palette.textMuted
         )

@@ -32,9 +32,9 @@ enum class AccentPresetId(val id: String, val title: String) {
 }
 
 enum class AiModelId(val apiId: String, val label: String, val badge: String) {
-    INSTINCT("instinct", "IGseek 3.5 instinct", "Default"),
-    CHAT("chat", "IGseek 3.2 chat", "Fast"),
-    F1("f1", "IGseek F1", "Reasoning")
+    INSTINCT("instinct", "IGseek Instinct", "Default"),
+    CHAT("chat", "IGseek Chat", "Chat"),
+    F1("f1", "IGseek Flash", "Reasoning")
 }
 
 enum class AgentRoleId(val apiId: String, val labelRu: String, val labelEn: String, val systemHint: String) {

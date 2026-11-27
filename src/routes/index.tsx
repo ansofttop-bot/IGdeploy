@@ -154,10 +154,10 @@ const AGENTS = [
 ];
 
 const MODELS = [
-  { name: "IGseek 3.5 instinct", tag: "default", desc: "Flagship: depth and quality for complex tasks." },
-  { name: "IGseek 3.2 chat", tag: "chat", desc: "Conversational model with long context and soft tone." },
-  { name: "IGseek F1", tag: "flash", desc: "Ultra-fast answers for iterations and short queries." },
-  { name: "IGseek Reasoner", tag: "reasoner", desc: "Reasoning mode with explicit chain of thought." },
+  { name: "IGseek Instinct", tier: "Free / Pro", tag: "default", desc: "Flagship: depth and quality for complex tasks." },
+  { name: "IGseek Chat", tier: "Free / Pro", tag: "chat", desc: "Conversational model with long context and soft tone." },
+  { name: "IGseek Flash", tier: "Free / Pro", tag: "flash", desc: "Ultra-fast answers for iterations and short queries." },
+  { name: "IGseek Reasoner", tier: "Pro", tag: "reasoner", desc: "Reasoning mode with explicit chain of thought." },
 ];
 
 const ENGINE_FEATURES = [
@@ -348,16 +348,21 @@ function ModelsPanel() {
             whileHover={{ y: -4 }}
             className="group relative overflow-hidden rounded-2xl border border-border bg-surface-elevated/40 p-5 transition-colors hover:border-foreground/30"
           >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="grid h-10 w-10 place-items-center rounded-xl bg-foreground/10 text-foreground">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-foreground/10 text-foreground">
                   <Cpu size={18} />
                 </span>
-                <span className="text-base font-semibold text-foreground">{m.name}</span>
+                <span className="text-base font-semibold text-foreground truncate">{m.name}</span>
               </div>
-              <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-                {m.tag}
-              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="rounded-full border border-foreground/20 bg-foreground/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-foreground">
+                  {m.tier}
+                </span>
+                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  {m.tag}
+                </span>
+              </div>
             </div>
             <p className="mt-3 text-sm text-muted-foreground">{t(m.desc)}</p>
           </motion.div>

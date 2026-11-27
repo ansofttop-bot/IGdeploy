@@ -3,17 +3,17 @@ export type AiCreativity = "exact" | "balance" | "vivid" | "chaos";
 export type AiLength = "short" | "medium" | "long" | "unlimited";
 
 /**
- * Strictly DeepSeek < 4.0 model mapping across IGseek Pro models:
+ * Strictly DeepSeek < 4.0 model mapping across IGseek fallback providers:
  *
- * - IGseek 3.5 instinct (default flagship, < V4.0):
+ * - IGseek Instinct (default flagship, < V4.0):
  *     Direct DeepSeek: deepseek-chat             (DeepSeek-V3.2 / V3)
  *     ApiMira:         deepseek/deepseek-v3.2
  *
- * - IGseek 3.2 chat (conversational, < V4.0):
+ * - IGseek Chat (conversational, < V4.0):
  *     Direct DeepSeek: deepseek-chat             (DeepSeek-V3)
  *     ApiMira:         deepseek/deepseek-chat-v3-0324
  *
- * - IGseek F1 (fast, < V4.0):
+ * - IGseek Flash (fast, < V4.0):
  *     Direct DeepSeek: deepseek-chat
  *     ApiMira:         deepseek/deepseek-chat
  *

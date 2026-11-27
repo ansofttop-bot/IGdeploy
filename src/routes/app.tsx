@@ -256,9 +256,9 @@ const LANGUAGES: { code: LangCode; label: string; native: string; flag: string }
 
 type ModelId = "instinct" | "chat" | "f1";
 const MODELS: { id: ModelId; name: string; tag: string }[] = [
-  { id: "instinct", name: "IGseek 3.5 instinct", tag: "Default" },
-  { id: "chat", name: "IGseek 3.2 chat", tag: "Chat" },
-  { id: "f1", name: "IGseek F1", tag: "Fast" },
+  { id: "instinct", name: "IGseek Instinct", tag: "Default" },
+  { id: "chat", name: "IGseek Chat", tag: "Chat" },
+  { id: "f1", name: "IGseek Flash", tag: "Fast" },
 ];
 
 type AgentId = "universal" | "coder" | "hacker" | "mentor" | "psy" | "creative";
@@ -3075,16 +3075,39 @@ function Index() {
                 </div>
               )}
             </div>
-            {tab === "chat" && messages.length > 0 && (
-              <button
-                type="button"
-                onClick={newChat}
-                title={t("New chat")}
-                aria-label={t("New chat")}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer"
-              >
-                <SquarePen className="h-4 w-4" />
-              </button>
+            {tab === "chat" && (
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => openProfileTab("settings")}
+                  title={t("Choose the base language model for chatting and generation")}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-3 py-1.5 text-xs font-medium text-zinc-800 dark:text-zinc-200 transition-colors cursor-pointer"
+                >
+                  <span className="truncate max-w-[140px]">
+                    {MODELS.find((m) => m.id === model)?.name || "IGseek Instinct"}
+                  </span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                      subscriptionState.isPro
+                        ? "bg-[var(--brand-soft)] text-[var(--brand)] border border-[var(--brand-border)]"
+                        : "bg-zinc-200/70 text-zinc-700 dark:bg-white/10 dark:text-zinc-300"
+                    }`}
+                  >
+                    {subscriptionState.isPro ? "Pro" : "Free"}
+                  </span>
+                </button>
+                {messages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={newChat}
+                    title={t("New chat")}
+                    aria-label={t("New chat")}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer"
+                  >
+                    <SquarePen className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             )}
           </header>
         )}
@@ -10564,8 +10587,17 @@ function ProfileModal({
                           <span className="font-medium text-xs text-foreground truncate">{m.name}</span>
                           {isSelected && <Check className="h-3.5 w-3.5 text-brand shrink-0" />}
                         </div>
-                        <div className="text-[10px] text-muted-foreground mt-1">
-                          {t(m.tag)}
+                        <div className="flex items-center justify-between gap-1.5 mt-1.5">
+                          <span className="text-[10px] text-muted-foreground">{t(m.tag)}</span>
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+                              isProPlan
+                                ? "bg-brand/20 text-brand border border-brand/40"
+                                : "bg-foreground/10 text-muted-foreground"
+                            }`}
+                          >
+                            {isProPlan ? "Pro" : "Free"}
+                          </span>
                         </div>
                       </button>
                     );

@@ -12,6 +12,7 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 import { callGroqFreeText } from "./groq-free";
+import { callOpenRouterDeepSeekText, isOpenRouterConfigured } from "./openrouter-deepseek";
 import { verifyFirebaseIdToken } from "./auth-server";
 
 export type MemoryAttachment = {
@@ -621,7 +622,19 @@ export async function analyzeAndUpdateMemory(
   let decisions: MemoryDecision[] = [];
   try {
     let rawRaw = "";
-    if (useFreeModel) {
+    if (isOpenRouterConfigured()) {
+      rawRaw =
+        (await callOpenRouterDeepSeekText({
+          tier: useFreeModel ? "free" : "pro",
+          messages: [
+            { role: "system", content: ANALYZER_SYSTEM },
+            { role: "user", content: analysisPrompt },
+          ],
+          maxTokens: 256,
+          jsonMode: true,
+        })) || "";
+    }
+    if (!rawRaw && useFreeModel) {
       rawRaw =
         (await callGroqFreeText({
           messages: [

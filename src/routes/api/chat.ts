@@ -22,7 +22,12 @@ import { editImageWithGptImage2, generateImageWithGptImage2 } from "../../lib/ap
 import {
   buildReferenceAwarePollinationsPrompt,
   callGroqFreeChatStream,
+  isGroqFreeConfigured,
 } from "../../lib/groq-free";
+import {
+  callOpenRouterDeepSeekStream,
+  isOpenRouterConfigured,
+} from "../../lib/openrouter-deepseek";
 import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithPollinations } from "../../lib/pollinations-image";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
@@ -660,14 +665,32 @@ async function streamFallbackToClient(
   let upstream: Response | null = null;
   let lastStatus = 0;
 
-  if (useFreeModels) {
-    upstream = await callGroqFreeChatStream({
-      messages,
-      reasoning: false,
-      maxTokens: 4096,
-      signal,
-    });
-  } else {
+  if (isOpenRouterConfigured()) {
+    try {
+      const res = await callOpenRouterDeepSeekStream({
+        tier: useFreeModels ? "free" : "pro",
+        uiModel,
+        messages,
+        reasoning: false,
+        maxTokens: 4096,
+        signal,
+      });
+      upstream = res.response;
+    } catch {
+      upstream = null;
+    }
+  }
+
+  if (!upstream && useFreeModels) {
+    if (isGroqFreeConfigured()) {
+      upstream = await callGroqFreeChatStream({
+        messages,
+        reasoning: false,
+        maxTokens: 4096,
+        signal,
+      });
+    }
+  } else if (!upstream) {
     const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
     const apimiraKey = process.env.APIMIRA_API_KEY?.trim() || "";
     const apimiraBase = (process.env.APIMIRA_BASE_URL || "https://apimira.com/v1").trim().replace(/\/+$/, "");
@@ -1286,9 +1309,22 @@ export async function handleChatPost(request: Request): Promise<Response> {
                 ? `${effectiveSystemCore}${engineContextBlock}${memoryBlock}${libraryCatalogBlock}${userAttachmentsBlock}`
                 : `${effectiveSystemCore}${personalizationBlock}${capabilities}${memoryBlock}${libraryCatalogBlock}${userAttachmentsBlock}`,
             };
+            const historyForModel =
+              useFreeModels && !isOpenRouterConfigured()
+                ? primaryHistory.slice(-10).map((m, idx, arr) => {
+                    const isLastUser = idx === arr.length - 1 && m.role === "user";
+                    if (isLastUser || m.content.length <= 2800) {
+                      return { role: m.role, content: m.content } as ChatMessage;
+                    }
+                    return {
+                      role: m.role,
+                      content: `${m.content.slice(0, 2600)}\n…[предыдущее сообщение сокращено для стабильности лимита]`,
+                    } as ChatMessage;
+                  })
+                : primaryHistory.slice(-24).map((m) => ({ role: m.role, content: m.content }) as ChatMessage);
             const baseMessages: ChatMessage[] = [
               systemMessage,
-              ...primaryHistory.map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
+              ...historyForModel,
             ];
 
             type StreamOutcome = {
@@ -1374,7 +1410,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
               let finishReason: string | null = null;
               let assistantText = "";
               let reasoningText = "";
-              const CHUNK_STALL_TIMEOUT_MS = 25_000;
+              const CHUNK_STALL_TIMEOUT_MS = 18_000;
 
               const processLines = (lines: string[]) => {
                 for (const raw of lines) {
@@ -1785,37 +1821,48 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                       return outcome;
                     }
-                    lastErr = new Error("Groq Qwen 3.8 Free returned an empty response");
-                  } catch (groqErr) {
-                    if (streamAbort.signal.aborted || (groqErr as Error)?.name === "AbortError") {
-                      throw groqErr;
+                    lastErr = new Error("Free DeepSeek returned an empty response");
+                  } catch (freeErr) {
+                    if (streamAbort.signal.aborted || (freeErr as Error)?.name === "AbortError") {
+                      throw freeErr;
                     }
-                    lastErr = groqErr;
-                    const errText = groqErr instanceof Error ? groqErr.message : String(groqErr);
-                    console.warn("[chat] Free tier Groq Qwen 3.8 attempt failed:", errText);
-                    if (/(429|401|403|API_KEY|GROQ_API_KEY|rate limit|quota|timeout|aborted)/i.test(errText)) {
+                    lastErr = freeErr;
+                    const errText = freeErr instanceof Error ? freeErr.message : String(freeErr);
+                    console.warn("[chat] Free tier DeepSeek attempt failed:", errText);
+                    if (/(429|401|402|403|API_KEY|OPENROUTER_API_KEY|GROQ_API_KEY|rate limit|quota|лимит|баланс|timeout|таймаут|aborted)/i.test(errText)) {
                       break;
                     }
                   }
                 }
-                throw lastErr instanceof Error ? lastErr : new Error("groq_free_unavailable");
+                throw lastErr instanceof Error ? lastErr : new Error("free_deepseek_unavailable");
               }
 
-              if (!deepseekKey && !apimiraKey) {
-                const routedPro = await routeChatStream({
-                  tier: "pro",
-                  model: parsed.model,
-                  reasoning: effectiveReasoning,
-                  messages: toApiMessages(messages),
-                  tools: tools.length ? tools : undefined,
-                  temperature: effectiveTemperature,
-                  maxTokens: 4096,
-                  hasVisionInput: hasEditableImageContext,
-                  signal: streamAbort.signal,
-                });
-                const outcome = await consumeOpenAiSse(routedPro.response, forwardText);
-                if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
-                  return outcome;
+              if (isOpenRouterConfigured() || (!deepseekKey && !apimiraKey)) {
+                try {
+                  const routedPro = await routeChatStream({
+                    tier: "pro",
+                    model: parsed.model,
+                    reasoning: effectiveReasoning,
+                    messages: toApiMessages(messages),
+                    tools: tools.length ? tools : undefined,
+                    temperature: effectiveTemperature,
+                    maxTokens: 4096,
+                    hasVisionInput: hasEditableImageContext,
+                    signal: streamAbort.signal,
+                  });
+                  const outcome = await consumeOpenAiSse(routedPro.response, forwardText);
+                  if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
+                    return outcome;
+                  }
+                } catch (proOpenRouterErr) {
+                  if (streamAbort.signal.aborted || (proOpenRouterErr as Error)?.name === "AbortError") {
+                    throw proOpenRouterErr;
+                  }
+                  lastErr = proOpenRouterErr;
+                  console.warn("[chat] Pro OpenRouter attempt failed, trying fallback:", (proOpenRouterErr as Error)?.message || proOpenRouterErr);
+                  if (!deepseekKey && !apimiraKey) {
+                    throw proOpenRouterErr;
+                  }
                 }
               }
 

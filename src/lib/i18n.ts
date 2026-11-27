@@ -689,7 +689,7 @@ const DICT: Record<string, Dict> = {
   "Reasoning mode with explicit chain of thought.": { en: "Reasoning mode with explicit chain of thought.", ru: "Режим глубоких рассуждений с явной цепочкой мыслей.", es: "Modo razonamiento con cadena de pensamiento explícita.", fr: "Mode raisonnement avec chaîne de pensée explicite.", ar: "وضع الاستدلال مع سلسلة أفكار صريحة." },
 
   "Universal agent": { en: "Universal agent", ru: "Универсальный агент", es: "Agente Universal", fr: "Agent Universel", ar: "الوكيل العام" },
-  "IGseek F1": { en: "IGseek F1", ru: "IGseek F1", es: "IGseek F1", fr: "IGseek F1", ar: "IGseek F1" },
+  "IGseek Flash": { en: "IGseek Flash", ru: "IGseek Flash", es: "IGseek Flash", fr: "IGseek Flash", ar: "IGseek Flash" },
   "Basic chat": { en: "Basic chat", ru: "Базовый чат", es: "Chat básico", fr: "Chat basique", ar: "محادثة أساسية" },
   "7-day history": { en: "7-day history", ru: "История 7 дней", es: "Historial de 7 días", fr: "Historique 7 jours", ar: "سجل 7 أيام" },
   "All 6 agents": { en: "All 6 agents", ru: "Все 6 агентов", es: "Los 6 agentes", fr: "Les 6 agents", ar: "الوكلاء الستة جميعًا" },

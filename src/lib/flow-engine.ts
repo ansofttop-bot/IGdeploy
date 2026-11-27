@@ -19,8 +19,8 @@ import {
   resolveEffectiveTemperature,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
-import { callGroqFreeText } from "./groq-free";
 import { routeTextCompletion } from "./ai-router";
+import { isOpenRouterConfigured } from "./openrouter-deepseek";
 
 export type FlowModelId = "instinct" | "chat" | "f1";
 
@@ -120,19 +120,27 @@ async function generateTextWithDeepSeek(
   const directive = buildFlowSystemDirective(opts?.agent || "universal");
   const temperature = modelTemperatureFor(opts?.model);
 
-  if (opts?.useFreeModel) {
-    const routedFree = await routeTextCompletion({
-      tier: "free",
-      modelId: opts?.model,
-      messages: [
-        { role: "system", content: directive },
-        { role: "user", content: prompt },
-      ],
-      temperature: temperature ?? 0.5,
-      maxTokens: 3000,
-      timeoutMs: 30_000,
-    });
-    return routedFree?.text ? routedFree.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : null;
+  if (opts?.useFreeModel || isOpenRouterConfigured()) {
+    try {
+      const routed = await routeTextCompletion({
+        tier: opts?.useFreeModel ? "free" : "pro",
+        modelId: opts?.model,
+        messages: [
+          { role: "system", content: directive },
+          { role: "user", content: prompt },
+        ],
+        temperature: temperature ?? 0.5,
+        maxTokens: 3000,
+        timeoutMs: 30_000,
+      });
+      if (routed?.text) {
+        return routed.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      }
+    } catch (e) {
+      if (opts?.useFreeModel) return null;
+      console.warn("Flow OpenRouter generation failed, trying fallback:", (e as Error)?.message || e);
+    }
+    if (opts?.useFreeModel) return null;
   }
 
   const apiKey = (process.env.DEEPSEEK_API_KEY || "").trim();
@@ -262,18 +270,22 @@ Rules:
 
   const temperature = modelTemperatureFor(context.model);
 
-  if (context.useFreeModel) {
+  if (context.useFreeModel || isOpenRouterConfigured()) {
     try {
-      const freeText = await callGroqFreeText({
+      const routed = await routeTextCompletion({
+        tier: context.useFreeModel ? "free" : "pro",
+        modelId: context.model,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         maxTokens: 2048,
+        temperature: temperature ?? 0.3,
         jsonMode: true,
+        timeoutMs: 28_000,
       });
-      if (freeText) {
-        const clean = freeText.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/```json\s*|```/gi, "").trim();
+      if (routed?.text) {
+        const clean = routed.text.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/```json\s*|```/gi, "").trim();
         const jsonMatch = clean.match(/\{[\s\S]*\}/);
         const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
         if (parsed.steps && Array.isArray(parsed.steps) && parsed.steps.length > 0) {
@@ -281,7 +293,7 @@ Rules:
         }
       }
     } catch (e) {
-      console.warn("Groq Qwen 3.8 Free planning failed:", e);
+      console.warn("OpenRouter DeepSeek Flow planning failed:", e);
     }
     const slug = sanitizeLibraryFilename(goal.slice(0, 28)).replace(/\.[^.]+$/, "") || "flow_report";
     return {

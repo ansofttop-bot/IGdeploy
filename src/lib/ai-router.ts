@@ -13,8 +13,16 @@ import {
   GROQ_FREE_MODEL,
   callGroqFreeChatStream,
   callGroqFreeText,
-  resolveGroqFreeModel,
+  isGroqFreeConfigured,
 } from "./groq-free";
+import {
+  OPENROUTER_FREE_INSTINCT,
+  OPENROUTER_PRO_INSTINCT,
+  OPENROUTER_PRO_REASONER,
+  callOpenRouterDeepSeekStream,
+  callOpenRouterDeepSeekText,
+  isOpenRouterConfigured,
+} from "./openrouter-deepseek";
 
 export type AiTier = "free" | "pro";
 
@@ -91,42 +99,102 @@ export interface RoutedStreamResult {
 }
 
 /**
- * Tier-isolated AI streaming router:
- * - Free tier: strictly Qwen 3.8 (`qwen/qwen3.8-27b`) via Groq for text, tools, and attachments.
- *   NEVER touches paid DeepSeek / ApiMira keys.
- * - Pro tier: strictly DeepSeek (< V4.0) via Direct DeepSeek -> ApiMira DeepSeek fallback chain.
+ * Tiered DeepSeek (< V4.0) AI streaming router via OpenRouter:
+ * - Free tier: lowest-cost DeepSeek < V4.0 models (`deepseek/deepseek-v3.2`, `deepseek/deepseek-v3.2-exp`, `deepseek/deepseek-chat-v3-0324`).
+ *   Optional Groq fallback only if OPENROUTER_API_KEY is missing or fails.
+ * - Pro tier: stronger yet economical DeepSeek < V4.0 models (`deepseek/deepseek-v3.1-terminus`, `deepseek/deepseek-chat-v3.1`, `deepseek/deepseek-chat-v3-0324`, `deepseek/deepseek-r1-0528`).
+ *   Optional fallback to Direct DeepSeek / ApiMira DeepSeek (< V4.0).
  */
 export async function routeChatStream(params: RouteChatStreamParams): Promise<RoutedStreamResult> {
   const temperature = params.temperature ?? 0.65;
   const maxTokens = params.maxTokens ?? 4096;
   const resolvedModelId = params.modelId ?? params.model ?? "instinct";
+  const uiModel: UiModel =
+    resolvedModelId === "chat" || resolvedModelId === "f1" ? resolvedModelId : "instinct";
 
   if (params.tier === "free") {
-    const modelUsed = resolveGroqFreeModel();
-    const res = await callGroqFreeChatStream({
-      messages: params.messages,
-      tools: params.tools as any,
-      reasoning: Boolean(params.reasoning),
-      temperature,
-      maxTokens,
-      signal: params.signal,
-    });
-    return {
-      response: res,
-      providerId: "groq-free",
-      modelUsed,
-      tier: "free",
-    };
+    let openRouterErr: unknown = null;
+    if (isOpenRouterConfigured() && !isProviderCircuitOpen("openrouter-free")) {
+      try {
+        const res = await callOpenRouterDeepSeekStream({
+          tier: "free",
+          uiModel,
+          messages: params.messages,
+          tools: params.tools as any,
+          reasoning: Boolean(params.reasoning),
+          temperature,
+          maxTokens,
+          signal: params.signal,
+        });
+        recordProviderSuccess("openrouter-free");
+        return {
+          response: res.response,
+          providerId: "openrouter-free",
+          modelUsed: res.modelUsed,
+          tier: "free",
+        };
+      } catch (err: any) {
+        if (params.signal?.aborted || err?.name === "AbortError") throw err;
+        openRouterErr = err;
+        recordProviderFailure("openrouter-free", err?.message || "err");
+      }
+    }
+
+    if (isGroqFreeConfigured()) {
+      const res = await callGroqFreeChatStream({
+        messages: params.messages,
+        tools: params.tools as any,
+        reasoning: Boolean(params.reasoning),
+        temperature,
+        maxTokens,
+        signal: params.signal,
+      });
+      return {
+        response: res,
+        providerId: "groq-free",
+        modelUsed: GROQ_FREE_MODEL,
+        tier: "free",
+      };
+    }
+
+    if (openRouterErr instanceof Error) throw openRouterErr;
+    throw new Error("OPENROUTER_API_KEY не настроен на сервере.");
   }
 
-  // PRO TIER (strictly isolated DeepSeek < V4.0)
+  // PRO TIER (OpenRouter DeepSeek < V4.0 primary -> Direct DeepSeek -> ApiMira DeepSeek)
+  const errors: string[] = [];
+
+  if (isOpenRouterConfigured() && !isProviderCircuitOpen("openrouter-pro")) {
+    try {
+      const res = await callOpenRouterDeepSeekStream({
+        tier: "pro",
+        uiModel,
+        messages: params.messages,
+        tools: params.tools as any,
+        reasoning: Boolean(params.reasoning),
+        temperature,
+        maxTokens,
+        signal: params.signal,
+      });
+      recordProviderSuccess("openrouter-pro");
+      return {
+        response: res.response,
+        providerId: "openrouter-pro",
+        modelUsed: res.modelUsed,
+        tier: "pro",
+      };
+    } catch (err: any) {
+      if (params.signal?.aborted || err?.name === "AbortError") throw err;
+      recordProviderFailure("openrouter-pro", err?.message || "err");
+      errors.push(`openrouter:${err?.message || "err"}`);
+    }
+  }
+
   const directKey = (params.directDeepSeekKey ?? process.env.DEEPSEEK_API_KEY ?? "").trim();
   const apimiraKey = (params.apimiraKey ?? process.env.APIMIRA_API_KEY ?? "").trim();
   const apimiraBase = (params.apimiraBaseUrl ?? process.env.APIMIRA_BASE_URL ?? "https://apimira.com/v1")
     .trim()
     .replace(/\/+$/, "");
-
-  const errors: string[] = [];
 
   if (
     directKey &&
@@ -166,8 +234,6 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
   }
 
   if (apimiraKey) {
-    const uiModel: UiModel =
-      resolvedModelId === "chat" || resolvedModelId === "f1" ? resolvedModelId : "instinct";
     const chain = getApimiraFallbackChain(uiModel, Boolean(params.reasoning));
     for (const modelName of chain) {
       const pid = `apimira:${modelName}`;
@@ -219,6 +285,23 @@ export async function routeTextCompletion(params: {
 }): Promise<{ text: string; providerId: string }> {
   const temperature = params.temperature ?? 0.3;
   const maxTokens = params.maxTokens ?? 1500;
+  const uiModel: UiModel =
+    params.modelId === "chat" || params.modelId === "f1" ? params.modelId : "instinct";
+
+  if (isOpenRouterConfigured()) {
+    const text = await callOpenRouterDeepSeekText({
+      tier: params.tier,
+      uiModel,
+      messages: params.messages,
+      maxTokens,
+      temperature,
+      jsonMode: params.jsonMode,
+      timeoutMs: params.timeoutMs,
+    });
+    if (text) {
+      return { text, providerId: params.tier === "free" ? "openrouter-free" : "openrouter-pro" };
+    }
+  }
 
   if (params.tier === "free") {
     const text =
@@ -228,7 +311,7 @@ export async function routeTextCompletion(params: {
         temperature,
         jsonMode: params.jsonMode,
       })) || "";
-    if (!text) throw new Error("Groq Qwen 3.8 Free text provider unavailable");
+    if (!text) throw new Error("Free text provider unavailable (configure OPENROUTER_API_KEY)");
     return { text, providerId: "groq-free" };
   }
 
@@ -273,9 +356,9 @@ export async function routeTextCompletion(params: {
   }
 
   if (apimiraKey) {
-    const uiModel: UiModel =
+    const apimiraModel: UiModel =
       params.modelId === "chat" || params.modelId === "instinct" ? params.modelId : "f1";
-    for (const modelName of getApimiraFallbackChain(uiModel, false)) {
+    for (const modelName of getApimiraFallbackChain(apimiraModel, false)) {
       const pid = `apimira:${modelName}`;
       if (isProviderCircuitOpen(pid)) continue;
       try {
@@ -327,8 +410,12 @@ export function getAiRouterHealthSummary() {
     }
   }
   return {
-    freeProvider: `groq-free (${GROQ_FREE_MODEL})`,
-    proProvider: "deepseek (<4.0) + apimira",
+    freeProvider: isOpenRouterConfigured()
+      ? `openrouter-free (${OPENROUTER_FREE_INSTINCT})`
+      : `groq-free (${GROQ_FREE_MODEL})`,
+    proProvider: isOpenRouterConfigured()
+      ? `openrouter-pro (${OPENROUTER_PRO_INSTINCT}, ${OPENROUTER_PRO_REASONER})`
+      : "deepseek (<4.0) + apimira",
     openCircuits,
   };
 }

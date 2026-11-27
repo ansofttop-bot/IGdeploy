@@ -7,6 +7,7 @@ import {
   markDirectDeepSeekUnavailable,
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
+import { callOpenRouterDeepSeekText, isOpenRouterConfigured } from "./openrouter-deepseek";
 
 export const GROQ_FREE_MODEL = "openai/gpt-oss-120b";
 export const GROQ_FREE_VISION_MODEL = "qwen/qwen3.8-27b";
@@ -200,6 +201,93 @@ function normalizeMessagesForGroq(
   return out;
 }
 
+function createAbortError(message = "Request aborted"): Error {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
+async function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  if (signal?.aborted) throw createAbortError();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createAbortError());
+    };
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+async function fetchWithHeaderTimeout(
+  url: string,
+  init: RequestInit,
+  headerTimeoutMs = 15_000,
+  externalSignal?: AbortSignal,
+): Promise<Response> {
+  if (externalSignal?.aborted) {
+    throw createAbortError();
+  }
+  const ac = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => ac.abort(externalSignal?.reason);
+  if (externalSignal) {
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ac.abort(new Error(`groq_header_timeout_${headerTimeoutMs}ms`));
+  }, headerTimeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: ac.signal,
+    });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(`Groq не ответил за ${Math.round(headerTimeoutMs / 1000)} сек (таймаут соединения). Повторите запрос.`);
+    }
+    throw err;
+  } finally {
+    // Clear header timeout as soon as headers resolve so long streams are not aborted mid-response
+    clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+  }
+}
+
+function parseGroqRetryAfterMs(res: Response, rawBody: string): number | null {
+  const headerVal = (res.headers.get("retry-after") || "").trim();
+  if (headerVal) {
+    const sec = Number(headerVal);
+    if (Number.isFinite(sec) && sec > 0) {
+      return Math.ceil(sec * 1000) + 250;
+    }
+  }
+  const match = rawBody.match(/try again in\s+([\d.]+)\s*(ms|s)/i);
+  if (match) {
+    const num = Number(match[1]);
+    if (Number.isFinite(num) && num > 0) {
+      const unit = match[2].toLowerCase();
+      return Math.ceil(unit === "ms" ? num : num * 1000) + 250;
+    }
+  }
+  return null;
+}
+
+function isModelUnavailableError(status: number, rawBody: string): boolean {
+  if (status === 404) return true;
+  return status === 400 && /model_not_found|decommissioned|does not exist|not found/i.test(rawBody);
+}
+
 function formatGroqError(status: number, rawBody: string): string {
   let msg = rawBody;
   try {
@@ -214,6 +302,13 @@ function formatGroqError(status: number, rawBody: string): string {
     return "Недействительный GROQ_API_KEY. Проверьте ключ в настройках секретов сервера.";
   }
   if (status === 429 || /rate_limit|quota|Too Many Requests/i.test(msg)) {
+    const waitMatch = msg.match(/try again in\s+([\d.]+)\s*(ms|s)/i);
+    if (waitMatch) {
+      const sec = waitMatch[2].toLowerCase() === "ms"
+        ? Math.max(1, Math.ceil(Number(waitMatch[1]) / 1000))
+        : Math.max(1, Math.ceil(Number(waitMatch[1])));
+      return `Достигнут минутный лимит токенов Groq (HTTP 429). Повторите через ${sec} сек.`;
+    }
     return "Достигнут временный минутный лимит запросов Groq (HTTP 429). Подождите пару секунд и повторите запрос.";
   }
   return (msg || `Groq HTTP ${status}`).slice(0, 260);
@@ -264,8 +359,8 @@ function buildGroqPayload(params: {
 
 /**
  * Streams a Free-tier chat response using `openai/gpt-oss-120b` via Groq
- * (with automatic vision routing to `qwen/qwen3.8-27b` when the current message contains an image attachment),
- * supporting OpenAI tools (function calling), optional reasoning thoughts, and immediate AbortSignal cancellation.
+ * (with automatic vision routing to `qwen/qwen3.8-27b` ONLY when the current message contains an image attachment),
+ * supporting OpenAI tools (function calling), optional reasoning thoughts, smart 429 retry, and immediate AbortSignal cancellation.
  */
 export async function callGroqFreeChatStream(params: {
   messages: Array<Record<string, unknown>>;
@@ -280,9 +375,7 @@ export async function callGroqFreeChatStream(params: {
     throw new Error("GROQ_API_KEY не настроен на сервере для бесплатного плана.");
   }
   if (params.signal?.aborted) {
-    const abortErr = new Error("Request aborted");
-    abortErr.name = "AbortError";
-    throw abortErr;
+    throw createAbortError();
   }
 
   const primaryModel = resolveGroqFreeModel();
@@ -290,21 +383,25 @@ export async function callGroqFreeChatStream(params: {
   const lastUserMsg = [...params.messages].reverse().find((m) => String(m.role || "user") === "user");
   const hasDirectImageInLastTurn = messageHasImageAttachment(lastUserMsg);
 
-  // If the user attached an image in this turn and no tool calls are active, try multimodal vision model first,
-  // then fall back to primary text model (openai/gpt-oss-120b). Otherwise use primary model directly.
-  const candidateModels =
+  // Use multimodal vision model first ONLY when the current turn has an image attachment (without tools).
+  // For standard text/tool turns, stay strictly on primaryModel (never silently downgrade to Qwen on 429).
+  const initialModel =
     hasDirectImageInLastTurn && !hasTools && primaryModel !== GROQ_FREE_VISION_MODEL
-      ? [GROQ_FREE_VISION_MODEL, primaryModel]
-      : primaryModel !== GROQ_FREE_VISION_MODEL
-        ? [primaryModel, GROQ_FREE_VISION_MODEL]
-        : [primaryModel];
+      ? GROQ_FREE_VISION_MODEL
+      : primaryModel;
+  const fallbackModelIfUnavailable =
+    initialModel === GROQ_FREE_VISION_MODEL ? primaryModel : GROQ_FREE_VISION_MODEL;
+  const modelsToTry =
+    initialModel === fallbackModelIfUnavailable
+      ? [initialModel]
+      : [initialModel, fallbackModelIfUnavailable];
 
   let upstream: Response | null = null;
   let lastStatus = 500;
   let lastErrBody = "";
 
-  for (let i = 0; i < candidateModels.length; i += 1) {
-    const candidateModel = candidateModels[i];
+  outer: for (let mIdx = 0; mIdx < modelsToTry.length; mIdx += 1) {
+    const candidateModel = modelsToTry[mIdx];
     const payload = buildGroqPayload({
       model: candidateModel,
       messages: params.messages,
@@ -314,25 +411,61 @@ export async function callGroqFreeChatStream(params: {
       maxTokens: params.maxTokens,
       stream: true,
     });
+    const bodyStr = JSON.stringify(payload);
 
-    const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-      signal: params.signal ?? AbortSignal.timeout(45_000),
-    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (params.signal?.aborted) throw createAbortError();
 
-    if (res.ok && res.body) {
-      upstream = res;
-      break;
-    }
+      const res = await fetchWithHeaderTimeout(
+        `${GROQ_BASE_URL}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${apiKey}`,
+          },
+          body: bodyStr,
+        },
+        15_000,
+        params.signal,
+      );
 
-    lastStatus = res.status;
-    lastErrBody = await res.text().catch(() => "");
-    if (res.status === 401 || res.status === 403) {
+      if (res.ok && res.body) {
+        upstream = res;
+        break outer;
+      }
+
+      lastStatus = res.status;
+      lastErrBody = await res.text().catch(() => "");
+
+      if (res.status === 401 || res.status === 403) {
+        break outer;
+      }
+
+      // Retry the SAME model once on transient 429 (if wait <= 10s) or 5xx
+      if (attempt === 0) {
+        if (res.status === 429) {
+          const retryMs = parseGroqRetryAfterMs(res, lastErrBody);
+          if (retryMs !== null && retryMs <= 10_000) {
+            await abortableSleep(retryMs, params.signal);
+            continue;
+          }
+          // Do not fall back from gpt-oss-120b to qwen on 429 (Qwen has 1k OTPM limit and refuses roleplay/code)
+          if (!hasDirectImageInLastTurn) {
+            break outer;
+          }
+        } else if (res.status >= 500) {
+          await abortableSleep(650, params.signal);
+          continue;
+        }
+      }
+
+      // Only try fallback model when current model is decommissioned/unavailable (or vision turn fallback)
+      const allowNextModel =
+        isModelUnavailableError(res.status, lastErrBody) || hasDirectImageInLastTurn;
+      if (!allowNextModel) {
+        break outer;
+      }
       break;
     }
   }
@@ -464,9 +597,21 @@ export async function callGroqFreeChatStream(params: {
         }
       };
 
+      const GROQ_CHUNK_STALL_TIMEOUT_MS = 18_000;
       try {
         while (!closed && !params.signal?.aborted) {
-          const { done, value } = await reader.read();
+          let stallTimer: ReturnType<typeof setTimeout> | null = null;
+          const { done, value } = await Promise.race([
+            reader.read(),
+            new Promise<never>((_resolve, reject) => {
+              stallTimer = setTimeout(() => {
+                void reader.cancel().catch(() => {});
+                reject(new Error("Groq stream stalled (no data for 18s)"));
+              }, GROQ_CHUNK_STALL_TIMEOUT_MS);
+            }),
+          ]).finally(() => {
+            if (stallTimer) clearTimeout(stallTimer);
+          });
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
@@ -583,42 +728,67 @@ export async function callGroqFreeText(params: {
     primaryModel !== GROQ_FREE_VISION_MODEL ? [primaryModel, GROQ_FREE_VISION_MODEL] : [primaryModel];
 
   for (const model of candidates) {
-    try {
-      const payload = buildGroqPayload({
-        model,
-        messages: params.messages,
-        temperature: params.temperature ?? 0.25,
-        maxTokens: params.maxTokens,
-        stream: false,
-        jsonMode: params.jsonMode,
-      });
+    const payload = buildGroqPayload({
+      model,
+      messages: params.messages,
+      temperature: params.temperature ?? 0.25,
+      maxTokens: params.maxTokens,
+      stream: false,
+      jsonMode: params.jsonMode,
+    });
+    const bodyStr = JSON.stringify(payload);
 
-      const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: params.signal ?? AbortSignal.timeout(30_000),
-      });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const res = await fetchWithHeaderTimeout(
+          `${GROQ_BASE_URL}/chat/completions`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${apiKey}`,
+            },
+            body: bodyStr,
+          },
+          15_000,
+          params.signal,
+        );
 
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => "");
-        console.warn(`[groq-free-text] ${model} failed:`, formatGroqError(res.status, errBody));
-        if (res.status === 401 || res.status === 403) return null;
-        continue;
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[groq-free-text] ${model} failed:`, formatGroqError(res.status, errBody));
+          if (res.status === 401 || res.status === 403) return null;
+          if (attempt === 0 && res.status === 429) {
+            const retryMs = parseGroqRetryAfterMs(res, errBody);
+            if (retryMs !== null && retryMs <= 6_000) {
+              await abortableSleep(retryMs, params.signal);
+              continue;
+            }
+            return null;
+          }
+          if (attempt === 0 && res.status >= 500) {
+            await abortableSleep(600, params.signal);
+            continue;
+          }
+          if (!isModelUnavailableError(res.status, errBody)) {
+            return null;
+          }
+          break;
+        }
+
+        const json = (await res.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const raw = (json.choices?.[0]?.message?.content ?? "")
+          .replace(/<think>[\s\S]*?<\/think>/gi, "")
+          .trim();
+        if (raw) return raw;
+        break;
+      } catch (err) {
+        if ((err as Error)?.name === "AbortError") return null;
+        console.warn(`[groq-free-text] ${model} exception:`, (err as Error)?.message || err);
+        break;
       }
-
-      const json = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const raw = (json.choices?.[0]?.message?.content ?? "")
-        .replace(/<think>[\s\S]*?<\/think>/gi, "")
-        .trim();
-      if (raw) return raw;
-    } catch (err) {
-      console.warn(`[groq-free-text] ${model} exception:`, (err as Error)?.message || err);
     }
   }
   return null;
@@ -733,7 +903,28 @@ export async function buildReferenceAwarePollinationsPrompt(params: {
     }
   }
 
-  // 2. Fallback for Pro hourly Pollinations fallback when GROQ_API_KEY is not configured: DeepSeek < V4.0
+  // 2. Fallback for Pro / non-Groq synthesis: OpenRouter DeepSeek < V4.0 first, then Direct DeepSeek / ApiMira
+  if (!params.signal?.aborted && isOpenRouterConfigured()) {
+    const orText = await callOpenRouterDeepSeekText({
+      tier: params.useDeepSeekSynthesis ? "pro" : "free",
+      uiModel: "f1",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userDirective },
+      ],
+      maxTokens: 320,
+      temperature: 0.4,
+      signal: params.signal,
+    });
+    if (orText && orText.trim().length >= 20) {
+      return orText
+        .replace(/^["'`]+|["'`]+$/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 880);
+    }
+  }
+
   if (params.useDeepSeekSynthesis && !params.signal?.aborted) {
     const dsKey = (params.deepseekKey || process.env.DEEPSEEK_API_KEY || "").trim();
     const apimiraKey = (params.apimiraKey || process.env.APIMIRA_API_KEY || "").trim();

@@ -20,6 +20,7 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 import { callGroqFreeText } from "./groq-free";
+import { callOpenRouterDeepSeekText, isOpenRouterConfigured } from "./openrouter-deepseek";
 
 export type FileTranslatorArgs = {
   filename?: string;
@@ -270,6 +271,15 @@ ${sanitizeTextForApi(payload.extractedContent).slice(0, 72_000)}`;
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
+
+  if (isOpenRouterConfigured()) {
+    const orText = await callOpenRouterDeepSeekText({
+      tier: ctx.useFreeModel ? "free" : "pro",
+      messages: apiMessages,
+      maxTokens: 3000,
+    });
+    if (orText) return sanitizeTextForApi(orText);
+  }
 
   if (ctx.useFreeModel) {
     const groqText = await callGroqFreeText({

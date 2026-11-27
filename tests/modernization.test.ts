@@ -21,6 +21,18 @@ import {
 } from "../src/lib/ai-router";
 import { GROQ_FREE_MODEL } from "../src/lib/groq-free";
 import {
+  OPENROUTER_FREE_CHAT,
+  OPENROUTER_FREE_F1,
+  OPENROUTER_FREE_FALLBACK,
+  OPENROUTER_FREE_INSTINCT,
+  OPENROUTER_PRO_CHAT,
+  OPENROUTER_PRO_F1,
+  OPENROUTER_PRO_INSTINCT,
+  OPENROUTER_PRO_REASONER,
+  getOpenRouterFallbackChain,
+  resolveOpenRouterModel,
+} from "../src/lib/openrouter-deepseek";
+import {
   APIMIRA_DEEPSEEK_CHAT,
   APIMIRA_DEEPSEEK_F1,
   APIMIRA_DEEPSEEK_INSTINCT,
@@ -206,7 +218,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
   assert.equal(isWithinDirectory("/tmp/ws-evil/file.txt", "/tmp/ws"), false);
 });
 
-test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses openai/gpt-oss-120b via Groq, and Pro models stay strictly below V4.0", () => {
+test("AI Router & OpenRouter DeepSeek < V4.0: circuit breaker works, Free & Pro use distinct pre-V4.0 DeepSeek models", () => {
   resetAiCircuitBreakers();
   recordProviderFailure("deepseek-direct", 402, 1000);
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), true);
@@ -217,7 +229,45 @@ test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses openai/
   assert.equal(GROQ_FREE_MODEL, "openai/gpt-oss-120b");
   const summary = getAiRouterHealthSummary();
   assert.ok(summary && typeof summary === "object");
-  assert.match(summary.freeProvider, /groq-free.*openai\/gpt-oss-120b/i);
+
+  const openRouterFreeModels = [
+    OPENROUTER_FREE_INSTINCT,
+    OPENROUTER_FREE_CHAT,
+    OPENROUTER_FREE_F1,
+    OPENROUTER_FREE_FALLBACK,
+    ...getOpenRouterFallbackChain("free", "instinct", false),
+    ...getOpenRouterFallbackChain("free", "chat", false),
+    ...getOpenRouterFallbackChain("free", "f1", false),
+  ];
+  const openRouterProModels = [
+    OPENROUTER_PRO_INSTINCT,
+    OPENROUTER_PRO_CHAT,
+    OPENROUTER_PRO_F1,
+    OPENROUTER_PRO_REASONER,
+    ...getOpenRouterFallbackChain("pro", "instinct", false),
+    ...getOpenRouterFallbackChain("pro", "chat", false),
+    ...getOpenRouterFallbackChain("pro", "f1", false),
+    ...getOpenRouterFallbackChain("pro", "instinct", true),
+  ];
+
+  assert.notEqual(
+    resolveOpenRouterModel("free", "instinct"),
+    resolveOpenRouterModel("pro", "instinct"),
+  );
+  assert.notEqual(
+    resolveOpenRouterModel("free", "chat"),
+    resolveOpenRouterModel("pro", "chat"),
+  );
+  assert.notEqual(
+    resolveOpenRouterModel("free", "f1"),
+    resolveOpenRouterModel("pro", "f1"),
+  );
+
+  for (const modelId of [...openRouterFreeModels, ...openRouterProModels]) {
+    assert.match(modelId, /^deepseek\//, `Expected OpenRouter deepseek/* model, got ${modelId}`);
+    assert.doesNotMatch(modelId, /v4/i, `OpenRouter DeepSeek model must be < V4.0, got ${modelId}`);
+    assert.doesNotMatch(modelId, /latest$/i, `Must not use unpinned latest alias, got ${modelId}`);
+  }
 
   const allProDeepSeekModels = [
     DEEPSEEK_DIRECT_INSTINCT,

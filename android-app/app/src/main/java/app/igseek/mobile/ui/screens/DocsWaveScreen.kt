@@ -73,8 +73,8 @@ fun DocsScreen(
                 "/img minimal obsidian dark wallpaper with subtle geometric light waves"
             ),
             DocGuideItem(
-                "Reasoning Mode & F1",
-                "Enable Think mode from the + menu or switch to IGseek F1 to view the step-by-step reasoning accordion above the final answer.",
+                "Reasoning Mode & Flash",
+                "Enable Think mode from the + menu or switch to IGseek Flash to view the step-by-step reasoning accordion above the final answer.",
                 "Solve a classic logic puzzle step by step and explain each deduction clearly."
             ),
             DocGuideItem(
@@ -101,8 +101,8 @@ fun DocsScreen(
                 "/img минималистичная тёмная 3D-иллюстрация красной лисы в стиле матового стекла"
             ),
             DocGuideItem(
-                "Режим мышления и IGseek F1",
-                "Включите «Мысли» в меню «+» или выберите модель IGseek F1, чтобы видеть подробный ход рассуждений перед финальным ответом.",
+                "Режим мышления и IGseek Flash",
+                "Включите «Мысли» в меню «+» или выберите модель IGseek Flash, чтобы видеть подробный ход рассуждений перед финальным ответом.",
                 "Разбери по шагам сложную логическую задачу и проверь ответ на ошибки."
             ),
             DocGuideItem(
