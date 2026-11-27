@@ -8,7 +8,8 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 
-export const GROQ_FREE_MODEL = "qwen/qwen3.8-27b";
+export const GROQ_FREE_MODEL = "openai/gpt-oss-120b";
+export const GROQ_FREE_VISION_MODEL = "qwen/qwen3.8-27b";
 export const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 
 export function isGroqFreeConfigured(): boolean {
@@ -55,7 +56,30 @@ function splitMarkdownTextAndImages(
   return parts;
 }
 
-function normalizeMessagesForGroq(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+function stripInlineImageDataUrls(raw: string): string {
+  return raw.replace(DATA_URL_IMG_RE, "[прикреплённое изображение]").trim();
+}
+
+function messageHasImageAttachment(msg: Record<string, unknown> | undefined): boolean {
+  if (!msg) return false;
+  const content = msg.content;
+  if (typeof content === "string") {
+    return /data:image\/[a-zA-Z0-9+.-]+;base64,/i.test(content);
+  }
+  if (Array.isArray(content)) {
+    return content.some(
+      (p: any) =>
+        (p?.type === "image_url" && typeof p?.image_url?.url === "string") ||
+        (p?.type === "text" && typeof p?.text === "string" && /data:image\/[a-zA-Z0-9+.-]+;base64,/i.test(p.text)),
+    );
+  }
+  return false;
+}
+
+function normalizeMessagesForGroq(
+  messages: Array<Record<string, unknown>>,
+  supportsMultimodalArray: boolean,
+): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
 
   for (const msg of messages) {
@@ -81,13 +105,13 @@ function normalizeMessagesForGroq(messages: Array<Record<string, unknown>>): Arr
         role: "assistant",
       };
       if (typeof content === "string") {
-        entry.content = content;
+        entry.content = stripInlineImageDataUrls(content);
       } else if (Array.isArray(content)) {
         const text = content
           .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
           .filter(Boolean)
           .join("\n");
-        entry.content = text;
+        entry.content = stripInlineImageDataUrls(text);
       } else {
         entry.content = "";
       }
@@ -108,7 +132,33 @@ function normalizeMessagesForGroq(messages: Array<Record<string, unknown>>): Arr
       continue;
     }
 
-    // User message (supports multimodal text + inline/structured base64 images for Qwen 3.8 vision)
+    // User message
+    if (!supportsMultimodalArray) {
+      // Text-only models like openai/gpt-oss-120b strictly require string content
+      if (typeof content === "string") {
+        const cleanText = stripInlineImageDataUrls(content);
+        out.push({ role: "user", content: cleanText || "(empty message)" });
+      } else if (Array.isArray(content)) {
+        const textSegments: string[] = [];
+        for (const p of content as any[]) {
+          if (!p || typeof p !== "object") continue;
+          if (p.type === "text" && typeof p.text === "string" && p.text.trim()) {
+            textSegments.push(stripInlineImageDataUrls(p.text));
+          } else if (p.type === "image_url") {
+            textSegments.push("[прикреплённое изображение]");
+          }
+        }
+        out.push({
+          role: "user",
+          content: textSegments.filter(Boolean).join("\n").trim() || "(прикреплённое изображение)",
+        });
+      } else {
+        out.push({ role: "user", content: String(content || "(empty message)") });
+      }
+      continue;
+    }
+
+    // Multimodal vision format for qwen/qwen3.8-27b
     if (typeof content === "string") {
       const parts = splitMarkdownTextAndImages(content);
       const hasImages = parts.some((p) => p.type === "image_url");
@@ -164,16 +214,58 @@ function formatGroqError(status: number, rawBody: string): string {
     return "Недействительный GROQ_API_KEY. Проверьте ключ в настройках секретов сервера.";
   }
   if (status === 429 || /rate_limit|quota|Too Many Requests/i.test(msg)) {
-    return "Достигнут временный лимит запросов Groq Qwen 3.8 (HTTP 429). Попробуйте через несколько секунд.";
+    return "Достигнут временный минутный лимит запросов Groq (HTTP 429). Подождите пару секунд и повторите запрос.";
   }
   return (msg || `Groq HTTP ${status}`).slice(0, 260);
 }
 
+function buildGroqPayload(params: {
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  tools?: Array<{ type: string; function?: { name: string; description?: string; parameters?: unknown } }>;
+  reasoning?: boolean;
+  temperature?: number;
+  maxTokens?: number;
+  stream: boolean;
+  jsonMode?: boolean;
+}): Record<string, unknown> {
+  const isQwen = /qwen/i.test(params.model);
+  const isGptOss = /gpt-oss/i.test(params.model);
+  const supportsVision = isQwen;
+  const normalizedMessages = normalizeMessagesForGroq(params.messages, supportsVision);
+  const hasTools = Array.isArray(params.tools) && params.tools.length > 0;
+
+  const payload: Record<string, unknown> = {
+    model: params.model,
+    stream: params.stream,
+    temperature: params.temperature ?? 0.65,
+    messages: normalizedMessages,
+    ...(hasTools ? { tools: params.tools, tool_choice: "auto" } : {}),
+    ...(params.jsonMode ? { response_format: { type: "json_object" } } : {}),
+  };
+
+  if (isGptOss) {
+    // Low reasoning effort achieves ~150-300ms TTFT and ~500 tok/s while strictly adhering to SYSTEM_PROMPT
+    payload.reasoning_effort = params.reasoning ? "medium" : "low";
+    // Only set max_completion_tokens when explicitly bounded below 3000 so Groq doesn't pre-reserve 4096 TPM upfront
+    if (params.maxTokens && params.maxTokens < 3000) {
+      payload.max_completion_tokens = params.maxTokens;
+    }
+  } else if (isQwen) {
+    // Qwen 3.8 on Groq has an enforced 1,000 OTPM limit on free tier and supports reasoning_effort: "none" | "default"
+    payload.reasoning_effort = params.reasoning ? "default" : "none";
+    payload.max_completion_tokens = Math.min(params.maxTokens ?? 850, 850);
+  } else if (params.maxTokens) {
+    payload.max_completion_tokens = params.maxTokens;
+  }
+
+  return payload;
+}
+
 /**
- * Streams a Free-tier chat response using Qwen 3.8 (`qwen/qwen3.8-27b`) via Groq
- * with full support for OpenAI tools (function calling), multimodal image attachments,
- * optional reasoning thoughts (both `delta.reasoning` and `<think>...</think>` blocks),
- * and immediate AbortSignal cancellation.
+ * Streams a Free-tier chat response using `openai/gpt-oss-120b` via Groq
+ * (with automatic vision routing to `qwen/qwen3.8-27b` when the current message contains an image attachment),
+ * supporting OpenAI tools (function calling), optional reasoning thoughts, and immediate AbortSignal cancellation.
  */
 export async function callGroqFreeChatStream(params: {
   messages: Array<Record<string, unknown>>;
@@ -185,7 +277,7 @@ export async function callGroqFreeChatStream(params: {
 }): Promise<Response> {
   const apiKey = getGroqApiKey();
   if (!apiKey) {
-    throw new Error("GROQ_API_KEY не настроен на сервере для бесплатного плана (Qwen 3.8).");
+    throw new Error("GROQ_API_KEY не настроен на сервере для бесплатного плана.");
   }
   if (params.signal?.aborted) {
     const abortErr = new Error("Request aborted");
@@ -193,44 +285,60 @@ export async function callGroqFreeChatStream(params: {
     throw abortErr;
   }
 
-  const model = resolveGroqFreeModel();
-  const normalizedMessages = normalizeMessagesForGroq(params.messages);
+  const primaryModel = resolveGroqFreeModel();
   const hasTools = Array.isArray(params.tools) && params.tools.length > 0;
+  const lastUserMsg = [...params.messages].reverse().find((m) => String(m.role || "user") === "user");
+  const hasDirectImageInLastTurn = messageHasImageAttachment(lastUserMsg);
 
-  // Inject reasoning directive into system message when reasoning is off to keep fast direct answers,
-  // or enable explicit step-by-step thinking inside <think>...</think> when reasoning is on.
-  const finalMessages = normalizedMessages.map((m, idx) => {
-    if (idx === 0 && m.role === "system" && typeof m.content === "string") {
-      const hint = params.reasoning
-        ? "\n\n[Reasoning Mode: ON — Think step-by-step inside <think>...</think> before your final answer.]"
-        : "\n\n/no_think";
-      return { ...m, content: `${m.content}${hint}` };
+  // If the user attached an image in this turn and no tool calls are active, try multimodal vision model first,
+  // then fall back to primary text model (openai/gpt-oss-120b). Otherwise use primary model directly.
+  const candidateModels =
+    hasDirectImageInLastTurn && !hasTools && primaryModel !== GROQ_FREE_VISION_MODEL
+      ? [GROQ_FREE_VISION_MODEL, primaryModel]
+      : primaryModel !== GROQ_FREE_VISION_MODEL
+        ? [primaryModel, GROQ_FREE_VISION_MODEL]
+        : [primaryModel];
+
+  let upstream: Response | null = null;
+  let lastStatus = 500;
+  let lastErrBody = "";
+
+  for (let i = 0; i < candidateModels.length; i += 1) {
+    const candidateModel = candidateModels[i];
+    const payload = buildGroqPayload({
+      model: candidateModel,
+      messages: params.messages,
+      tools: params.tools,
+      reasoning: params.reasoning,
+      temperature: params.temperature,
+      maxTokens: params.maxTokens,
+      stream: true,
+    });
+
+    const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: params.signal ?? AbortSignal.timeout(45_000),
+    });
+
+    if (res.ok && res.body) {
+      upstream = res;
+      break;
     }
-    return m;
-  });
 
-  const payload: Record<string, unknown> = {
-    model,
-    stream: true,
-    temperature: params.temperature ?? 0.65,
-    max_completion_tokens: params.maxTokens ?? 4096,
-    messages: finalMessages,
-    ...(hasTools ? { tools: params.tools, tool_choice: "auto" } : {}),
-  };
+    lastStatus = res.status;
+    lastErrBody = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      break;
+    }
+  }
 
-  const upstream = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
-    signal: params.signal ?? AbortSignal.timeout(45_000),
-  });
-
-  if (!upstream.ok || !upstream.body) {
-    const errBody = await upstream.text().catch(() => "");
-    throw new Error(formatGroqError(upstream.status, errBody));
+  if (!upstream || !upstream.body) {
+    throw new Error(formatGroqError(lastStatus, lastErrBody));
   }
 
   const upstreamBody = upstream.body;
@@ -305,7 +413,6 @@ export async function callGroqFreeChatStream(params: {
               work = work.slice(openIdx + 7);
               continue;
             }
-            // Check for partial "<think>" prefix at the end of work
             let partialLen = 0;
             for (let len = Math.min(6, work.length); len >= 1; len--) {
               if ("<think>".startsWith(work.slice(-len))) {
@@ -459,7 +566,7 @@ export async function callGroqFreeChatStream(params: {
 }
 
 /**
- * Non-streaming Free-tier Qwen 3.8 (Groq) text/JSON helper for Flow, Memory, and File Translation.
+ * Non-streaming Free-tier Groq text/JSON helper for Flow, Memory, and File Translation.
  */
 export async function callGroqFreeText(params: {
   messages: Array<{ role: string; content: string }>;
@@ -471,57 +578,58 @@ export async function callGroqFreeText(params: {
   const apiKey = getGroqApiKey();
   if (!apiKey || params.signal?.aborted) return null;
 
-  const model = resolveGroqFreeModel();
-  const normalizedMessages = normalizeMessagesForGroq(params.messages).map((m, idx) => {
-    if (idx === 0 && m.role === "system" && typeof m.content === "string") {
-      return { ...m, content: `${m.content}\n\n/no_think` };
-    }
-    return m;
-  });
+  const primaryModel = resolveGroqFreeModel();
+  const candidates =
+    primaryModel !== GROQ_FREE_VISION_MODEL ? [primaryModel, GROQ_FREE_VISION_MODEL] : [primaryModel];
 
-  try {
-    const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
+  for (const model of candidates) {
+    try {
+      const payload = buildGroqPayload({
         model,
-        stream: false,
+        messages: params.messages,
         temperature: params.temperature ?? 0.25,
-        max_completion_tokens: params.maxTokens ?? 2048,
-        ...(params.jsonMode ? { response_format: { type: "json_object" } } : {}),
-        messages: normalizedMessages,
-      }),
-      signal: params.signal ?? AbortSignal.timeout(30_000),
-    });
+        maxTokens: params.maxTokens,
+        stream: false,
+        jsonMode: params.jsonMode,
+      });
 
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => "");
-      console.warn("[groq-free-text] failed:", formatGroqError(res.status, errBody));
-      return null;
+      const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+        signal: params.signal ?? AbortSignal.timeout(30_000),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        console.warn(`[groq-free-text] ${model} failed:`, formatGroqError(res.status, errBody));
+        if (res.status === 401 || res.status === 403) return null;
+        continue;
+      }
+
+      const json = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const raw = (json.choices?.[0]?.message?.content ?? "")
+        .replace(/<think>[\s\S]*?<\/think>/gi, "")
+        .trim();
+      if (raw) return raw;
+    } catch (err) {
+      console.warn(`[groq-free-text] ${model} exception:`, (err as Error)?.message || err);
     }
-
-    const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const raw = (json.choices?.[0]?.message?.content ?? "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
-    return raw || null;
-  } catch (err) {
-    console.warn("[groq-free-text] exception:", (err as Error)?.message || err);
-    return null;
   }
+  return null;
 }
 
 /**
  * Under-the-hood reference image analyzer -> detailed English Pollinations prompt.
  *
- * - On Free plan (and whenever GROQ_API_KEY is available), Qwen 3.8 Vision on Groq directly
- *   inspects the uploaded/referenced image(s), captures subject identity, pose, outfit,
- *   composition, lighting, colors, and style, applies the user's requested edit/generation
+ * - On Free plan (and whenever GROQ_API_KEY is available), `qwen/qwen3.8-27b` Vision on Groq directly
+ *   inspects the uploaded/referenced image(s) with `reasoning_effort: "none"`, captures subject identity,
+ *   pose, outfit, composition, lighting, colors, and style, applies the user's requested edit/generation
  *   directive, and outputs ONE rich English image prompt for Pollinations.
  * - If GROQ_API_KEY is absent during Pro hourly fallback, falls back to DeepSeek < V4.0.
  */
@@ -554,7 +662,7 @@ export async function buildReferenceAwarePollinationsPrompt(params: {
     "You are a master visual prompt engineer for text-to-image diffusion models (Flux / Pollinations). " +
     "Carefully analyze the provided reference image(s) and the user's request. " +
     "Write ONE cohesive, vivid, self-contained English image generation prompt (under 820 characters) that faithfully preserves the reference image's subject appearance, identity, clothing, composition, camera angle, lighting, and artistic style EXCEPT for the exact changes requested by the user. " +
-    "Output ONLY the final English prompt text — no quotes, no markdown, no bullet points, no preamble.\n\n/no_think";
+    "Output ONLY the final English prompt text — no quotes, no markdown, no bullet points, no preamble.";
 
   const userDirective = [
     `User request / edit instruction: ${cleanEdit}`,
@@ -564,7 +672,7 @@ export async function buildReferenceAwarePollinationsPrompt(params: {
     .filter(Boolean)
     .join("\n");
 
-  // 1. Primary: Groq Qwen 3.8 multimodal vision analysis
+  // 1. Primary: Groq multimodal vision analysis (qwen/qwen3.8-27b with reasoning_effort: "none" and safe token cap)
   const groqKey = getGroqApiKey();
   if (groqKey && !params.signal?.aborted) {
     const contentParts: Array<
@@ -579,6 +687,8 @@ export async function buildReferenceAwarePollinationsPrompt(params: {
     contentParts.push({ type: "text", text: userDirective });
 
     try {
+      const hasImages = contentParts.some((p) => p.type === "image_url");
+      const visionModel = hasImages ? GROQ_FREE_VISION_MODEL : resolveGroqFreeModel();
       const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
@@ -586,10 +696,11 @@ export async function buildReferenceAwarePollinationsPrompt(params: {
           authorization: `Bearer ${groqKey}`,
         },
         body: JSON.stringify({
-          model: resolveGroqFreeModel(),
+          model: visionModel,
           stream: false,
           temperature: 0.35,
           max_completion_tokens: 360,
+          reasoning_effort: /qwen/i.test(visionModel) ? "none" : "low",
           messages: [
             { role: "system", content: systemPrompt },
             {

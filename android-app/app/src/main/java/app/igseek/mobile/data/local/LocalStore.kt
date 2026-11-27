@@ -232,6 +232,56 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         )
     }
 
+    fun hasRegisteredAccount(email: String): Boolean {
+        val key = email.trim().lowercase()
+        return key.isNotBlank() && readLocalAccountsJson().has(key)
+    }
+
+    fun authenticateOrCreateGoogleDeviceAccount(email: String, displayName: String = ""): AuthSession {
+        val cleanEmail = email.trim()
+        val key = cleanEmail.lowercase()
+        val accounts = readLocalAccountsJson()
+        val resolvedName = displayName.trim().ifBlank { cleanEmail.substringBefore("@").ifBlank { "Google User" } }
+
+        val existing = accounts.optJSONObject(key)
+        if (existing != null) {
+            val uid = existing.optString("uid").ifBlank {
+                "google_${UUID.nameUUIDFromBytes(key.toByteArray()).toString().replace("-", "").take(16)}"
+            }
+            val savedName = existing.optString("displayName").ifBlank { resolvedName }
+            return AuthSession(
+                uid = uid,
+                email = cleanEmail,
+                displayName = savedName,
+                idToken = uid,
+                refreshToken = "",
+                expiresAtMs = Long.MAX_VALUE,
+                isGuest = false
+            )
+        }
+
+        val uid = "local_${UUID.nameUUIDFromBytes(key.toByteArray()).toString().replace("-", "").take(16)}"
+        val record = JSONObject().apply {
+            put("uid", uid)
+            put("email", cleanEmail)
+            put("displayName", resolvedName)
+            put("provider", "google_device")
+            put("createdAtMs", System.currentTimeMillis())
+        }
+        accounts.put(key, record)
+        prefs.edit().putString("local_email_accounts_v1", accounts.toString()).apply()
+
+        return AuthSession(
+            uid = uid,
+            email = cleanEmail,
+            displayName = resolvedName,
+            idToken = uid,
+            refreshToken = "",
+            expiresAtMs = Long.MAX_VALUE,
+            isGuest = false
+        )
+    }
+
     fun authenticateLocalEmailAccount(email: String, password: String): AuthSession? {
         val cleanEmail = email.trim()
         val key = cleanEmail.lowercase()

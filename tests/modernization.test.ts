@@ -206,7 +206,7 @@ test("Flow Sandbox: strips server secrets from env and blocks prefix-sibling pat
   assert.equal(isWithinDirectory("/tmp/ws-evil/file.txt", "/tmp/ws"), false);
 });
 
-test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses Qwen 3.8 via Groq, and Pro models stay strictly below V4.0", () => {
+test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses openai/gpt-oss-120b via Groq, and Pro models stay strictly below V4.0", () => {
   resetAiCircuitBreakers();
   recordProviderFailure("deepseek-direct", 402, 1000);
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), true);
@@ -214,10 +214,10 @@ test("AI Router & DeepSeek < V4.0: circuit breaker works, Free tier uses Qwen 3.
   recordProviderSuccess("deepseek-direct");
   assert.equal(isProviderCircuitOpen("deepseek-direct", 2000), false);
 
-  assert.equal(GROQ_FREE_MODEL, "qwen/qwen3.8-27b");
+  assert.equal(GROQ_FREE_MODEL, "openai/gpt-oss-120b");
   const summary = getAiRouterHealthSummary();
   assert.ok(summary && typeof summary === "object");
-  assert.match(summary.freeProvider, /groq-free.*qwen\/qwen3\.8-27b/i);
+  assert.match(summary.freeProvider, /groq-free.*openai\/gpt-oss-120b/i);
 
   const allProDeepSeekModels = [
     DEEPSEEK_DIRECT_INSTINCT,

@@ -1,5 +1,7 @@
 package app.igseek.mobile
 
+import android.accounts.AccountManager
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -8,10 +10,10 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -50,15 +51,37 @@ import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.IGseekTheme
 import app.igseek.mobile.widget.IGseekQuickWidget
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.launch
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 class MainActivity : FragmentActivity() {
 
     private val viewModel: IGseekViewModel by viewModels()
     private var isUnlocked by mutableStateOf(true)
+
+    // Native Android system dialog showing all Google accounts registered on the device
+    private val systemGoogleAccountPicker = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.trim().orEmpty()
+            if (email.isNotBlank()) {
+                val displayName = email.substringBefore("@").replace('.', ' ')
+                    .split(" ")
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ") { part ->
+                        part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                    }
+                    .ifBlank { email.substringBefore("@") }
+                viewModel.signInWithDeviceGoogleAccount(email = email, displayName = displayName)
+            } else {
+                viewModel.setGoogleAuthLoading(false)
+            }
+        } else {
+            viewModel.setGoogleAuthLoading(false)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,27 +153,40 @@ class MainActivity : FragmentActivity() {
     private fun launchGoogleSignIn() {
         val clientId = BuildConfig.FIREBASE_OAUTH_CLIENT_ID.trim()
         if (clientId.isBlank()) {
-            viewModel.onGoogleAuthError("Google OAuth Client ID не настроен в сборке")
+            launchSystemDeviceAccountPicker()
             return
         }
 
         lifecycleScope.launch {
             viewModel.setGoogleAuthLoading(true)
             val credentialManager = CredentialManager.create(this@MainActivity)
+
+            // 1. Try native Google Sign-In bottom sheet / dialog via Credential Manager
+            val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(false)
                 .setServerClientId(clientId)
                 .setAutoSelectEnabled(false)
                 .build()
-            val request = GetCredentialRequest.Builder()
-                .addCredentialOption(googleIdOption)
-                .build()
 
             try {
-                val result = credentialManager.getCredential(
-                    request = request,
-                    context = this@MainActivity
-                )
+                val result = try {
+                    credentialManager.getCredential(
+                        request = GetCredentialRequest.Builder()
+                            .addCredentialOption(signInWithGoogleOption)
+                            .build(),
+                        context = this@MainActivity
+                    )
+                } catch (e: Exception) {
+                    if (e is GetCredentialCancellationException) throw e
+                    credentialManager.getCredential(
+                        request = GetCredentialRequest.Builder()
+                            .addCredentialOption(googleIdOption)
+                            .build(),
+                        context = this@MainActivity
+                    )
+                }
+
                 val credential = result.credential
                 if (credential is CustomCredential &&
                     credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
@@ -158,28 +194,33 @@ class MainActivity : FragmentActivity() {
                     val googleCred = GoogleIdTokenCredential.createFrom(credential.data)
                     viewModel.signInWithGoogleIdToken(googleCred.idToken)
                 } else {
-                    viewModel.onGoogleAuthError("Не удалось получить токен Google")
+                    launchSystemDeviceAccountPicker()
                 }
             } catch (_: GetCredentialCancellationException) {
                 viewModel.setGoogleAuthLoading(false)
             } catch (_: Exception) {
-                // Native Credential Manager requires registered APK SHA-1.
-                // Fall back to Google OAuth 2.0-compliant IGseek Web Auth Bridge in Chrome Custom Tab.
-                viewModel.setGoogleAuthLoading(false)
-                launchGoogleWebBridge()
+                // Opens the native Android system dialog listing registered Google accounts on the device (NO browser!)
+                launchSystemDeviceAccountPicker()
             }
         }
     }
 
-    private fun launchGoogleWebBridge() {
-        val bridgeBase = viewModel.getAuthBridgeBaseUrl()
-        if (bridgeBase.isBlank()) {
-            viewModel.onGoogleAuthError("Адрес сервера авторизации не настроен. Зарегистрируйтесь по email.")
-            return
+    @Suppress("DEPRECATION")
+    private fun launchSystemDeviceAccountPicker() {
+        runCatching {
+            val intent = AccountManager.newChooseAccountIntent(
+                null,
+                null,
+                arrayOf("com.google"),
+                null,
+                null,
+                null,
+                null
+            )
+            systemGoogleAccountPicker.launch(intent)
+        }.onFailure {
+            viewModel.onGoogleAuthError("Не удалось открыть системное окно выбора аккаунта Google на устройстве")
         }
-        val state = URLEncoder.encode(viewModel.createAndStoreOAuthState(), StandardCharsets.UTF_8.name())
-        val url = "$bridgeBase/login?mobile_auth=1&state=$state"
-        openCustomTab(url)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -287,12 +328,5 @@ class MainActivity : FragmentActivity() {
             .build()
         prompt.authenticate(info)
     }
-
-    private fun openCustomTab(url: String) {
-        runCatching {
-            CustomTabsIntent.Builder().build().launchUrl(this, Uri.parse(url))
-        }.onFailure {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        }
-    }
 }
+

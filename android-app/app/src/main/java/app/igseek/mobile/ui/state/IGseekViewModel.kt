@@ -490,6 +490,27 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun signInWithDeviceGoogleAccount(email: String, displayName: String = "") {
+        val cleanEmail = email.trim()
+        if (cleanEmail.isBlank()) {
+            onGoogleAuthError("Не удалось получить email выбранного аккаунта Google")
+            return
+        }
+        val isFirstTime = !store.hasRegisteredAccount(cleanEmail)
+        val session = store.authenticateOrCreateGoogleDeviceAccount(cleanEmail, displayName)
+        store.saveSession(session)
+        _state.update {
+            it.copy(
+                session = session,
+                isGoogleAuthLoading = false,
+                isAuthLoading = false,
+                authError = null,
+                needsAccentOnboarding = isFirstTime,
+                cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
+            )
+        }
+    }
+
     private fun completeGoogleSession(session: AuthSession) {
         store.saveSession(session)
         _state.update {
