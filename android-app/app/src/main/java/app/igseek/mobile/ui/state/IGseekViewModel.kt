@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.IGseekApplication
+import app.igseek.mobile.data.api.IGseekApiClient
 import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
