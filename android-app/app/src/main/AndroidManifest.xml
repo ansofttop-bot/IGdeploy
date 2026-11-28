@@ -48,6 +48,16 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="app.igseek.mobile" android:host="auth" />
             </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="${firebaseAuthScheme}"
+                    android:host="firebaseauth"
+                    android:pathPrefix="/link" />
+            </intent-filter>
         </activity>
 
         <receiver

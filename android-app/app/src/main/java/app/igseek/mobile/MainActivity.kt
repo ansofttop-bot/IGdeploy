@@ -43,6 +43,7 @@ import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.IGseekTheme
 import app.igseek.mobile.widget.IGseekQuickWidget
+import org.json.JSONObject
 
 class MainActivity : FragmentActivity() {
 
@@ -54,7 +55,7 @@ class MainActivity : FragmentActivity() {
         super.onResume()
         if (awaitingCustomTabAuth) {
             awaitingCustomTabAuth = false
-            // If user closed Chrome Custom Tab without completing auth, stop loading spinner cleanly
+            // If user closed Chrome Custom Tab without selecting an account, stop loading spinner cleanly
             if (viewModel.state.value.session == null && viewModel.state.value.isGoogleAuthLoading) {
                 viewModel.setGoogleAuthLoading(false)
             }
@@ -131,31 +132,10 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun launchGoogleSignIn() {
-        // Launch the in-app Chrome Custom Tab Firebase Auth bridge directly.
-        // Native Credential Manager requires a fixed Android OAuth client SHA-1 in Google Cloud Console,
-        // which fails silently on CI-signed debug APKs after picking an account.
-        // The Chrome Custom Tab bridge runs Firebase Web Auth on our authorized domain and returns
-        // the exact same Firebase UID + real idToken + refreshToken as the web app for instant cloud sync.
-        viewModel.setGoogleAuthLoading(true)
-        launchInAppGoogleAuthBridge()
-    }
-
-    private fun launchInAppGoogleAuthBridge() {
-        val bridgeBase = viewModel.getAuthBridgeBaseUrl().trim().trimEnd('/')
-        if (bridgeBase.isBlank()) {
-            viewModel.onGoogleAuthError("Не настроен адрес сервера авторизации IGseek")
-            return
-        }
-        val state = viewModel.createAndStoreOAuthState()
-        val lang = viewModel.state.value.layoutPrefs.language
-        val authUrl = Uri.parse("$bridgeBase/login")
-            .buildUpon()
-            .appendQueryParameter("mobile_auth", "1")
-            .appendQueryParameter("state", state)
-            .appendQueryParameter("redirect_uri", "app.igseek.mobile://auth")
-            .appendQueryParameter("lang", lang)
-            .build()
-
+        // Opens Firebase Auth handler directly in an in-app Chrome Custom Tab, which immediately
+        // redirects straight to Google's account picker (no IGseek website page in between) and
+        // returns directly to MainActivity via BuildConfig.FIREBASE_AUTH_SCHEME://firebaseauth/link.
+        val authUrl = viewModel.buildDirectGoogleAuthUrl() ?: return
         awaitingCustomTabAuth = true
         runCatching {
             val customTabs = CustomTabsIntent.Builder()
@@ -168,7 +148,7 @@ class MainActivity : FragmentActivity() {
                 startActivity(Intent(Intent.ACTION_VIEW, authUrl))
             }.onFailure {
                 awaitingCustomTabAuth = false
-                viewModel.onGoogleAuthError("Не удалось открыть окно входа через Google")
+                viewModel.onGoogleAuthError("Не удалось открыть окно выбора аккаунта Google")
             }
         }
     }
@@ -176,12 +156,48 @@ class MainActivity : FragmentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
 
-        // Handle Google OAuth / Firebase Web Bridge redirect:
-        // app.igseek.mobile://auth#firebase_id_token=...&refresh_token=...&uid=...&email=...&name=...&state=...
         val dataUri = intent.data
+        // 1. Direct Firebase Auth handler callback:
+        //    app-1-862718593529-web-...://firebaseauth/link?deep_link_id=<encoded callback URL>
+        if (dataUri != null &&
+            dataUri.scheme.equals(BuildConfig.FIREBASE_AUTH_SCHEME, ignoreCase = true) &&
+            dataUri.host.equals("firebaseauth", ignoreCase = true)
+        ) {
+            awaitingCustomTabAuth = false
+            intent.data = null
+            setIntent(intent)
+
+            val deepLinkId = dataUri.getQueryParameter("deep_link_id")
+            if (deepLinkId.isNullOrBlank()) {
+                viewModel.onGoogleAuthError("Не получен ответ от Google. Попробуйте ещё раз.")
+                return
+            }
+            val callbackUri = runCatching { Uri.parse(deepLinkId) }.getOrNull()
+            val firebaseError = callbackUri?.getQueryParameter("firebaseError")
+            if (!firebaseError.isNullOrBlank()) {
+                val msg = runCatching {
+                    JSONObject(firebaseError).optString("message")
+                }.getOrNull().orEmpty()
+                viewModel.onGoogleAuthError(
+                    if (msg.contains("cancel", ignoreCase = true)) "Вход через Google отменён"
+                    else msg.ifBlank { "Не удалось войти через Google" }
+                )
+                return
+            }
+            val innerLink = callbackUri?.getQueryParameter("link").orEmpty()
+            val eventId = callbackUri?.getQueryParameter("eventId")
+            if (innerLink.isBlank()) {
+                viewModel.onGoogleAuthError("Не получена ссылка подтверждения от Google. Попробуйте ещё раз.")
+                return
+            }
+            viewModel.completeFirebaseOAuthCallback(innerLink, eventId)
+            return
+        }
+
+        // 2. Legacy custom scheme callback (backward compatibility):
+        //    app.igseek.mobile://auth#firebase_id_token=...
         if (dataUri != null && dataUri.scheme == "app.igseek.mobile" && dataUri.host == "auth") {
             awaitingCustomTabAuth = false
-            // Clear intent data immediately so config changes or activity resume never re-trigger this deep link
             intent.data = null
             setIntent(intent)
             val fragment = dataUri.fragment.orEmpty()
@@ -280,4 +296,3 @@ class MainActivity : FragmentActivity() {
         prompt.authenticate(info)
     }
 }
-

@@ -26,6 +26,14 @@ val firebaseDatabaseId = (providers.gradleProperty("IGSEEK_FIREBASE_DATABASE_ID"
 val firebaseAuthDomain = (providers.gradleProperty("IGSEEK_FIREBASE_AUTH_DOMAIN").orNull
     ?: firebaseJson["authDomain"]?.toString()
     ?: "").replace("\"", "")
+val firebaseAppId = (providers.gradleProperty("IGSEEK_FIREBASE_APP_ID").orNull
+    ?: firebaseJson["appId"]?.toString()
+    ?: "").replace("\"", "")
+val firebaseAuthScheme = if (firebaseAppId.isNotBlank()) {
+    "app-" + firebaseAppId.replace(":", "-")
+} else {
+    "app-igseek-firebase"
+}
 val firebaseOAuthClientId = (providers.gradleProperty("IGSEEK_GOOGLE_CLIENT_ID").orNull
     ?: firebaseJson["oAuthClientId"]?.toString()
     ?: "").replace("\"", "")
@@ -38,9 +46,9 @@ val defaultAuthBridgeUrl = (providers.gradleProperty("IGSEEK_AUTH_BRIDGE_URL").o
     .replace("\"", "")
     .trimEnd('/')
 
-if (firebaseWebApiKey.isBlank() || firebaseProjectId.isBlank()) {
+if (firebaseWebApiKey.isBlank() || firebaseProjectId.isBlank() || firebaseAppId.isBlank()) {
     throw GradleException(
-        "Missing Firebase config: expected firebase-applet-config.json at ${firebaseConfigFile.absolutePath} with apiKey and projectId."
+        "Missing Firebase config: expected firebase-applet-config.json at ${firebaseConfigFile.absolutePath} with apiKey, projectId, and appId."
     )
 }
 
@@ -52,18 +60,22 @@ android {
         applicationId = "app.igseek.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 205
-        versionName = "2.2.1"
+        versionCode = 207
+        versionName = "2.2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
+        manifestPlaceholders["firebaseAuthScheme"] = firebaseAuthScheme
+
         buildConfigField("String", "DEFAULT_API_BASE_URL", "\"$defaultApiBaseUrl\"")
         buildConfigField("String", "DEFAULT_AUTH_BRIDGE_URL", "\"$defaultAuthBridgeUrl\"")
         buildConfigField("String", "FIREBASE_WEB_API_KEY", "\"$firebaseWebApiKey\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
+        buildConfigField("String", "FIREBASE_APP_ID", "\"$firebaseAppId\"")
+        buildConfigField("String", "FIREBASE_AUTH_SCHEME", "\"$firebaseAuthScheme\"")
         buildConfigField("String", "FIREBASE_DATABASE_ID", "\"$firebaseDatabaseId\"")
         buildConfigField("String", "FIREBASE_AUTH_DOMAIN", "\"$firebaseAuthDomain\"")
         buildConfigField("String", "FIREBASE_OAUTH_CLIENT_ID", "\"$firebaseOAuthClientId\"")

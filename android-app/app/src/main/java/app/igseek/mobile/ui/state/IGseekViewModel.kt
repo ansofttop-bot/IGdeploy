@@ -1,6 +1,7 @@
 package app.igseek.mobile.ui.state
 
 import android.app.Application
+import android.net.Uri
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -32,6 +33,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -502,6 +505,78 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onGoogleAuthError(message: String) {
         _state.update { it.copy(isGoogleAuthLoading = false, isAuthLoading = false, authError = message) }
+    }
+
+    private fun generateRandomAlnum(length: Int = 24): String {
+        val alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        val random = SecureRandom()
+        return buildString(length) {
+            repeat(length) { append(alphabet[random.nextInt(alphabet.length)]) }
+        }
+    }
+
+    private fun sha256Hex(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    fun buildDirectGoogleAuthUrl(): Uri? {
+        val apiKey = BuildConfig.FIREBASE_WEB_API_KEY.trim()
+        val appId = BuildConfig.FIREBASE_APP_ID.trim()
+        val authDomain = BuildConfig.FIREBASE_AUTH_DOMAIN.trim()
+            .ifBlank { "${BuildConfig.FIREBASE_PROJECT_ID.trim()}.firebaseapp.com" }
+        if (apiKey.isBlank() || appId.isBlank() || authDomain.isBlank()) {
+            onGoogleAuthError("Firebase конфигурация не найдена в сборке")
+            return null
+        }
+
+        val rawSessionId = generateRandomAlnum(24)
+        val hashedSessionId = sha256Hex(rawSessionId)
+        val eventId = generateRandomAlnum(24)
+        store.savePendingOAuthSessionId(rawSessionId)
+        store.savePendingOAuthState(eventId)
+        _state.update { it.copy(isGoogleAuthLoading = true, authError = null) }
+
+        return Uri.parse("https://$authDomain/__/auth/handler")
+            .buildUpon()
+            .appendQueryParameter("apiKey", apiKey)
+            .appendQueryParameter("appName", "[DEFAULT]")
+            .appendQueryParameter("authType", "signInViaRedirect")
+            .appendQueryParameter("providerId", "google.com")
+            .appendQueryParameter("ibi", BuildConfig.APPLICATION_ID)
+            .appendQueryParameter("appId", appId)
+            .appendQueryParameter("sessionId", hashedSessionId)
+            .appendQueryParameter("eventId", eventId)
+            .appendQueryParameter("customParameters", """{"prompt":"select_account"}""")
+            .build()
+    }
+
+    fun completeFirebaseOAuthCallback(callbackLink: String, incomingEventId: String?) {
+        val expectedEventId = store.consumePendingOAuthState()
+        val rawSessionId = store.consumePendingOAuthSessionId()
+        if (!expectedEventId.isNullOrBlank() && !incomingEventId.isNullOrBlank() && expectedEventId != incomingEventId) {
+            onGoogleAuthError("Ошибка проверки состояния авторизации. Попробуйте ещё раз.")
+            return
+        }
+        if (callbackLink.isBlank() || rawSessionId.isNullOrBlank()) {
+            onGoogleAuthError("Сессия входа через Google истекла. Попробуйте ещё раз.")
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(isGoogleAuthLoading = true, authError = null) }
+            runCatching {
+                authApi.signInWithGoogleCallbackUri(callbackLink, rawSessionId)
+            }.onSuccess { session ->
+                completeGoogleSession(session)
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        isGoogleAuthLoading = false,
+                        authError = err.message ?: "Не удалось завершить вход через Google"
+                    )
+                }
+            }
+        }
     }
 
     fun signInWithFirebaseBridge(

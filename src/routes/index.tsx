@@ -56,9 +56,15 @@ export const Route = createFileRoute("/")({
     try {
       if (window.sessionStorage.getItem("igseek:mobile_auth_pending") === "1") {
         const state = window.sessionStorage.getItem("igseek:mobile_auth_state") || "";
+        const redirectUri = window.sessionStorage.getItem("igseek:mobile_auth_redirect") || "";
         throw redirect({
           to: "/login",
-          search: { next: "", mobile_auth: "1", state },
+          search: {
+            next: "",
+            mobile_auth: "1",
+            state,
+            ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+          },
           replace: true,
         });
       }

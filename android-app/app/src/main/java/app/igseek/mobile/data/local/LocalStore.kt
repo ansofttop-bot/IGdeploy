@@ -226,6 +226,16 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         return state
     }
 
+    fun savePendingOAuthSessionId(sessionId: String) {
+        prefs.edit().putString("pending_oauth_session_id", sessionId).apply()
+    }
+
+    fun consumePendingOAuthSessionId(): String? {
+        val sessionId = prefs.getString("pending_oauth_session_id", null)
+        prefs.edit().remove("pending_oauth_session_id").apply()
+        return sessionId
+    }
+
     // ==================== LAYOUT PREFERENCES ====================
 
     fun saveLayoutPrefs(layout: MobileLayoutPrefs) {

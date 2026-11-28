@@ -114,15 +114,51 @@ function clearMobileBridgeState() {
   } catch {}
 }
 
+function normalizeMobileAuthFlag(val: unknown): string {
+  if (val === 1 || val === true) return "1";
+  if (typeof val === "string") {
+    const v = val.trim().toLowerCase();
+    if (v === "1" || v === "true" || v === "android" || v === "mobile") return "1";
+  }
+  return "";
+}
+
+function readRawUrlBridgeParams(): {
+  mobileAuth: string;
+  state: string;
+  redirectUri: string;
+  lang: string;
+} {
+  if (typeof window === "undefined") {
+    return { mobileAuth: "", state: "", redirectUri: "", lang: "" };
+  }
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    return {
+      mobileAuth: normalizeMobileAuthFlag(sp.get("mobile_auth")),
+      state: sp.get("state") || "",
+      redirectUri: sp.get("redirect_uri") || "",
+      lang: sp.get("lang") || "",
+    };
+  } catch {
+    return { mobileAuth: "", state: "", redirectUri: "", lang: "" };
+  }
+}
+
 function isMobileBridgeSession(searchMobileAuth?: string): boolean {
-  if (searchMobileAuth === "1") return true;
+  if (normalizeMobileAuthFlag(searchMobileAuth) === "1") return true;
+  const raw = readRawUrlBridgeParams();
+  if (raw.mobileAuth === "1") return true;
   if (typeof window === "undefined") return false;
   try {
     if (window.sessionStorage.getItem(MOBILE_AUTH_STORAGE_KEY) === "1") return true;
   } catch {}
   try {
     const ts = Number(window.localStorage.getItem(MOBILE_AUTH_STORAGE_KEY) || "0");
-    if (ts > 0 && Date.now() - ts < 10 * 60_000) return true;
+    if (ts > 0 && Date.now() - ts < 5 * 60_000) {
+      const ref = (typeof document !== "undefined" ? document.referrer : "") || "";
+      if (ref.includes("google.com") || ref.includes("firebaseapp.com")) return true;
+    }
   } catch {}
   return false;
 }
@@ -141,18 +177,35 @@ export const Route = createFileRoute("/login")({
   }),
   validateSearch: (
     s: Record<string, unknown>
-  ): { next: string; mobile_auth: string; state: string; redirect_uri?: string } => ({
-    next: typeof s.next === "string" ? s.next : "",
-    mobile_auth: typeof s.mobile_auth === "string" ? s.mobile_auth : "",
-    state: typeof s.state === "string" ? s.state : "",
-    ...(typeof s.redirect_uri === "string" && s.redirect_uri ? { redirect_uri: s.redirect_uri } : {}),
-  }),
+  ): { next: string; mobile_auth: string; state: string; redirect_uri?: string; lang?: string } => {
+    const raw = readRawUrlBridgeParams();
+    const mobileAuth = normalizeMobileAuthFlag(s.mobile_auth) || raw.mobileAuth;
+    const state = s.state != null && String(s.state).trim() !== "" ? String(s.state) : raw.state;
+    const redirectUri =
+      typeof s.redirect_uri === "string" && s.redirect_uri
+        ? s.redirect_uri
+        : raw.redirectUri;
+    const lang = typeof s.lang === "string" && s.lang ? s.lang : raw.lang;
+    return {
+      next: typeof s.next === "string" ? s.next : "",
+      mobile_auth: mobileAuth,
+      state,
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+      ...(lang ? { lang } : {}),
+    };
+  },
   beforeLoad: async ({ search }) => {
-    if (typeof window !== "undefined" && search.mobile_auth === "1") {
-      persistMobileBridgeState(search.state, search.redirect_uri);
-      return;
+    if (typeof window !== "undefined") {
+      const raw = readRawUrlBridgeParams();
+      const effectiveMobileAuth = normalizeMobileAuthFlag(search.mobile_auth) || raw.mobileAuth;
+      const effectiveState = search.state || raw.state;
+      const effectiveRedirect = search.redirect_uri || raw.redirectUri;
+      if (effectiveMobileAuth === "1") {
+        persistMobileBridgeState(effectiveState, effectiveRedirect);
+        return;
+      }
+      if (isMobileBridgeSession(effectiveMobileAuth)) return;
     }
-    if (isMobileBridgeSession(search.mobile_auth)) return;
     const { data } = await firebaseClient.auth.getSession();
     if (data.session) {
       const target = isSafeNext(search.next) ? search.next : "/app";
@@ -165,26 +218,32 @@ export const Route = createFileRoute("/login")({
 function MobileGoogleAuthBridge({
   oauthState,
   redirectUri,
+  preferredLang,
 }: {
   oauthState: string;
   redirectUri?: string;
+  preferredLang?: string;
 }) {
-  const t = useT();
+  const currentLang = useLang();
+  const isRu = (preferredLang || currentLang) === "ru";
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deepLink, setDeepLink] = useState<string | null>(null);
   const [signedInEmail, setSignedInEmail] = useState<string | null>(null);
-  const [resolvedState] = useState<string>(() => oauthState || readMobileBridgeState());
-  const [resolvedRedirect] = useState<string>(() =>
-    isSafeMobileRedirectUri(redirectUri) ? redirectUri.trim() : readMobileBridgeRedirect(),
-  );
+  const [resolvedState] = useState<string>(() => oauthState || readRawUrlBridgeParams().state || readMobileBridgeState());
+  const [resolvedRedirect] = useState<string>(() => {
+    const rawRedir = readRawUrlBridgeParams().redirectUri;
+    if (isSafeMobileRedirectUri(redirectUri)) return redirectUri.trim();
+    if (isSafeMobileRedirectUri(rawRedir)) return rawRedir.trim();
+    return readMobileBridgeRedirect() || "app.igseek.mobile://auth";
+  });
 
   const handoffUser = async (
     user: NonNullable<typeof auth.currentUser>,
     autoOpenApp: boolean,
   ) => {
     const idToken = await user.getIdToken(true);
-    const refreshToken = (user as any).refreshToken || "";
+    const refreshToken = user.refreshToken || (user as any).stsTokenManager?.refreshToken || "";
     const email = user.email || "";
     const name = user.displayName || email.split("@")[0] || "User";
     const link = buildMobileAuthDeepLink({
@@ -230,7 +289,12 @@ function MobileGoogleAuthBridge({
           return;
         }
       } catch (err: any) {
-        if (active) setError(err?.message || t("Google sign-in failed. Please try again."));
+        if (active) {
+          setError(
+            err?.message ||
+              (isRu ? "Не удалось войти через Google. Попробуйте ещё раз." : "Google sign-in failed. Please try again."),
+          );
+        }
       } finally {
         if (active) setBusy(false);
       }
@@ -266,9 +330,12 @@ function MobileGoogleAuthBridge({
     } catch (err: any) {
       const code = err?.code || "";
       if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-        setError(t("Google sign-in was cancelled."));
+        setError(isRu ? "Вход через Google отменён." : "Google sign-in was cancelled.");
       } else {
-        setError(err?.message || t("Google sign-in failed. Please try again."));
+        setError(
+          err?.message ||
+            (isRu ? "Не удалось войти через Google. Попробуйте ещё раз." : "Google sign-in failed. Please try again."),
+        );
       }
       setBusy(false);
     }
@@ -278,7 +345,9 @@ function MobileGoogleAuthBridge({
     <div className="relative z-10 w-full max-w-sm rounded-3xl border border-border bg-surface/95 p-7 shadow-2xl backdrop-blur-xl text-center">
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">IGseek</h1>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        {t("Continue with Google to sign in to the IGseek Android app.")}
+        {isRu
+          ? "Вход через Google в приложение IGseek с облачной синхронизацией."
+          : "Continue with Google to sign in to the IGseek app with cloud sync."}
       </p>
 
       {error && (
@@ -290,14 +359,20 @@ function MobileGoogleAuthBridge({
       {deepLink ? (
         <div className="mt-6 space-y-3">
           <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-600 dark:text-emerald-400">
-            {signedInEmail ? `${t("Signed in as")} ${signedInEmail}` : t("Signed in with Google")}
+            {signedInEmail
+              ? isRu
+                ? `Аккаунт: ${signedInEmail}`
+                : `Signed in as ${signedInEmail}`
+              : isRu
+                ? "Вход через Google выполнен"
+                : "Signed in with Google"}
           </div>
           <a
             href={deepLink}
             onClick={() => clearMobileBridgeState()}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground text-background text-sm font-semibold hover:opacity-90 transition-opacity"
           >
-            <span>{t("Open IGseek app")}</span>
+            <span>{isRu ? "Вернуться в приложение IGseek" : "Open IGseek app"}</span>
             <ExternalLink className="h-4 w-4" />
           </a>
           <button
@@ -306,7 +381,7 @@ function MobileGoogleAuthBridge({
             disabled={busy}
             className="w-full py-2 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
-            {t("Use another Google account")}
+            {isRu ? "Выбрать другой аккаунт Google" : "Use another Google account"}
           </button>
         </div>
       ) : (
@@ -318,7 +393,15 @@ function MobileGoogleAuthBridge({
             className="flex h-12 w-full items-center justify-center gap-2.5 rounded-full bg-foreground text-background text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60 cursor-pointer"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            <span>{busy ? t("Connecting…") : t("Continue with Google")}</span>
+            <span>
+              {busy
+                ? isRu
+                  ? "Подключение…"
+                  : "Connecting…"
+                : isRu
+                  ? "Продолжить через Google"
+                  : "Continue with Google"}
+            </span>
           </button>
         </div>
       )}
@@ -327,7 +410,7 @@ function MobileGoogleAuthBridge({
 }
 
 function LoginPage() {
-  const { next, mobile_auth, state, redirect_uri } = Route.useSearch();
+  const { next, mobile_auth, state, redirect_uri, lang: queryLang } = Route.useSearch();
   const isMobileBridge = isMobileBridgeSession(mobile_auth);
   const safeNext = isSafeNext(next) ? next : "/app";
   const navigate = useNavigate();
@@ -401,7 +484,11 @@ function LoginPage() {
       />
 
       {isMobileBridge ? (
-        <MobileGoogleAuthBridge oauthState={state} redirectUri={redirect_uri} />
+        <MobileGoogleAuthBridge
+          oauthState={state}
+          redirectUri={redirect_uri}
+          preferredLang={queryLang}
+        />
       ) : (
         <AuthCard
           onSuccess={() => {

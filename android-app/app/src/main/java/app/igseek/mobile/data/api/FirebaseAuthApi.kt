@@ -110,6 +110,32 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         }
     }
 
+    suspend fun signInWithGoogleCallbackUri(requestUri: String, sessionId: String): AuthSession = withContext(Dispatchers.IO) {
+        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        val body = JSONObject().apply {
+            put("requestUri", requestUri)
+            put("sessionId", sessionId)
+            put("returnIdpCredential", true)
+            put("returnSecureToken", true)
+        }
+        val req = Request.Builder()
+            .url("https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=$apiKey")
+            .post(body.toString().toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { res ->
+            val raw = res.body?.string().orEmpty()
+            val obj = runCatching { JSONObject(raw) }.getOrNull()
+            if (!res.isSuccessful) {
+                val msg = obj?.optJSONObject("error")?.optString("message") ?: "Ошибка входа через Google (${res.code})"
+                throw IllegalStateException(translateAuthError(msg))
+            }
+            val parsed = obj ?: JSONObject()
+            val email = parsed.optString("email")
+            val fullName = parsed.optString("fullName").ifBlank { parsed.optString("displayName") }
+            parseAuthResponse(parsed, email, fullName)
+        }
+    }
+
     suspend fun signInWithGoogleIdToken(googleIdToken: String): AuthSession = withContext(Dispatchers.IO) {
         val encoded = java.net.URLEncoder.encode(googleIdToken, Charsets.UTF_8.name())
         signInWithGooglePostBody("id_token=$encoded&providerId=google.com")
