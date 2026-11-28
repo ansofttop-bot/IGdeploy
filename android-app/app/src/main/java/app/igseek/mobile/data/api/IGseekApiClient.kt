@@ -5,16 +5,19 @@ import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
 import app.igseek.mobile.data.models.AuthSession
+import app.igseek.mobile.data.models.CalendarEventItem
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.EngineFileItem
 import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.FlowStepItem
 import app.igseek.mobile.data.models.GeneratedImageItem
+import app.igseek.mobile.data.models.GmailEventItem
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.PushNotificationEvent
 import app.igseek.mobile.data.models.SubscriptionInfo
+import app.igseek.mobile.data.models.TaskEventItem
 import app.igseek.mobile.data.models.WebSourceItem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +39,10 @@ data class StreamChatResult(
     val content: String,
     val reasoning: String,
     val images: List<GeneratedImageItem>,
-    val webSources: List<WebSourceItem>
+    val webSources: List<WebSourceItem>,
+    val calendarEvents: List<CalendarEventItem> = emptyList(),
+    val taskEvents: List<TaskEventItem> = emptyList(),
+    val gmailEvents: List<GmailEventItem> = emptyList()
 )
 
 data class FlowPlanResult(
@@ -196,13 +202,19 @@ class IGseekApiClient(
         language: String,
         attachments: List<ChatAttachment>,
         idempotencyKey: String,
+        imageQuotaUsed: Int = 0,
+        imageQuotaResetAt: Long = 0L,
         onDelta: (String) -> Unit,
         onReasoning: (String) -> Unit,
         onImage: (GeneratedImageItem) -> Unit,
         onSources: (List<WebSourceItem>) -> Unit,
         onNotification: (PushNotificationEvent) -> Unit = {},
+        onCalendarEvent: (CalendarEventItem) -> Unit = {},
+        onTaskEvent: (TaskEventItem) -> Unit = {},
+        onGmailEvent: (GmailEventItem) -> Unit = {},
         onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
-        onImageError: () -> Unit = {}
+        onImageError: () -> Unit = {},
+        onImageLimit: () -> Unit = {}
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val lastUserText = history.lastOrNull { it.role == "user" }?.content.orEmpty().trim()
         val effectiveImageMode = imageMode ||
@@ -221,12 +233,18 @@ class IGseekApiClient(
             imageMode = effectiveImageMode,
             attachments = attachments,
             idempotencyKey = idempotencyKey,
+            imageQuotaUsed = imageQuotaUsed,
+            imageQuotaResetAt = imageQuotaResetAt,
             onDelta = onDelta,
             onReasoning = onReasoning,
             onImage = onImage,
             onNotification = onNotification,
+            onCalendarEvent = onCalendarEvent,
+            onTaskEvent = onTaskEvent,
+            onGmailEvent = onGmailEvent,
             onImageStart = onImageStart,
-            onImageError = onImageError
+            onImageError = onImageError,
+            onImageLimit = onImageLimit
         )
 
         if (!effectiveImageMode && webSearch && result.webSources.isEmpty() && lastUserText.isNotBlank()) {
@@ -254,12 +272,18 @@ class IGseekApiClient(
         imageMode: Boolean = false,
         attachments: List<ChatAttachment>,
         idempotencyKey: String,
+        imageQuotaUsed: Int = 0,
+        imageQuotaResetAt: Long = 0L,
         onDelta: (String) -> Unit,
         onReasoning: (String) -> Unit,
         onImage: (GeneratedImageItem) -> Unit,
         onNotification: (PushNotificationEvent) -> Unit = {},
+        onCalendarEvent: (CalendarEventItem) -> Unit = {},
+        onTaskEvent: (TaskEventItem) -> Unit = {},
+        onGmailEvent: (GmailEventItem) -> Unit = {},
         onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
-        onImageError: () -> Unit = {}
+        onImageError: () -> Unit = {},
+        onImageLimit: () -> Unit = {}
     ): StreamChatResult {
         val messagesJson = JSONArray()
         history.takeLast(14).forEach { msg ->
@@ -287,6 +311,10 @@ class IGseekApiClient(
             put("reasoning", reasoning)
             if (imageMode) put("imageMode", true)
             if (filesJson.length() > 0) put("userAttachments", filesJson)
+            put("imageQuota", JSONObject().apply {
+                put("used", imageQuotaUsed)
+                put("resetAt", imageQuotaResetAt)
+            })
         }
 
         // Force fresh TCP stream per SSE chat request ("Connection: close") to prevent 2nd-request socket stalls
@@ -302,6 +330,9 @@ class IGseekApiClient(
         val contentBuf = StringBuilder()
         val reasoningBuf = StringBuilder()
         val images = mutableListOf<GeneratedImageItem>()
+        val calendarEvents = mutableListOf<CalendarEventItem>()
+        val taskEvents = mutableListOf<TaskEventItem>()
+        val gmailEvents = mutableListOf<GmailEventItem>()
         var serverError: String? = null
 
         val call = client.newCall(reqBuilder.build())
@@ -378,6 +409,10 @@ class IGseekApiClient(
                             "image_error" -> {
                                 onImageError()
                             }
+                            "image_limit" -> {
+                                onImageError()
+                                onImageLimit()
+                            }
                             "image" -> {
                                 val obj = decoded as? JSONObject
                                 val dataUrl = obj?.optString("dataUrl").orEmpty()
@@ -389,6 +424,61 @@ class IGseekApiClient(
                                     )
                                     images.add(img)
                                     onImage(img)
+                                }
+                            }
+                            "calendar_event" -> {
+                                val obj = decoded as? JSONObject
+                                if (obj != null) {
+                                    val startObj = obj.optJSONObject("start")
+                                    val endObj = obj.optJSONObject("end")
+                                    val startIso = obj.optString("startTime").ifBlank {
+                                        startObj?.optString("dateTime").orEmpty().ifBlank { startObj?.optString("date").orEmpty() }
+                                    }
+                                    val endIso = obj.optString("endTime").ifBlank {
+                                        endObj?.optString("dateTime").orEmpty().ifBlank { endObj?.optString("date").orEmpty() }
+                                    }
+                                    val remArr = obj.optJSONArray("reminderMinutes")
+                                    val remMins = if (remArr != null && remArr.length() > 0) remArr.optInt(0, 10) else obj.optInt("reminderMinutes", 10)
+                                    val evt = CalendarEventItem(
+                                        id = obj.optString("id").ifBlank { "cal_${UUID.randomUUID().toString().take(8)}" },
+                                        action = obj.optString("action").ifBlank { "create" },
+                                        summary = obj.optString("summary").ifBlank { "Calendar Event" },
+                                        description = obj.optString("description").takeUnless { it == "null" }.orEmpty(),
+                                        location = obj.optString("location").takeUnless { it == "null" }.orEmpty(),
+                                        startTime = startIso,
+                                        endTime = endIso,
+                                        reminderMinutes = remMins
+                                    )
+                                    calendarEvents.add(evt)
+                                    onCalendarEvent(evt)
+                                }
+                            }
+                            "task_event" -> {
+                                val obj = decoded as? JSONObject
+                                if (obj != null) {
+                                    val task = TaskEventItem(
+                                        id = obj.optString("id").ifBlank { "task_${UUID.randomUUID().toString().take(8)}" },
+                                        action = obj.optString("action").ifBlank { "create" },
+                                        title = obj.optString("title").ifBlank { "New Task" },
+                                        notes = obj.optString("notes").takeUnless { it == "null" }.orEmpty(),
+                                        due = obj.optString("due").takeUnless { it == "null" }.orEmpty()
+                                    )
+                                    taskEvents.add(task)
+                                    onTaskEvent(task)
+                                }
+                            }
+                            "gmail_event" -> {
+                                val obj = decoded as? JSONObject
+                                if (obj != null) {
+                                    val gmail = GmailEventItem(
+                                        id = obj.optString("id").ifBlank { "mail_${UUID.randomUUID().toString().take(8)}" },
+                                        action = obj.optString("action").ifBlank { "send" },
+                                        to = obj.optString("to").takeUnless { it == "null" }.orEmpty(),
+                                        subject = obj.optString("subject").takeUnless { it == "null" }.orEmpty().ifBlank { "Email" },
+                                        body = obj.optString("body").takeUnless { it == "null" }.orEmpty()
+                                    )
+                                    gmailEvents.add(gmail)
+                                    onGmailEvent(gmail)
                                 }
                             }
                             "notification_event" -> {
@@ -466,10 +556,18 @@ class IGseekApiClient(
             }
         }
 
-        if (serverError != null && contentBuf.isEmpty() && images.isEmpty()) {
+        if (serverError != null && contentBuf.isEmpty() && images.isEmpty() && calendarEvents.isEmpty() && taskEvents.isEmpty() && gmailEvents.isEmpty()) {
             throw IllegalStateException(sanitizeErrorBrand(serverError))
         }
-        return StreamChatResult(contentBuf.toString(), reasoningBuf.toString(), images, emptyList())
+        return StreamChatResult(
+            content = contentBuf.toString(),
+            reasoning = reasoningBuf.toString(),
+            images = images,
+            webSources = emptyList(),
+            calendarEvents = calendarEvents,
+            taskEvents = taskEvents,
+            gmailEvents = gmailEvents
+        )
     }
 
     // ==================== AUTONOMOUS FLOW VIA BACKEND DEEPSEEK ====================

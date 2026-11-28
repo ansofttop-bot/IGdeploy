@@ -1,9 +1,11 @@
 package app.igseek.mobile.ui.screens
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.CalendarContract
 import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
 import android.util.Base64
@@ -47,6 +49,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -89,9 +93,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
+import app.igseek.mobile.data.models.CalendarEventItem
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.GeneratedImageItem
+import app.igseek.mobile.data.models.GmailEventItem
+import app.igseek.mobile.data.models.TaskEventItem
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.components.IGseekGlassCard
 import app.igseek.mobile.ui.components.IGseekGlassChip
@@ -102,6 +109,11 @@ import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.state.PendingImageState
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
 import kotlinx.coroutines.delay
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
@@ -328,6 +340,26 @@ fun ChatScreen(
                         onSaveImage = { img -> viewModel.saveGeneratedImageToLibrary(img) },
                         onOpenUrl = { url ->
                             runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        },
+                        onConfirmCalendarEvent = { evt ->
+                            viewModel.confirmCalendarEvent(msg.id, evt)
+                            openNativeCalendarInsert(context, evt)
+                            viewModel.showToast(if (isEn) "Opening Calendar…" else "Открываем Календарь…")
+                        },
+                        onConfirmTaskEvent = { task ->
+                            viewModel.confirmTaskEvent(msg.id, task)
+                            val taskCopy = listOf(task.title, task.notes).filter { it.isNotBlank() }.joinToString("\n")
+                            if (taskCopy.isNotBlank()) clipboard.setText(AnnotatedString(taskCopy))
+                            openNativeGoogleTasks(context)
+                            viewModel.showToast(
+                                if (isEn) "Reminder saved · opening Google Tasks (title copied)"
+                                else "Напоминание сохранено · открываем Google Tasks (текст скопирован)"
+                            )
+                        },
+                        onConfirmGmailEvent = { email ->
+                            viewModel.confirmGmailEvent(msg.id, email)
+                            openNativeGmailCompose(context, email)
+                            viewModel.showToast(if (isEn) "Opening Gmail…" else "Открываем Gmail…")
                         }
                     )
                 }
@@ -600,7 +632,10 @@ private fun ChatMessageRow(
     onRegenerate: () -> Unit,
     onShare: () -> Unit,
     onSaveImage: (GeneratedImageItem) -> Unit,
-    onOpenUrl: (String) -> Unit
+    onOpenUrl: (String) -> Unit,
+    onConfirmCalendarEvent: (CalendarEventItem) -> Unit,
+    onConfirmTaskEvent: (TaskEventItem) -> Unit,
+    onConfirmGmailEvent: (GmailEventItem) -> Unit
 ) {
     val palette = LocalIGseekPalette.current
     val isUser = msg.role == "user"
@@ -715,7 +750,13 @@ private fun ChatMessageRow(
                     markdown = msg.content,
                     textColor = if (msg.isError) MaterialTheme.colorScheme.error else palette.textPrimary
                 )
-            } else if (pendingImage == null && msg.images.isEmpty()) {
+            } else if (
+                pendingImage == null &&
+                msg.images.isEmpty() &&
+                msg.calendarEvents.isEmpty() &&
+                msg.taskEvents.isEmpty() &&
+                msg.gmailEvents.isEmpty()
+            ) {
                 Text(
                     text = if (isEn) "Thinking…" else "Думаю…",
                     style = MaterialTheme.typography.bodyMedium,
@@ -728,6 +769,30 @@ private fun ChatMessageRow(
                     title = pendingImage.title,
                     prompt = pendingImage.prompt,
                     isEn = isEn
+                )
+            }
+
+            msg.calendarEvents.forEach { evt ->
+                MobileCalendarEventCard(
+                    event = evt,
+                    isEn = isEn,
+                    onConfirm = { onConfirmCalendarEvent(evt) }
+                )
+            }
+
+            msg.taskEvents.forEach { task ->
+                MobileTaskEventCard(
+                    task = task,
+                    isEn = isEn,
+                    onConfirm = { onConfirmTaskEvent(task) }
+                )
+            }
+
+            msg.gmailEvents.forEach { email ->
+                MobileGmailEventCard(
+                    email = email,
+                    isEn = isEn,
+                    onConfirm = { onConfirmGmailEvent(email) }
                 )
             }
 
@@ -1563,4 +1628,414 @@ private fun decodeDataUrlBitmap(dataUrl: String): android.graphics.Bitmap? {
         val bytes = Base64.decode(b64, Base64.DEFAULT)
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }.getOrNull()
+}
+
+private fun formatWorkspaceDateTime(iso: String, isEn: Boolean): String {
+    if (iso.isBlank()) return ""
+    return runCatching {
+        val zdt = Instant.parse(iso).atZone(ZoneId.systemDefault())
+        val locale = if (isEn) Locale.US else Locale("ru", "RU")
+        DateTimeFormatter.ofPattern("d MMM · HH:mm", locale).format(zdt)
+    }.getOrDefault(iso.take(16))
+}
+
+private fun formatWorkspaceTime(iso: String): String {
+    if (iso.isBlank()) return ""
+    return runCatching {
+        val zdt = Instant.parse(iso).atZone(ZoneId.systemDefault())
+        DateTimeFormatter.ofPattern("HH:mm").format(zdt)
+    }.getOrDefault("")
+}
+
+private fun toGoogleCalendarStamp(iso: String): String {
+    if (iso.isBlank()) return ""
+    return runCatching {
+        val inst = Instant.parse(iso)
+        DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+            .withZone(ZoneId.of("UTC"))
+            .format(inst)
+    }.getOrDefault("")
+}
+
+private fun openNativeCalendarInsert(context: Context, event: CalendarEventItem) {
+    val startMs = runCatching { Instant.parse(event.startTime).toEpochMilli() }.getOrNull()
+    val endMs = runCatching { Instant.parse(event.endTime).toEpochMilli() }.getOrNull()
+        ?: startMs?.plus(3_600_000L)
+
+    val nativeIntent = Intent(Intent.ACTION_INSERT).apply {
+        data = CalendarContract.Events.CONTENT_URI
+        putExtra(CalendarContract.Events.TITLE, event.summary)
+        if (event.description.isNotBlank()) putExtra(CalendarContract.Events.DESCRIPTION, event.description)
+        if (event.location.isNotBlank()) putExtra(CalendarContract.Events.EVENT_LOCATION, event.location)
+        if (startMs != null) putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMs)
+        if (endMs != null) putExtra(CalendarContract.EXTRA_EVENT_END_TIME, endMs)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val launchedNative = runCatching {
+        context.startActivity(nativeIntent)
+    }.isSuccess
+
+    if (!launchedNative) {
+        val enc = { s: String -> URLEncoder.encode(s, StandardCharsets.UTF_8.name()) }
+        val startStamp = toGoogleCalendarStamp(event.startTime)
+        val endStamp = toGoogleCalendarStamp(event.endTime)
+        val datesParam = if (startStamp.isNotBlank() && endStamp.isNotBlank()) "&dates=$startStamp/$endStamp" else ""
+        val url = "https://calendar.google.com/calendar/render?action=TEMPLATE&text=${enc(event.summary)}$datesParam&details=${enc(event.description)}&location=${enc(event.location)}"
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+}
+
+private fun openNativeGoogleTasks(context: Context) {
+    val appIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.tasks")
+    if (appIntent != null) {
+        appIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (runCatching { context.startActivity(appIntent) }.isSuccess) return
+    }
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://tasks.google.com")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+}
+
+private fun openNativeGmailCompose(context: Context, email: GmailEventItem) {
+    val mailtoUri = Uri.parse("mailto:${Uri.encode(email.to)}")
+    val gmailIntent = Intent(Intent.ACTION_SENDTO, mailtoUri).apply {
+        setPackage("com.google.android.gm")
+        if (email.subject.isNotBlank()) putExtra(Intent.EXTRA_SUBJECT, email.subject)
+        if (email.body.isNotBlank()) putExtra(Intent.EXTRA_TEXT, email.body)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    if (runCatching { context.startActivity(gmailIntent) }.isSuccess) return
+
+    val fallbackIntent = Intent(Intent.ACTION_SENDTO, mailtoUri).apply {
+        if (email.subject.isNotBlank()) putExtra(Intent.EXTRA_SUBJECT, email.subject)
+        if (email.body.isNotBlank()) putExtra(Intent.EXTRA_TEXT, email.body)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    if (runCatching { context.startActivity(Intent.createChooser(fallbackIntent, "Send Email").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
+
+    val enc = { s: String -> URLEncoder.encode(s, StandardCharsets.UTF_8.name()) }
+    val webUrl = "https://mail.google.com/mail/?view=cm&fs=1&to=${enc(email.to)}&su=${enc(email.subject)}&body=${enc(email.body)}"
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+@Composable
+private fun MobileCalendarEventCard(
+    event: CalendarEventItem,
+    isEn: Boolean,
+    onConfirm: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+    val startLabel = formatWorkspaceDateTime(event.startTime, isEn)
+    val endLabel = formatWorkspaceTime(event.endTime)
+    val timeRange = listOfNotNull(
+        startLabel.takeIf { it.isNotBlank() },
+        endLabel.takeIf { it.isNotBlank() }
+    ).joinToString(" – ")
+
+    IGseekGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = 14.dp
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(palette.brandSoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(LucideIcons.Calendar, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = event.summary,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (timeRange.isNotBlank()) {
+                        Text(
+                            text = timeRange,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary
+                        )
+                    }
+                    Text(
+                        text = if (event.confirmed) {
+                            if (isEn) "Confirmed · Added to Calendar" else "Подтверждено · Добавлено в календарь"
+                        } else {
+                            if (isEn) "Google Calendar · Awaiting confirmation" else "Google Календарь · Ждёт подтверждения"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (event.confirmed) palette.brand else palette.textMuted
+                    )
+                }
+            }
+
+            if (event.location.isNotBlank()) {
+                Text(
+                    text = event.location,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary
+                )
+            }
+            if (event.description.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = palette.chipBg,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = event.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            Button(
+                onClick = onConfirm,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (event.confirmed) palette.chipBg else palette.brand,
+                    contentColor = if (event.confirmed) palette.textPrimary else palette.brandOn
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = if (event.confirmed) LucideIcons.ExternalLink else LucideIcons.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (event.confirmed) {
+                        if (isEn) "Open in Calendar Again" else "Открыть в Календаре ещё раз"
+                    } else {
+                        if (isEn) "Confirm & Add to Calendar" else "Подтвердить и добавить в Календарь"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileTaskEventCard(
+    task: TaskEventItem,
+    isEn: Boolean,
+    onConfirm: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+    val dueLabel = formatWorkspaceDateTime(task.due, isEn)
+
+    IGseekGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = 14.dp
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(palette.brandSoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(LucideIcons.CheckCircle, contentDescription = null, tint = palette.brand, modifier = Modifier.size(18.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = task.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (dueLabel.isNotBlank()) {
+                        Text(
+                            text = if (isEn) "Due: $dueLabel" else "Срок: $dueLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary
+                        )
+                    }
+                    Text(
+                        text = if (task.confirmed) {
+                            if (isEn) "Confirmed · Reminder scheduled" else "Подтверждено · Напоминание создано"
+                        } else {
+                            if (isEn) "Google Tasks · Awaiting confirmation" else "Google Tasks · Ждёт подтверждения"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (task.confirmed) palette.brand else palette.textMuted
+                    )
+                }
+            }
+
+            if (task.notes.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = palette.chipBg,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = task.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            Button(
+                onClick = onConfirm,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (task.confirmed) palette.chipBg else palette.brand,
+                    contentColor = if (task.confirmed) palette.textPrimary else palette.brandOn
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = if (task.confirmed) LucideIcons.ExternalLink else LucideIcons.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (task.confirmed) {
+                        if (isEn) "Open Google Tasks" else "Открыть Google Tasks"
+                    } else {
+                        if (isEn) "Confirm & Add Task" else "Подтвердить и открыть Tasks"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileGmailEventCard(
+    email: GmailEventItem,
+    isEn: Boolean,
+    onConfirm: () -> Unit
+) {
+    val palette = LocalIGseekPalette.current
+
+    IGseekGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = 14.dp
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(Color(0xFFEF4444).copy(alpha = 0.14f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(LucideIcons.Mail, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(18.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = email.subject.ifBlank { if (isEn) "Gmail Message" else "Письмо Gmail" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (email.to.isNotBlank()) {
+                        Text(
+                            text = "${if (isEn) "To" else "Кому"}: ${email.to}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = if (email.confirmed) {
+                            if (isEn) "Opened in Gmail" else "Открыто в Gmail"
+                        } else {
+                            if (isEn) "Gmail · Awaiting confirmation" else "Gmail · Ждёт подтверждения"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (email.confirmed) palette.brand else palette.textMuted
+                    )
+                }
+            }
+
+            if (email.body.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = palette.chipBg,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = email.body.take(400),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
+            Button(
+                onClick = onConfirm,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (email.confirmed) palette.chipBg else Color(0xFFDC2626),
+                    contentColor = if (email.confirmed) palette.textPrimary else Color.White
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = if (email.confirmed) LucideIcons.ExternalLink else LucideIcons.Mail,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (email.confirmed) {
+                        if (isEn) "Open in Gmail Again" else "Открыть в Gmail ещё раз"
+                    } else {
+                        if (isEn) "Confirm & Open in Gmail" else "Подтвердить и отправить в Gmail"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
 }

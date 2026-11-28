@@ -133,6 +133,36 @@ data class ChatAttachment(
     val sizeBytes: Long = 0L
 )
 
+data class CalendarEventItem(
+    val id: String,
+    val action: String = "create",
+    val summary: String,
+    val description: String = "",
+    val location: String = "",
+    val startTime: String = "",
+    val endTime: String = "",
+    val reminderMinutes: Int = 10,
+    val confirmed: Boolean = false
+)
+
+data class TaskEventItem(
+    val id: String,
+    val action: String = "create",
+    val title: String,
+    val notes: String = "",
+    val due: String = "",
+    val confirmed: Boolean = false
+)
+
+data class GmailEventItem(
+    val id: String,
+    val action: String = "send",
+    val to: String = "",
+    val subject: String = "",
+    val body: String = "",
+    val confirmed: Boolean = false
+)
+
 data class ChatMessageItem(
     val id: String,
     val chatId: String,
@@ -141,6 +171,9 @@ data class ChatMessageItem(
     val reasoning: String = "",
     val images: List<GeneratedImageItem> = emptyList(),
     val webSources: List<WebSourceItem> = emptyList(),
+    val calendarEvents: List<CalendarEventItem> = emptyList(),
+    val taskEvents: List<TaskEventItem> = emptyList(),
+    val gmailEvents: List<GmailEventItem> = emptyList(),
     val attachmentNames: List<String> = emptyList(),
     val createdAtMs: Long = System.currentTimeMillis(),
     val isQueuedOffline: Boolean = false,

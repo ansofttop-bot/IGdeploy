@@ -551,5 +551,17 @@ object LucideIcons {
             )
         )
     }
+
+    val Calendar: ImageVector by lazy {
+        lucide(
+            name = "Calendar",
+            paths = listOf(
+                "M8 2v4",
+                "M16 2v4",
+                "M3 10h18",
+                "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"
+            )
+        )
+    }
 }
 

@@ -103,15 +103,15 @@ export function RegistrationProOfferModal({
           <div className="flex items-baseline justify-between">
             <span className="text-xs font-semibold text-foreground">{t("IGseek Pro · 30 days")}</span>
             <span className="text-xs font-mono font-semibold text-brand">
-              1 ключ = 30 дней
+              1 key = 30d
             </span>
           </div>
           <ul className="space-y-1.5 text-xs text-foreground/90">
             {[
-              t("More advanced models & deep reasoning across all tabs"),
-              t("Higher accuracy for complex coding, Engine & Flow"),
-              t("High-quality image generation & reference photo editing"),
-              t("Automatic 30-day tracking, no hidden renewals"),
+              t("Unlimited Photos, Flow, Engine & Cloud Memory"),
+              t("Exclusive Deep Reasoning mode & flagship AI models"),
+              t("Reference photo editing & Studio image generation"),
+              t("Flow Autopilot mode — no auto-charges"),
             ].map((feature) => (
               <li key={feature} className="flex items-start gap-2">
                 <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />

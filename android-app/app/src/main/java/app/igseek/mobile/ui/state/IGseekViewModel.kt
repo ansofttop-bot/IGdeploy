@@ -12,6 +12,7 @@ import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
 import app.igseek.mobile.data.models.AuthSession
+import app.igseek.mobile.data.models.CalendarEventItem
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.ChatThread
@@ -19,6 +20,7 @@ import app.igseek.mobile.data.models.CloudSyncStatus
 import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.FlowTaskState
 import app.igseek.mobile.data.models.GeneratedImageItem
+import app.igseek.mobile.data.models.GmailEventItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
@@ -28,6 +30,7 @@ import app.igseek.mobile.data.models.ProjectFolder
 import app.igseek.mobile.data.models.PushNotificationEvent
 import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
+import app.igseek.mobile.data.models.TaskEventItem
 import app.igseek.mobile.notifications.IGseekNotificationManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -93,6 +96,15 @@ data class PendingImageState(
 )
 
 class IGseekViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        const val FREE_IMAGE_LIMIT = 3
+        const val FREE_FLOW_LIMIT = 2
+        const val FREE_ENGINE_LIMIT = 2
+        const val FREE_MEMORY_LIMIT = 5
+        const val IMAGE_QUOTA_WINDOW_MS = 24L * 60L * 60L * 1000L
+        const val WORK_QUOTA_WINDOW_MS = 12L * 60L * 60L * 1000L
+    }
 
     private val app = application as IGseekApplication
     private val store = app.localStore
@@ -888,10 +900,30 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggleReasoning() {
+        val st = _state.value
+        if (!st.reasoningEnabled && !st.subscription.isPro) {
+            val isEn = st.layoutPrefs.language == "en"
+            showToast(
+                if (isEn) "Deep Reasoning mode is an IGseek Pro feature"
+                else "Режим Deep Reasoning доступен в IGseek Pro"
+            )
+            openProSheet()
+            return
+        }
         _state.update { it.copy(reasoningEnabled = !it.reasoningEnabled) }
     }
 
     fun toggleImageMode() {
+        val st = _state.value
+        if (!st.imageModeEnabled && !st.subscription.isPro && !store.canUseFreeQuota("image", FREE_IMAGE_LIMIT)) {
+            val isEn = st.layoutPrefs.language == "en"
+            showToast(
+                if (isEn) "Free daily photo limit ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) reached. Upgrade to IGseek Pro for unlimited photos."
+                else "Дневной лимит фото ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) исчерпан. Откройте IGseek Pro для безлимита."
+            )
+            openProSheet()
+            return
+        }
         _state.update { it.copy(imageModeEnabled = !it.imageModeEnabled) }
     }
 
@@ -1030,6 +1062,29 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         val text = (overrideText ?: st.draftInput).trim()
         val attachments = st.pendingAttachments
         if ((text.isBlank() && attachments.isEmpty()) || st.isStreaming) return
+
+        val isEn = st.layoutPrefs.language == "en"
+        val isDirectImgCmd = st.imageModeEnabled ||
+            text.startsWith("/img ", ignoreCase = true) ||
+            text.startsWith("/imagine ", ignoreCase = true)
+        if (isDirectImgCmd && !st.subscription.isPro) {
+            if (!store.canUseFreeQuota("image", FREE_IMAGE_LIMIT)) {
+                showToast(
+                    if (isEn) "Free daily photo limit ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) reached. Chat stays unlimited — upgrade to Pro for unlimited photos."
+                    else "Дневной лимит фото ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) исчерпан. Чат остаётся безлимитным — откройте Pro для безлимитных фото."
+                )
+                openProSheet()
+                return
+            }
+            if (attachments.any { it.mimeType.startsWith("image/") }) {
+                showToast(
+                    if (isEn) "Reference photo editing is an IGseek Pro feature"
+                    else "Редактирование фото по референсу доступно в IGseek Pro"
+                )
+                openProSheet()
+                return
+            }
+        }
 
         val chatId = st.activeChatId.ifBlank { newSafeId("chat") }
         val userMsgId = newSafeId("msg")
@@ -1189,6 +1244,9 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             val memories = _state.value.memories
             val language = _state.value.layoutPrefs.language
 
+            val (imgQuotaUsed, imgQuotaResetAt) = store.getQuotaUsage("image")
+            val isProNow = _state.value.subscription.isPro
+
             runCatching {
                 api.streamChat(
                     session = session,
@@ -1196,12 +1254,14 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     model = model,
                     agent = agent,
                     webSearch = webSearch,
-                    reasoning = reasoning,
+                    reasoning = reasoning && isProNow,
                     imageMode = imageMode,
                     memories = memories,
                     language = language,
                     attachments = attachments,
                     idempotencyKey = idempotencyKey,
+                    imageQuotaUsed = imgQuotaUsed,
+                    imageQuotaResetAt = imgQuotaResetAt,
                     onDelta = { fullText ->
                         assistantMsg = assistantMsg.copy(content = fullText)
                         activeStreamingMessage = assistantMsg
@@ -1226,7 +1286,18 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     onImageError = {
                         _state.update { it.copy(pendingImage = null) }
                     },
+                    onImageLimit = {
+                        _state.update { it.copy(pendingImage = null) }
+                        showToast(
+                            if (language == "en") "Free daily photo limit ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) reached. Upgrade to IGseek Pro."
+                            else "Дневной лимит фото ($FREE_IMAGE_LIMIT/$FREE_IMAGE_LIMIT) исчерпан. Перейдите на IGseek Pro."
+                        )
+                        openProSheet()
+                    },
                     onImage = { img ->
+                        if (!_state.value.subscription.isPro) {
+                            store.consumeFreeQuota("image", FREE_IMAGE_LIMIT, IMAGE_QUOTA_WINDOW_MS)
+                        }
                         assistantMsg = assistantMsg.copy(images = assistantMsg.images + img)
                         activeStreamingMessage = assistantMsg
                         _state.update { it.copy(pendingImage = null) }
@@ -1239,6 +1310,24 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     },
                     onNotification = { notifEvent ->
                         handleAiPushNotification(notifEvent)
+                    },
+                    onCalendarEvent = { calEvt ->
+                        assistantMsg = assistantMsg.copy(calendarEvents = assistantMsg.calendarEvents + calEvt)
+                        activeStreamingMessage = assistantMsg
+                        store.upsertMessage(assistantMsg)
+                        updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onTaskEvent = { taskEvt ->
+                        assistantMsg = assistantMsg.copy(taskEvents = assistantMsg.taskEvents + taskEvt)
+                        activeStreamingMessage = assistantMsg
+                        store.upsertMessage(assistantMsg)
+                        updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onGmailEvent = { gmailEvt ->
+                        assistantMsg = assistantMsg.copy(gmailEvents = assistantMsg.gmailEvents + gmailEvt)
+                        activeStreamingMessage = assistantMsg
+                        store.upsertMessage(assistantMsg)
+                        updateStreamingMessageInUi(assistantMsg)
                     }
                 )
             }.onSuccess { result ->
@@ -1248,6 +1337,9 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     reasoning = result.reasoning.ifBlank { assistantMsg.reasoning },
                     images = result.images.ifEmpty { assistantMsg.images },
                     webSources = result.webSources.ifEmpty { assistantMsg.webSources },
+                    calendarEvents = result.calendarEvents.ifEmpty { assistantMsg.calendarEvents },
+                    taskEvents = result.taskEvents.ifEmpty { assistantMsg.taskEvents },
+                    gmailEvents = result.gmailEvents.ifEmpty { assistantMsg.gmailEvents },
                     isError = false
                 )
                 store.upsertMessage(assistantMsg)
@@ -1321,6 +1413,68 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun confirmCalendarEvent(messageId: String, event: CalendarEventItem) {
+        val current = _state.value.messages.firstOrNull { it.id == messageId } ?: return
+        val updatedEvents = current.calendarEvents.map {
+            if (it.id == event.id) it.copy(confirmed = true) else it
+        }
+        val updatedMsg = current.copy(calendarEvents = updatedEvents)
+        store.upsertMessage(updatedMsg)
+        updateStreamingMessageInUi(updatedMsg)
+
+        if (event.startTime.isNotBlank()) {
+            val startMs = runCatching { Instant.parse(event.startTime).toEpochMilli() }.getOrNull()
+            if (startMs != null && startMs > System.currentTimeMillis() + 60_000L) {
+                val fireMs = (startMs - event.reminderMinutes.coerceAtLeast(0) * 60_000L)
+                    .coerceAtLeast(System.currentTimeMillis() + 5_000L)
+                handleAiPushNotification(
+                    PushNotificationEvent(
+                        id = "cal_${event.id}",
+                        title = event.summary,
+                        body = listOf(event.location, event.description).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "Calendar event reminder" },
+                        source = "calendar",
+                        scheduledAt = Instant.ofEpochMilli(fireMs).toString()
+                    )
+                )
+            }
+        }
+    }
+
+    fun confirmTaskEvent(messageId: String, task: TaskEventItem) {
+        val current = _state.value.messages.firstOrNull { it.id == messageId } ?: return
+        val updatedTasks = current.taskEvents.map {
+            if (it.id == task.id) it.copy(confirmed = true) else it
+        }
+        val updatedMsg = current.copy(taskEvents = updatedTasks)
+        store.upsertMessage(updatedMsg)
+        updateStreamingMessageInUi(updatedMsg)
+
+        if (task.due.isNotBlank()) {
+            val dueMs = runCatching { Instant.parse(task.due).toEpochMilli() }.getOrNull()
+            if (dueMs != null && dueMs > System.currentTimeMillis() + 60_000L) {
+                handleAiPushNotification(
+                    PushNotificationEvent(
+                        id = "task_${task.id}",
+                        title = task.title,
+                        body = task.notes.ifBlank { "Google Tasks reminder" },
+                        source = "tasks",
+                        scheduledAt = Instant.ofEpochMilli(dueMs).toString()
+                    )
+                )
+            }
+        }
+    }
+
+    fun confirmGmailEvent(messageId: String, email: GmailEventItem) {
+        val current = _state.value.messages.firstOrNull { it.id == messageId } ?: return
+        val updatedEmails = current.gmailEvents.map {
+            if (it.id == email.id) it.copy(confirmed = true) else it
+        }
+        val updatedMsg = current.copy(gmailEvents = updatedEmails)
+        store.upsertMessage(updatedMsg)
+        updateStreamingMessageInUi(updatedMsg)
+    }
+
     fun saveGeneratedImageToLibrary(img: GeneratedImageItem, silent: Boolean = false) {
         val item = LibraryFileItem(
             id = "lib_${img.id}",
@@ -1376,6 +1530,19 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun planFlow(goal: String) {
         val clean = goal.trim()
         if (clean.isBlank()) return
+        val st = _state.value
+        if (!st.subscription.isPro) {
+            if (!store.canUseFreeQuota("flow", FREE_FLOW_LIMIT)) {
+                val isEn = st.layoutPrefs.language == "en"
+                showToast(
+                    if (isEn) "Free Flow limit ($FREE_FLOW_LIMIT/$FREE_FLOW_LIMIT per 12h) reached. Upgrade to IGseek Pro for unlimited Flow."
+                    else "Лимит Flow на Free ($FREE_FLOW_LIMIT/$FREE_FLOW_LIMIT за 12ч) исчерпан. Откройте IGseek Pro для безлимита."
+                )
+                openProSheet()
+                return
+            }
+            store.consumeFreeQuota("flow", FREE_FLOW_LIMIT, WORK_QUOTA_WINDOW_MS)
+        }
         viewModelScope.launch {
             _state.update { it.copy(flowTask = FlowTaskState(goal = clean, isPlanning = true)) }
             val session = getFreshSession()
@@ -1479,6 +1646,19 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun generateEngineProject(prompt: String) {
         val clean = prompt.trim()
         if (clean.isBlank() || _state.value.isEngineGenerating) return
+        val st = _state.value
+        if (!st.subscription.isPro) {
+            if (!store.canUseFreeQuota("engine", FREE_ENGINE_LIMIT)) {
+                val isEn = st.layoutPrefs.language == "en"
+                showToast(
+                    if (isEn) "Free Engine limit ($FREE_ENGINE_LIMIT/$FREE_ENGINE_LIMIT per 12h) reached. Upgrade to IGseek Pro for unlimited builds."
+                    else "Лимит Engine на Free ($FREE_ENGINE_LIMIT/$FREE_ENGINE_LIMIT за 12ч) исчерпан. Откройте IGseek Pro для безлимита."
+                )
+                openProSheet()
+                return
+            }
+            store.consumeFreeQuota("engine", FREE_ENGINE_LIMIT, WORK_QUOTA_WINDOW_MS)
+        }
         viewModelScope.launch {
             _state.update { it.copy(isEngineGenerating = true, engineError = null) }
             runCatching {
@@ -1654,6 +1834,16 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     fun addMemory(content: String, kind: String) {
         val clean = content.trim()
         if (clean.isBlank()) return
+        val st = _state.value
+        if (!st.subscription.isPro && st.memories.size >= FREE_MEMORY_LIMIT) {
+            val isEn = st.layoutPrefs.language == "en"
+            showToast(
+                if (isEn) "Free includes up to $FREE_MEMORY_LIMIT memories. Upgrade to IGseek Pro for unlimited Cloud Memory."
+                else "На Free доступно до $FREE_MEMORY_LIMIT записей памяти. Откройте IGseek Pro для безлимитной памяти."
+            )
+            openProSheet()
+            return
+        }
         val entry = MemoryEntryItem(
             id = newSafeId("mem"),
             content = clean,

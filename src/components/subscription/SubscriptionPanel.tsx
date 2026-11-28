@@ -182,15 +182,19 @@ export function SubscriptionPanel({
           <ul className="space-y-1.5 text-[11px] text-muted-foreground">
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{t("Unlimited Chat, Engine & Flow on standard models")}</span>
+              <span>{isRu ? "Безлимитный AI-чат и веб-поиск" : "Unlimited AI Chat & web search"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{t("All tools, attachments, web search & Library included")}</span>
+              <span>{isRu ? "3 фото в сутки (базовая модель)" : "3 photo generations / 24h (fast model)"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{t("Standard image generation without daily caps")}</span>
+              <span>{isRu ? "2 запуска Flow и 2 сборки Engine / 12ч" : "2 Flow runs & 2 Engine builds / 12h"}</span>
+            </li>
+            <li className="flex items-start gap-1.5">
+              <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
+              <span>{isRu ? "До 5 записей в облачной памяти" : "Up to 5 saved Cloud Memories"}</span>
             </li>
           </ul>
         </div>
@@ -208,15 +212,19 @@ export function SubscriptionPanel({
           <ul className="space-y-1.5 text-[11px] text-foreground/90">
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{t("More advanced models & deep reasoning across all tabs")}</span>
+              <span>{isRu ? "Безлимит на Фото, Flow, Engine и Память" : "Unlimited Photos, Flow, Engine & Memory"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{t("Higher accuracy for complex coding, Engine & Flow")}</span>
+              <span>{isRu ? "Режим Deep Reasoning (глубокое мышление)" : "Exclusive Deep Reasoning mode"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{t("High-quality image generation & reference photo editing")}</span>
+              <span>{isRu ? "Редактирование фото по референсу + Pro модель" : "Reference photo editing + Pro Studio model"}</span>
+            </li>
+            <li className="flex items-start gap-1.5">
+              <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
+              <span>{isRu ? "Режим Flow Autopilot и флагманские модели" : "Flow Autopilot mode & flagship AI models"}</span>
             </li>
           </ul>
         </div>

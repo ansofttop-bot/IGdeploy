@@ -733,24 +733,26 @@ private fun ProSubscriptionSheet(
             ) {
                 val perks = if (isEn) {
                     listOf(
-                        "More advanced models & deep reasoning across all tabs",
-                        "High-quality image generation & reference photo editing",
-                        "Priority Flow & Engine processing · 30 days per key"
+                        "Unlimited Photos, Flow, Engine & Cloud Memory (Free: 3 photos/24h, 2 Flow & 2 Engine/12h, 5 memories; Chat always unlimited)",
+                        "Exclusive Deep Reasoning mode & flagship Pro AI models",
+                        "Reference photo editing & Pro Studio image generation",
+                        "30 days per key · no auto-charges"
                     )
                 } else {
                     listOf(
-                        "Продвинутый уровень моделей и глубокое рассуждение",
-                        "Высококачественная генерация и редактирование фото",
-                        "Приоритетная работа Flow и Engine · 30 дней по ключу"
+                        "Безлимит на Фото, Flow, Engine и Память (Free: 3 фото/24ч, 2 Flow и 2 Engine/12ч, 5 фактов памяти; Чат всегда безлимитный)",
+                        "Режим Deep Reasoning (глубокое мышление) и флагманские модели",
+                        "Редактирование фото по референсу и Pro Studio-модель фото",
+                        "30 дней по ключу · без автосписаний"
                     )
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     perks.forEach { perk ->
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalAlignment = Alignment.Top,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp))
+                            Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.padding(top = 2.dp).size(15.dp))
                             Text(perk, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
                         }
                     }

@@ -1143,10 +1143,31 @@ export async function handleChatPost(request: Request): Promise<Response> {
             const useFreeModels = !isProUser;
 
             // Direct Image Mode (/img, /imagine, or explicit imageMode flag from mobile/web)
+            const FREE_IMAGE_DAILY_LIMIT = 3;
+            const freeImageUsed = Math.max(0, Number(parsed.imageQuota?.used ?? 0));
+            const freeImageResetAt =
+              parsed.imageQuota?.resetAt && parsed.imageQuota.resetAt > Date.now()
+                ? parsed.imageQuota.resetAt
+                : Date.now() + 24 * 60 * 60 * 1000;
+
             const explicitImgCmd =
               parsed.imageMode ||
               /^\/(img|imagine)\s+/i.test(lastUserMessage.trim());
             if (!isEngineRequest && explicitImgCmd) {
+              if (!isProUser && freeImageUsed >= FREE_IMAGE_DAILY_LIMIT) {
+                send(
+                  "image_limit",
+                  JSON.stringify({
+                    scope: "image",
+                    used: FREE_IMAGE_DAILY_LIMIT,
+                    limit: FREE_IMAGE_DAILY_LIMIT,
+                    resetAt: freeImageResetAt,
+                  }),
+                );
+                send("done", "1");
+                safeClose();
+                return;
+              }
               try {
                 const rawImgPrompt = lastUserMessage
                   .replace(/^\/(img|imagine)\s+/i, "")
@@ -2114,6 +2135,26 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     }
                   } else if (tc.function.name === "generate_image") {
                     try {
+                      if (!isProUser && freeImageUsed >= FREE_IMAGE_DAILY_LIMIT) {
+                        send(
+                          "image_limit",
+                          JSON.stringify({
+                            scope: "image",
+                            used: FREE_IMAGE_DAILY_LIMIT,
+                            limit: FREE_IMAGE_DAILY_LIMIT,
+                            resetAt: freeImageResetAt,
+                          }),
+                        );
+                        followupMessages.push({
+                          role: "tool",
+                          tool_call_id: tc.id,
+                          content: JSON.stringify({
+                            ok: false,
+                            error: `Daily Free photo limit (${FREE_IMAGE_DAILY_LIMIT}/${FREE_IMAGE_DAILY_LIMIT}) reached. Tell the user concisely that IGseek Free includes ${FREE_IMAGE_DAILY_LIMIT} photos/24h (while Chat stays unlimited) and IGseek Pro unlocks unlimited photos and reference editing.`,
+                          }),
+                        });
+                        continue;
+                      }
                       const parsedArgs = JSON.parse(tc.function.arguments) as {
                         title?: string;
                         prompt?: string;
@@ -2175,6 +2216,26 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     }
                   } else if (tc.function.name === "edit_image") {
                     try {
+                      if (!isProUser && freeImageUsed >= FREE_IMAGE_DAILY_LIMIT) {
+                        send(
+                          "image_limit",
+                          JSON.stringify({
+                            scope: "image",
+                            used: FREE_IMAGE_DAILY_LIMIT,
+                            limit: FREE_IMAGE_DAILY_LIMIT,
+                            resetAt: freeImageResetAt,
+                          }),
+                        );
+                        followupMessages.push({
+                          role: "tool",
+                          tool_call_id: tc.id,
+                          content: JSON.stringify({
+                            ok: false,
+                            error: `Daily Free photo limit (${FREE_IMAGE_DAILY_LIMIT}/${FREE_IMAGE_DAILY_LIMIT}) reached. Tell the user concisely that IGseek Pro unlocks unlimited studio image generation and native reference photo editing.`,
+                          }),
+                        });
+                        continue;
+                      }
                       const parsedArgs = JSON.parse(tc.function.arguments) as {
                         title?: string;
                         prompt?: string;

@@ -54,12 +54,14 @@ import {
 import { compressBrowserImageDataUrl } from "@/lib/mime-utils";
 import { toast } from "sonner";
 import {
+  FREE_MEMORY_LIMIT,
   PROMPT_LIMITS,
   type PromptReceipt,
   canUsePrompt,
   consumePrompt,
   ensureScopeResetTimestamp,
   formatRemainingReset,
+  isUserProStatus,
   isWithinCancelRefundWindow,
   markScopeExhausted,
   readPromptSnapshot,
@@ -172,6 +174,7 @@ import {
   updateCalendarEvent,
   deleteCalendarEvent,
   checkCalendarFreeBusy,
+  saveLocalReminder,
   type CalendarEvent,
   type CalendarEventPayload,
 } from "@/lib/google-calendar";
@@ -180,6 +183,7 @@ import {
   createGoogleTask,
   updateGoogleTask,
   deleteGoogleTask,
+  saveLocalTask,
   type GoogleTask,
 } from "@/lib/google-tasks";
 import {
@@ -454,6 +458,14 @@ function Index() {
     setProfileInitialTab(nextTab);
     setProfileOpen(true);
   };
+  useEffect(() => {
+    const onOpenSub = () => {
+      setProfileInitialTab("subscription");
+      setProfileOpen(true);
+    };
+    window.addEventListener("igseek:open-subscription", onOpenSub);
+    return () => window.removeEventListener("igseek:open-subscription", onOpenSub);
+  }, []);
   const [subscriptionState, setSubscriptionState] = useState<ClientSubscriptionState>(DEFAULT_FREE_SUBSCRIPTION);
   const [showRegProOffer, setShowRegProOffer] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -3255,6 +3267,15 @@ function Index() {
                     onToggleThinking={() => {
                       if (!isAuthed) { setAuthOpen(true); return; }
                       if (isLocked) { setProfileOpen(true); return; }
+                      if (!thinking && !subscriptionState.isPro) {
+                        toast.info(
+                          lang === "ru"
+                            ? "Глубокое мышление (Deep Reasoning) доступно в IGseek Pro"
+                            : "Deep Reasoning mode is an IGseek Pro feature",
+                        );
+                        openProfileTab("subscription");
+                        return;
+                      }
                       setThinking((v) => !v);
                     }}
                     webSearch={webSearch}
@@ -3646,6 +3667,15 @@ function Index() {
                       onClick={() => {
                         if (!isAuthed) { setAuthOpen(true); return; }
                         if (isLocked) { setProfileOpen(true); return; }
+                        if (!thinking && !subscriptionState.isPro) {
+                          toast.info(
+                            lang === "ru"
+                              ? "Глубокое мышление (Deep Reasoning) доступно в IGseek Pro"
+                              : "Deep Reasoning mode is an IGseek Pro feature",
+                          );
+                          openProfileTab("subscription");
+                          return;
+                        }
                         setThinking((v) => !v);
                       }}
                       title={thinking ? t("Reasoner on") : t("Reasoner off")}
@@ -4852,6 +4882,46 @@ function CalendarEventCard({
     throw new Error(t("No upcoming events found"));
   };
 
+  const toGoogleCalStamp = (iso?: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  };
+
+  const buildGoogleCalendarTemplateUrl = () => {
+    const startStamp = toGoogleCalStamp(event.start?.dateTime);
+    const endStamp = toGoogleCalStamp(
+      event.end?.dateTime ||
+        (event.start?.dateTime ? new Date(Date.parse(event.start.dateTime) + 3600_000).toISOString() : undefined),
+    );
+    const params = new URLSearchParams({
+      action: "TEMPLATE",
+      text: event.summary || "Calendar Event",
+    });
+    if (startStamp && endStamp) params.set("dates", `${startStamp}/${endStamp}`);
+    if (event.description) params.set("details", event.description);
+    if (event.location) params.set("location", event.location);
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  };
+
+  const directCalendarUrl = buildGoogleCalendarTemplateUrl();
+
+  const scheduleEventPushReminder = (eventIdTag: string) => {
+    const startMs = event.start?.dateTime ? Date.parse(event.start.dateTime) : NaN;
+    if (!Number.isNaN(startMs) && startMs > Date.now() + 60_000) {
+      const leadMins = event.reminderMinutes?.[0] ?? 10;
+      const fireMs = Math.max(Date.now() + 5_000, startMs - leadMins * 60_000);
+      void triggerOrSchedulePushNotification({
+        id: `cal_rem_${eventIdTag}`,
+        title: event.summary || t("Calendar reminder"),
+        body: `${formatDate(event.start.dateTime)} · ${formatTime(event.start.dateTime)}${event.location ? ` · ${event.location}` : ""}`,
+        source: "calendar",
+        scheduledAt: new Date(fireMs).toISOString(),
+      });
+    }
+  };
+
   const handleConfirm = async () => {
     setStatus("running");
     setErrorMsg(null);
@@ -4918,21 +4988,28 @@ function CalendarEventCard({
       const created = await createCalendarEvent(event);
       if (created.htmlLink) setResultLink(created.htmlLink);
       window.dispatchEvent(new CustomEvent("igseek:local-reminders-updated"));
-      const startMs = event.start?.dateTime ? Date.parse(event.start.dateTime) : NaN;
-      if (!Number.isNaN(startMs) && startMs > Date.now() + 60_000) {
-        const leadMins = event.reminderMinutes?.[0] ?? 10;
-        const fireMs = Math.max(Date.now() + 5_000, startMs - leadMins * 60_000);
-        void triggerOrSchedulePushNotification({
-          id: `cal_rem_${created.id || Date.now()}`,
-          title: event.summary || t("Calendar reminder"),
-          body: `${formatDate(event.start.dateTime)} · ${formatTime(event.start.dateTime)}${event.location ? ` · ${event.location}` : ""}`,
-          source: "calendar",
-          scheduledAt: new Date(fireMs).toISOString(),
-        });
-      }
+      scheduleEventPushReminder(String(created.id || Date.now()));
       setStatus("done");
       toast.success(t("Saved to Google Calendar"));
     } catch (err: any) {
+      if (action === "create" || action === "update") {
+        const saved = saveLocalReminder({
+          summary: event.summary || t("Reminder"),
+          description: event.description,
+          location: event.location,
+          start: event.start,
+          end: event.end,
+        });
+        scheduleEventPushReminder(String(saved.id || Date.now()));
+        setResultLink(directCalendarUrl);
+        setStatus("done");
+        toast.success(
+          lang === "ru"
+            ? "Сохранено в календарь IGseek. Нажмите «Open Calendar», чтобы добавить в Google Calendar."
+            : "Saved to IGseek Calendar. Click Open Calendar to add directly in Google Calendar.",
+        );
+        return;
+      }
       const message = err?.message || t("Error saving event");
       setErrorMsg(message);
       setStatus("error");
@@ -5065,6 +5142,17 @@ function CalendarEventCard({
                   : primaryLabel}
             </span>
           </button>
+          {action !== "delete" && action !== "list" && action !== "check_free_busy" && (
+            <a
+              href={directCalendarUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors"
+            >
+              <span>{t("Open Calendar")}</span>
+              <ArrowUpRight className="h-3 w-3" />
+            </a>
+          )}
           {status !== "running" && (
             <button
               type="button"
@@ -5171,6 +5259,34 @@ function TaskEventCard({
       setStatus("done");
       toast.success(t("Saved to Google Tasks"));
     } catch (err: any) {
+      if (action === "create" || action === "update") {
+        const localSaved = saveLocalTask({
+          title: task.title || t("Task"),
+          notes: task.notes,
+          due: task.due,
+          status: "needsAction",
+          taskListId: listId,
+        });
+        if (task.due) {
+          const dueMs = Date.parse(task.due);
+          if (!Number.isNaN(dueMs) && dueMs > Date.now() + 60_000) {
+            void triggerOrSchedulePushNotification({
+              id: `task_rem_${localSaved.id || Date.now()}`,
+              title: `Task due: ${task.title}`,
+              body: task.notes?.slice(0, 140) || "Scheduled task reminder",
+              source: "tasks",
+              scheduledAt: new Date(dueMs).toISOString(),
+            });
+          }
+        }
+        setStatus("done");
+        toast.success(
+          lang === "ru"
+            ? "Задача сохранена в IGseek Tasks с напоминанием."
+            : "Task saved to IGseek Tasks with reminder.",
+        );
+        return;
+      }
       const message = err?.message || t("Failed to create task");
       setErrorMsg(message);
       setStatus("error");
@@ -5344,6 +5460,15 @@ function GmailEventCard({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [listedEmails, setListedEmails] = useState<GmailMessageSummary[] | null>(null);
 
+  const buildGmailComposeUrl = () => {
+    const params = new URLSearchParams({ view: "cm", fs: "1" });
+    if (email.to) params.set("to", email.to);
+    if (email.subject) params.set("su", email.subject);
+    if (email.body) params.set("body", email.body);
+    return `https://mail.google.com/mail/?${params.toString()}`;
+  };
+  const directGmailUrl = buildGmailComposeUrl();
+
   const handleConfirm = async () => {
     setStatus("running");
     setErrorMsg(null);
@@ -5393,6 +5518,16 @@ function GmailEventCard({
           : t("Sent via Gmail"),
       );
     } catch (err: any) {
+      if (action === "send" || action === "draft" || email.to) {
+        saveLocalEmail({
+          to: email.to || "",
+          from: t("You (Local)"),
+          subject: email.subject || "Draft",
+          body: email.body || "",
+          snippet: (email.body || "").slice(0, 120),
+          labelIds: ["DRAFT"],
+        });
+      }
       const message = err?.message || t("Failed to send email");
       setErrorMsg(message);
       setStatus("error");
@@ -5528,6 +5663,17 @@ function GmailEventCard({
                   : primaryLabel}
             </span>
           </button>
+          {(action === "send" || action === "draft" || Boolean(email.to)) && (
+            <a
+              href={directGmailUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors"
+            >
+              <span>{t("Open Gmail")}</span>
+              <ArrowUpRight className="h-3 w-3" />
+            </a>
+          )}
           {status !== "running" && (
             <button
               type="button"
@@ -9519,7 +9665,18 @@ Engine Studio automatically parses these blocks and writes files directly into t
 
                   <button
                     type="button"
-                    onClick={() => setReasoning((v) => !v)}
+                    onClick={() => {
+                      if (!reasoning && !isUserProStatus(usageUid)) {
+                        toast.info(
+                          lang === "ru"
+                            ? "Глубокое мышление в Engine доступно в IGseek Pro"
+                            : "Deep Reasoning in Engine is an IGseek Pro feature",
+                        );
+                        window.dispatchEvent(new CustomEvent("igseek:open-subscription"));
+                        return;
+                      }
+                      setReasoning((v) => !v);
+                    }}
                     aria-label={t("Thinking")}
                     title={t("Thinking")}
                     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-xs font-medium transition-all cursor-pointer ${
@@ -11603,6 +11760,16 @@ function MemoryModal({ onClose, lang: _lang }: { onClose: () => void; lang: Lang
       const { token, uid, isFirebase, isValid } = await getSessionInfo();
       if (!isValid) {
         toast.error(t("Please sign in to save memories"));
+        return;
+      }
+
+      if (!isUserProStatus(uid) && items.length >= FREE_MEMORY_LIMIT) {
+        toast.error(
+          lang === "ru"
+            ? `На Free доступно до ${FREE_MEMORY_LIMIT} записей памяти. Подключите IGseek Pro для безлимитной облачной памяти.`
+            : `Free includes up to ${FREE_MEMORY_LIMIT} saved memories. Upgrade to IGseek Pro for unlimited Cloud Memory.`,
+        );
+        window.dispatchEvent(new CustomEvent("igseek:open-subscription"));
         return;
       }
 

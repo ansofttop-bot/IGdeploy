@@ -10,22 +10,25 @@ import androidx.security.crypto.MasterKey
 import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AuthSession
+import app.igseek.mobile.data.models.CalendarEventItem
 import app.igseek.mobile.data.models.ChatMessageItem
 import app.igseek.mobile.data.models.ChatThread
 import app.igseek.mobile.data.models.EngineFileItem
 import app.igseek.mobile.data.models.EngineProjectItem
 import app.igseek.mobile.data.models.GeneratedImageItem
+import app.igseek.mobile.data.models.GmailEventItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
 import app.igseek.mobile.data.models.ProjectFolder
+import app.igseek.mobile.data.models.TaskEventItem
 import app.igseek.mobile.data.models.WebSourceItem
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 2) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 3) {
 
     private val prefs: SharedPreferences = createSecurePrefs(context)
 
@@ -77,6 +80,9 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 reasoning TEXT NOT NULL,
                 images_json TEXT NOT NULL,
                 sources_json TEXT NOT NULL DEFAULT '[]',
+                calendar_events_json TEXT NOT NULL DEFAULT '[]',
+                task_events_json TEXT NOT NULL DEFAULT '[]',
+                gmail_events_json TEXT NOT NULL DEFAULT '[]',
                 attachments_json TEXT NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 is_queued_offline INTEGER NOT NULL,
@@ -133,6 +139,11 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'") }
             runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN is_bookmarked INTEGER NOT NULL DEFAULT 0") }
             runCatching { db.execSQL("ALTER TABLE outbox ADD COLUMN image_mode INTEGER NOT NULL DEFAULT 0") }
+        }
+        if (oldVersion < 3) {
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN calendar_events_json TEXT NOT NULL DEFAULT '[]'") }
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN task_events_json TEXT NOT NULL DEFAULT '[]'") }
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN gmail_events_json TEXT NOT NULL DEFAULT '[]'") }
         }
     }
 
@@ -363,6 +374,45 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 })
             }
         }.toString()
+        val calJson = JSONArray().apply {
+            msg.calendarEvents.forEach { e ->
+                put(JSONObject().apply {
+                    put("id", e.id)
+                    put("action", e.action)
+                    put("summary", e.summary)
+                    put("description", e.description)
+                    put("location", e.location)
+                    put("startTime", e.startTime)
+                    put("endTime", e.endTime)
+                    put("reminderMinutes", e.reminderMinutes)
+                    put("confirmed", e.confirmed)
+                })
+            }
+        }.toString()
+        val tasksJson = JSONArray().apply {
+            msg.taskEvents.forEach { t ->
+                put(JSONObject().apply {
+                    put("id", t.id)
+                    put("action", t.action)
+                    put("title", t.title)
+                    put("notes", t.notes)
+                    put("due", t.due)
+                    put("confirmed", t.confirmed)
+                })
+            }
+        }.toString()
+        val gmailJson = JSONArray().apply {
+            msg.gmailEvents.forEach { g ->
+                put(JSONObject().apply {
+                    put("id", g.id)
+                    put("action", g.action)
+                    put("to", g.to)
+                    put("subject", g.subject)
+                    put("body", g.body)
+                    put("confirmed", g.confirmed)
+                })
+            }
+        }.toString()
         val attJson = JSONArray().apply { msg.attachmentNames.forEach { put(it) } }.toString()
 
         val cv = ContentValues().apply {
@@ -373,6 +423,9 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("reasoning", msg.reasoning)
             put("images_json", imgsJson)
             put("sources_json", sourcesJson)
+            put("calendar_events_json", calJson)
+            put("task_events_json", tasksJson)
+            put("gmail_events_json", gmailJson)
             put("attachments_json", attJson)
             put("created_at_ms", msg.createdAtMs)
             put("is_queued_offline", if (msg.isQueuedOffline) 1 else 0)
@@ -385,7 +438,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listMessages(chatId: String): List<ChatMessageItem> {
         val out = mutableListOf<ChatMessageItem>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
             arrayOf(chatId)
         ).use { c ->
             while (c.moveToNext()) {
@@ -398,7 +451,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listBookmarkedMessages(): List<ChatMessageItem> {
         val out = mutableListOf<ChatMessageItem>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked FROM messages WHERE is_bookmarked = 1 ORDER BY created_at_ms DESC",
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json FROM messages WHERE is_bookmarked = 1 ORDER BY created_at_ms DESC",
             null
         ).use { c ->
             while (c.moveToNext()) {
@@ -434,6 +487,66 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             val arr = JSONArray(c.getString(7))
             for (i in 0 until arr.length()) atts.add(arr.optString(i))
         }
+        val calEvents = mutableListOf<CalendarEventItem>()
+        if (c.columnCount > 12) {
+            runCatching {
+                val arr = JSONArray(c.getString(12) ?: "[]")
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    calEvents.add(
+                        CalendarEventItem(
+                            id = o.optString("id"),
+                            action = o.optString("action", "create"),
+                            summary = o.optString("summary", "Calendar Event"),
+                            description = o.optString("description"),
+                            location = o.optString("location"),
+                            startTime = o.optString("startTime"),
+                            endTime = o.optString("endTime"),
+                            reminderMinutes = o.optInt("reminderMinutes", 10),
+                            confirmed = o.optBoolean("confirmed", false)
+                        )
+                    )
+                }
+            }
+        }
+        val taskEvents = mutableListOf<TaskEventItem>()
+        if (c.columnCount > 13) {
+            runCatching {
+                val arr = JSONArray(c.getString(13) ?: "[]")
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    taskEvents.add(
+                        TaskEventItem(
+                            id = o.optString("id"),
+                            action = o.optString("action", "create"),
+                            title = o.optString("title", "Task"),
+                            notes = o.optString("notes"),
+                            due = o.optString("due"),
+                            confirmed = o.optBoolean("confirmed", false)
+                        )
+                    )
+                }
+            }
+        }
+        val gmailEvents = mutableListOf<GmailEventItem>()
+        if (c.columnCount > 14) {
+            runCatching {
+                val arr = JSONArray(c.getString(14) ?: "[]")
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    gmailEvents.add(
+                        GmailEventItem(
+                            id = o.optString("id"),
+                            action = o.optString("action", "send"),
+                            to = o.optString("to"),
+                            subject = o.optString("subject"),
+                            body = o.optString("body"),
+                            confirmed = o.optBoolean("confirmed", false)
+                        )
+                    )
+                }
+            }
+        }
         return ChatMessageItem(
             id = c.getString(0),
             chatId = c.getString(1),
@@ -442,12 +555,45 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             reasoning = c.getString(4),
             images = imgs,
             webSources = sources,
+            calendarEvents = calEvents,
+            taskEvents = taskEvents,
+            gmailEvents = gmailEvents,
             attachmentNames = atts,
             createdAtMs = c.getLong(8),
             isQueuedOffline = c.getInt(9) == 1,
             isError = c.getInt(10) == 1,
             isBookmarked = c.getInt(11) == 1
         )
+    }
+
+    // ==================== FREE-TIER USAGE QUOTAS ====================
+
+    fun getQuotaUsage(scope: String): Pair<Int, Long> {
+        val now = System.currentTimeMillis()
+        val count = prefs.getInt("quota_count_$scope", 0)
+        val resetAt = prefs.getLong("quota_reset_$scope", 0L)
+        if (resetAt in 1..now) {
+            prefs.edit().putInt("quota_count_$scope", 0).putLong("quota_reset_$scope", 0L).apply()
+            return 0 to 0L
+        }
+        return count to resetAt
+    }
+
+    fun canUseFreeQuota(scope: String, limit: Int): Boolean {
+        val (used, _) = getQuotaUsage(scope)
+        return used < limit
+    }
+
+    fun consumeFreeQuota(scope: String, limit: Int, windowMs: Long): Pair<Int, Long> {
+        val now = System.currentTimeMillis()
+        val (current, currentReset) = getQuotaUsage(scope)
+        val next = (current + 1).coerceAtMost(limit)
+        val nextReset = if (currentReset > now) currentReset else now + windowMs
+        prefs.edit()
+            .putInt("quota_count_$scope", next)
+            .putLong("quota_reset_$scope", nextReset)
+            .apply()
+        return next to nextReset
     }
 
     // ==================== ENGINE PROJECTS ====================

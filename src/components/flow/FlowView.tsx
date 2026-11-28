@@ -84,6 +84,7 @@ import {
   type PromptReceipt,
   canUsePrompt,
   consumePrompt,
+  isUserProStatus,
   ensureScopeResetTimestamp,
   formatRemainingReset,
   isWithinCancelRefundWindow,
@@ -753,8 +754,9 @@ export function FlowView({
       const reset = ensureScopeResetTimestamp("flow", usageUid);
       setCooldownResetAt(reset);
       toast.error(
-        `${t("Flow prompt limit reached (20/20).")} ${t("Limits will reset in")} ${formatRemainingReset(reset, lang)}.`,
+        `${lang === "ru" ? `Лимит Flow исчерпан (${PROMPT_LIMITS.flow}/${PROMPT_LIMITS.flow}).` : `Flow limit reached (${PROMPT_LIMITS.flow}/${PROMPT_LIMITS.flow}).`} ${t("Limits will reset in")} ${formatRemainingReset(reset, lang)}.`,
       );
+      window.dispatchEvent(new CustomEvent("igseek:open-subscription"));
       return;
     }
 
@@ -1471,21 +1473,40 @@ export function FlowView({
 
         <div className="flex items-center gap-2">
           <div className="hidden sm:flex items-center gap-1 rounded-full border border-zinc-200 dark:border-white/10 bg-zinc-100 dark:bg-white/5 p-1">
-            {(["assist", "semi-auto", "autopilot"] as FlowAutonomyLevel[]).map((lvl) => (
-              <button
-                key={lvl}
-                onClick={() => setAutonomy(lvl)}
-                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition-all cursor-pointer ${
-                  autonomy === lvl
-                    ? "bg-black dark:bg-[var(--brand)] text-white shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {lvl === "assist" && t("Assist")}
-                {lvl === "semi-auto" && t("Semi-Auto")}
-                {lvl === "autopilot" && t("Autopilot")}
-              </button>
-            ))}
+            {(["assist", "semi-auto", "autopilot"] as FlowAutonomyLevel[]).map((lvl) => {
+              const lockedPro = lvl === "autopilot" && !isUserProStatus(usageUid);
+              return (
+                <button
+                  key={lvl}
+                  onClick={() => {
+                    if (lockedPro) {
+                      toast.info(
+                        lang === "ru"
+                          ? "Режим Autopilot доступен в IGseek Pro"
+                          : "Autopilot mode is an IGseek Pro feature",
+                      );
+                      window.dispatchEvent(new CustomEvent("igseek:open-subscription"));
+                      return;
+                    }
+                    setAutonomy(lvl);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold transition-all cursor-pointer ${
+                    autonomy === lvl && !lockedPro
+                      ? "bg-black dark:bg-[var(--brand)] text-white shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {lvl === "assist" && t("Assist")}
+                  {lvl === "semi-auto" && t("Semi-Auto")}
+                  {lvl === "autopilot" && t("Autopilot")}
+                  {lockedPro && (
+                    <span className="rounded-full bg-[var(--brand)]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                      PRO
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           <button
