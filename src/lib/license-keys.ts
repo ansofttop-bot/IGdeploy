@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 /**
- * SHA-256 hashes of the 45 one-time IGseek Pro (30-day) license keys.
+ * SHA-256 hashes of the one-time IGseek Pro (30-day) license keys.
  * Plaintext keys are NEVER stored in source code or client bundles — only their
  * one-way SHA-256 digests are embedded here and checked server-side.
  */
@@ -51,6 +51,27 @@ export const PRO_LICENSE_KEY_HASHES: ReadonlySet<string> = new Set([
   "cd6dd827051c6058c5a4a47696b05c86f4da483330ee73d72bb5ece527199906",
   "0adaef9c0f56a81b76b0b9765675c68c4fc8c4244968af09f6a87820f4bb7c3b",
   "8495b8ce99c644d6b0ad4f6654247059909e47978bb13f8019639f9fcf9f3dd5",
+  // Batch 2 (20 keys)
+  "271bc75c6bdf61cc52f4879bba1463fb0636ef0ece7ab0b3059b447467c0f4c3",
+  "7676e0b5fcd457f8367913983b156429b4ebe0352bcdd7a39dc7c994e6397e02",
+  "31e1ce41284afe8ab14ed00990319ee74f6f4e4985f742cd9d88354128ef03f5",
+  "ca5116bb9bdc58b22a1dee89a7578e7e812af4604635fcbe76ae53f02dab39db",
+  "e3e7cf05ece7bedb80b646cf907f93d90523027fcdd25c171ccb7d4ecfb87050",
+  "7c945905fe09fa1ff1d04a6000c08069ae837b1ec78836b36a5779f21b148425",
+  "f20aee7fec676c1cb6d60191eecbd3f7937ba11354cbf82d7f7ac5fb53b4b3fc",
+  "010ba306853a5d0fb0f68bcc437c45043f328f3951c8de8a6b5c2cf85922b0d7",
+  "83e038252f03241f6dd0c7a6e85f49db6b2d68da8b243f83e6765aa8c005f9bb",
+  "3c7be0c635ed362ab8515bc2fbda8077b19e26daebcaaafd2af8cb002a237ff2",
+  "9908cc7f3b977e7c5b24fecf2932b9684c5aa54eb379a22575ba4bd55d09ed3f",
+  "7524b7e0521dc3413b475806b93d8f95ddee5d5db067018e8a6d508a7c6a20fa",
+  "9b73f7f2012dc9e9ac224d5c29d25720f6ca003c2dc5f376a8a1d5e3c0823614",
+  "223de863965f30482c09d98797297dc3b50f0de53b9e5f2a6118fcf3c5120092",
+  "4acbe724217d635ea35f9e2fde1d4fee7c430388fc32e1ef2af2234aa3e3cf12",
+  "dfb5cffc0449c81d3e2b4b6f36565aeb3ec591ca6a36a187d1866487f20cd139",
+  "3c8733b968f12e8c5398c20e31a9c6e978e26cc343c01e12e723fff3f909c370",
+  "537f2f1dbf58831cad4541ec41a0328128adab0e447b1d90252ba4895cfc6d0d",
+  "9b498c3a7d2d85431279748cf5ba44eed1f1c972acfc3e2f89368c67065742e1",
+  "f1a9da37175d727183a6119765b8c00c2841802877731510bfac3ef9105f6e43",
 ]);
 
 const LICENSE_KEY_REGEX = /^IGSK-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
