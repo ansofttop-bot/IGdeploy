@@ -33,6 +33,12 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 data class StreamChatResult(
@@ -197,6 +203,7 @@ class IGseekApiClient(
         agent: AgentRoleId,
         webSearch: Boolean,
         reasoning: Boolean,
+        councilMode: Boolean = false,
         imageMode: Boolean,
         memories: List<MemoryEntryItem>,
         language: String,
@@ -212,6 +219,8 @@ class IGseekApiClient(
         onCalendarEvent: (CalendarEventItem) -> Unit = {},
         onTaskEvent: (TaskEventItem) -> Unit = {},
         onGmailEvent: (GmailEventItem) -> Unit = {},
+        onMemoryUpdated: () -> Unit = {},
+        onTabTransition: (targetTab: String, reason: String) -> Unit = { _, _ -> },
         onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
         onImageError: () -> Unit = {},
         onImageLimit: () -> Unit = {}
@@ -230,7 +239,9 @@ class IGseekApiClient(
             agent = agent,
             webSearch = webSearch,
             reasoning = reasoning,
+            councilMode = councilMode,
             imageMode = effectiveImageMode,
+            memories = memories,
             attachments = attachments,
             idempotencyKey = idempotencyKey,
             imageQuotaUsed = imageQuotaUsed,
@@ -242,6 +253,8 @@ class IGseekApiClient(
             onCalendarEvent = onCalendarEvent,
             onTaskEvent = onTaskEvent,
             onGmailEvent = onGmailEvent,
+            onMemoryUpdated = onMemoryUpdated,
+            onTabTransition = onTabTransition,
             onImageStart = onImageStart,
             onImageError = onImageError,
             onImageLimit = onImageLimit
@@ -257,6 +270,38 @@ class IGseekApiClient(
         result
     }
 
+    suspend fun enhancePrompt(
+        session: AuthSession?,
+        draft: String
+    ): String = withContext(Dispatchers.IO) {
+        val cleanDraft = draft.trim()
+        if (cleanDraft.length < 3) return@withContext cleanDraft
+        val gateway = resolveGatewayUrl()
+        val payload = JSONObject().apply {
+            put("messages", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", cleanDraft)
+                })
+            })
+            put("enhancePrompt", true)
+        }
+        val reqBuilder = Request.Builder()
+            .url("$gateway/api/chat")
+            .post(payload.toString().toRequestBody(jsonMedia))
+        gatewayHeaders(reqBuilder, session)
+        client.newCall(reqBuilder.build()).execute().use { res ->
+            val rawBody = res.body?.string().orEmpty()
+            if (!res.isSuccessful) {
+                val rawErr = runCatching { JSONObject(rawBody).optString("error") }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                throw IllegalStateException(sanitizeErrorBrand(rawErr, "IGseek HTTP ${res.code}"))
+            }
+            val enhanced = runCatching { JSONObject(rawBody).optString("enhanced") }.getOrDefault("").trim()
+            enhanced.ifBlank { cleanDraft }
+        }
+    }
+
     private fun decodeJsonDataValue(raw: String): Any? {
         return runCatching { org.json.JSONTokener(raw).nextValue() }.getOrNull()
     }
@@ -269,7 +314,9 @@ class IGseekApiClient(
         agent: AgentRoleId,
         webSearch: Boolean,
         reasoning: Boolean,
+        councilMode: Boolean = false,
         imageMode: Boolean = false,
+        memories: List<MemoryEntryItem> = emptyList(),
         attachments: List<ChatAttachment>,
         idempotencyKey: String,
         imageQuotaUsed: Int = 0,
@@ -281,6 +328,8 @@ class IGseekApiClient(
         onCalendarEvent: (CalendarEventItem) -> Unit = {},
         onTaskEvent: (TaskEventItem) -> Unit = {},
         onGmailEvent: (GmailEventItem) -> Unit = {},
+        onMemoryUpdated: () -> Unit = {},
+        onTabTransition: (targetTab: String, reason: String) -> Unit = { _, _ -> },
         onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
         onImageError: () -> Unit = {},
         onImageLimit: () -> Unit = {}
@@ -303,14 +352,35 @@ class IGseekApiClient(
             })
         }
 
+        val memoriesJson = JSONArray()
+        memories.take(40).forEach { mem ->
+            if (mem.content.isNotBlank()) {
+                memoriesJson.put(JSONObject().apply {
+                    put("id", mem.id)
+                    put("kind", mem.kind)
+                    put("content", mem.content.take(1500))
+                })
+            }
+        }
+
+        val nowZoned = ZonedDateTime.now(ZoneId.systemDefault())
+        val tzOffsetMinutes = -(TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000)
+        val localReadable = DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy, HH:mm", Locale.getDefault()).format(nowZoned)
+
         val payload = JSONObject().apply {
             put("messages", messagesJson)
             put("model", model.apiId)
             put("agent", agent.apiId)
             put("webSearch", webSearch)
             put("reasoning", reasoning)
+            if (councilMode) put("councilMode", true)
             if (imageMode) put("imageMode", true)
             if (filesJson.length() > 0) put("userAttachments", filesJson)
+            if (memoriesJson.length() > 0) put("clientMemories", memoriesJson)
+            put("clientTimeIso", Instant.now().toString())
+            put("clientLocalTime", localReadable)
+            put("clientTimezone", ZoneId.systemDefault().id)
+            put("clientTzOffsetMinutes", tzOffsetMinutes)
             put("imageQuota", JSONObject().apply {
                 put("used", imageQuotaUsed)
                 put("resetAt", imageQuotaResetAt)
@@ -498,6 +568,17 @@ class IGseekApiClient(
                                             )
                                         )
                                     }
+                                }
+                            }
+                            "memory_updated" -> {
+                                onMemoryUpdated()
+                            }
+                            "tab_transition_event" -> {
+                                val obj = decoded as? JSONObject
+                                val targetTab = obj?.optString("targetTab").orEmpty().trim()
+                                val reason = obj?.optString("reason").orEmpty().trim()
+                                if (targetTab.isNotBlank()) {
+                                    onTabTransition(targetTab, reason)
                                 }
                             }
                             "error" -> {

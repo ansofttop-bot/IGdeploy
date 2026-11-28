@@ -20,6 +20,7 @@ import app.igseek.mobile.data.models.GmailEventItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
+import app.igseek.mobile.data.models.MessageVariant
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
 import app.igseek.mobile.data.models.ProjectFolder
@@ -28,7 +29,7 @@ import app.igseek.mobile.data.models.WebSourceItem
 import org.json.JSONArray
 import org.json.JSONObject
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 3) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 4) {
 
     private val prefs: SharedPreferences = createSecurePrefs(context)
 
@@ -87,7 +88,9 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 created_at_ms INTEGER NOT NULL,
                 is_queued_offline INTEGER NOT NULL,
                 is_error INTEGER NOT NULL,
-                is_bookmarked INTEGER NOT NULL DEFAULT 0
+                is_bookmarked INTEGER NOT NULL DEFAULT 0,
+                variants_json TEXT NOT NULL DEFAULT '[]',
+                active_variant_index INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -144,6 +147,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN calendar_events_json TEXT NOT NULL DEFAULT '[]'") }
             runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN task_events_json TEXT NOT NULL DEFAULT '[]'") }
             runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN gmail_events_json TEXT NOT NULL DEFAULT '[]'") }
+        }
+        if (oldVersion < 4) {
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN variants_json TEXT NOT NULL DEFAULT '[]'") }
+            runCatching { db.execSQL("ALTER TABLE messages ADD COLUMN active_variant_index INTEGER NOT NULL DEFAULT 0") }
         }
     }
 
@@ -414,6 +421,33 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             }
         }.toString()
         val attJson = JSONArray().apply { msg.attachmentNames.forEach { put(it) } }.toString()
+        val variantsJson = JSONArray().apply {
+            msg.variants.forEach { v ->
+                put(JSONObject().apply {
+                    put("content", v.content)
+                    put("reasoning", v.reasoning)
+                    put("createdAtMs", v.createdAtMs)
+                    put("images", JSONArray().apply {
+                        v.images.forEach { img ->
+                            put(JSONObject().apply {
+                                put("id", img.id)
+                                put("title", img.title)
+                                put("dataUrl", img.dataUrl)
+                            })
+                        }
+                    })
+                    put("webSources", JSONArray().apply {
+                        v.webSources.forEach { s ->
+                            put(JSONObject().apply {
+                                put("title", s.title)
+                                put("url", s.url)
+                                put("snippet", s.snippet)
+                            })
+                        }
+                    })
+                })
+            }
+        }.toString()
 
         val cv = ContentValues().apply {
             put("id", msg.id)
@@ -431,6 +465,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("is_queued_offline", if (msg.isQueuedOffline) 1 else 0)
             put("is_error", if (msg.isError) 1 else 0)
             put("is_bookmarked", if (msg.isBookmarked) 1 else 0)
+            put("variants_json", variantsJson)
+            put("active_variant_index", msg.activeVariantIndex)
         }
         writableDatabase.insertWithOnConflict("messages", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -438,7 +474,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listMessages(chatId: String): List<ChatMessageItem> {
         val out = mutableListOf<ChatMessageItem>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json, variants_json, active_variant_index FROM messages WHERE chat_id = ? ORDER BY created_at_ms ASC",
             arrayOf(chatId)
         ).use { c ->
             while (c.moveToNext()) {
@@ -451,7 +487,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
     fun listBookmarkedMessages(): List<ChatMessageItem> {
         val out = mutableListOf<ChatMessageItem>()
         readableDatabase.rawQuery(
-            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json FROM messages WHERE is_bookmarked = 1 ORDER BY created_at_ms DESC",
+            "SELECT id, chat_id, role, content, reasoning, images_json, sources_json, attachments_json, created_at_ms, is_queued_offline, is_error, is_bookmarked, calendar_events_json, task_events_json, gmail_events_json, variants_json, active_variant_index FROM messages WHERE is_bookmarked = 1 ORDER BY created_at_ms DESC",
             null
         ).use { c ->
             while (c.moveToNext()) {
@@ -547,6 +583,41 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
                 }
             }
         }
+        val variants = mutableListOf<MessageVariant>()
+        if (c.columnCount > 15) {
+            runCatching {
+                val arr = JSONArray(c.getString(15) ?: "[]")
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val vImgs = mutableListOf<GeneratedImageItem>()
+                    val imgArr = o.optJSONArray("images")
+                    if (imgArr != null) {
+                        for (j in 0 until imgArr.length()) {
+                            val io = imgArr.optJSONObject(j) ?: continue
+                            vImgs.add(GeneratedImageItem(io.optString("id"), io.optString("title"), io.optString("dataUrl")))
+                        }
+                    }
+                    val vSources = mutableListOf<WebSourceItem>()
+                    val srcArr = o.optJSONArray("webSources")
+                    if (srcArr != null) {
+                        for (j in 0 until srcArr.length()) {
+                            val so = srcArr.optJSONObject(j) ?: continue
+                            vSources.add(WebSourceItem(so.optString("title"), so.optString("url"), so.optString("snippet")))
+                        }
+                    }
+                    variants.add(
+                        MessageVariant(
+                            content = o.optString("content"),
+                            reasoning = o.optString("reasoning"),
+                            images = vImgs,
+                            webSources = vSources,
+                            createdAtMs = o.optLong("createdAtMs", c.getLong(8))
+                        )
+                    )
+                }
+            }
+        }
+        val activeVariantIdx = if (c.columnCount > 16) c.getInt(16) else 0
         return ChatMessageItem(
             id = c.getString(0),
             chatId = c.getString(1),
@@ -562,7 +633,9 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             createdAtMs = c.getLong(8),
             isQueuedOffline = c.getInt(9) == 1,
             isError = c.getInt(10) == 1,
-            isBookmarked = c.getInt(11) == 1
+            isBookmarked = c.getInt(11) == 1,
+            variants = variants,
+            activeVariantIndex = activeVariantIdx.coerceIn(0, (variants.size - 1).coerceAtLeast(0))
         )
     }
 

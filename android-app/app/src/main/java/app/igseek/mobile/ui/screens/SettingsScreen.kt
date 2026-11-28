@@ -309,6 +309,10 @@ fun SettingsScreen(
                                 ) {
                                     rowItems.forEach { preset ->
                                         val swatch = accentSwatchColor(preset, darkTheme = true)
+                                        val isFreeAccent = preset == AccentPresetId.DEFAULT ||
+                                            preset == AccentPresetId.BLACK ||
+                                            preset == AccentPresetId.BLUE
+                                        val isLockedAccent = !isFreeAccent && !state.subscription.isPro
                                         val isSelected = layout.accent == preset ||
                                             (layout.accent == AccentPresetId.DEFAULT && preset == AccentPresetId.RED)
                                         Surface(
@@ -316,7 +320,15 @@ fun SettingsScreen(
                                                 .weight(1f)
                                                 .clip(RoundedCornerShape(14.dp))
                                                 .clickable {
-                                                    viewModel.updateLayoutPrefs { it.copy(accent = preset) }
+                                                    if (isLockedAccent) {
+                                                        viewModel.showToast(
+                                                            if (isEn) "Premium accent themes are available in IGseek Pro"
+                                                            else "Премиальные цветовые акценты доступны в IGseek Pro"
+                                                        )
+                                                        viewModel.openProSheet()
+                                                    } else {
+                                                        viewModel.updateLayoutPrefs { it.copy(accent = preset) }
+                                                    }
                                                 },
                                             shape = RoundedCornerShape(14.dp),
                                             color = if (isSelected) palette.brandSoft else palette.chipBg,
@@ -344,10 +356,17 @@ fun SettingsScreen(
                                                             tint = if (preset == AccentPresetId.BLACK) Color.Black else Color.White,
                                                             modifier = Modifier.size(13.dp)
                                                         )
+                                                    } else if (isLockedAccent) {
+                                                        Icon(
+                                                            imageVector = LucideIcons.Lock,
+                                                            contentDescription = "Pro",
+                                                            tint = Color.White,
+                                                            modifier = Modifier.size(11.dp)
+                                                        )
                                                     }
                                                 }
                                                 Text(
-                                                    text = preset.title,
+                                                    text = if (isLockedAccent) "${preset.title} · Pro" else preset.title,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = if (isSelected) palette.textPrimary else palette.textMuted,
                                                     maxLines = 1

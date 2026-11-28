@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_bg"
+    android:background="@drawable/widget_card_dark"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:padding="13dp">
 
+    <!-- Top Row: Brand + Live Memory/Status Badge -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -13,60 +15,299 @@
         android:orientation="horizontal">
 
         <ImageView
-            android:layout_width="22dp"
-            android:layout_height="22dp"
+            android:id="@+id/widget_logo"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
             android:contentDescription="IGseek"
             android:src="@drawable/ic_igseek_fox" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:id="@+id/widget_title"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="7dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:text="IGseek"
-            android:textColor="#F6F5F5"
-            android:textSize="15sp"
+            android:textColor="#F4F4F5"
+            android:textSize="14sp"
             android:textStyle="bold" />
+
+        <!-- Clickable Memory / Plan Status Pill -->
+        <LinearLayout
+            android:id="@+id/widget_status_pill"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:background="@drawable/widget_surface_dark"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="9dp"
+            android:paddingEnd="9dp">
+
+            <TextView
+                android:id="@+id/widget_status_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:text="Память · 0"
+                android:textColor="#A1A1AA"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
+    <!-- Hero Interactive Ask Bar (Prompt + Voice + Photo AI) -->
     <LinearLayout
+        android:id="@+id/widget_ask_bar"
+        android:layout_width="match_parent"
+        android:layout_height="42dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/widget_surface_dark"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="13dp"
+        android:paddingEnd="5dp">
+
+        <TextView
+            android:id="@+id/widget_ask_prompt"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:text="Спросить IGseek…"
+            android:textColor="#A1A1AA"
+            android:textSize="13sp" />
+
+        <!-- Voice Input Circle -->
+        <FrameLayout
+            android:id="@+id/widget_btn_voice"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_marginEnd="5dp">
+
+            <ImageView
+                android:id="@+id/widget_voice_bg"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="Voice"
+                android:src="@drawable/widget_pill_mask" />
+
+            <ImageView
+                android:id="@+id/widget_voice_icon"
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:layout_gravity="center"
+                android:contentDescription="Voice"
+                android:src="@drawable/ic_widget_mic" />
+        </FrameLayout>
+
+        <!-- Photo AI Accent Circle -->
+        <FrameLayout
+            android:id="@+id/widget_btn_image"
+            android:layout_width="32dp"
+            android:layout_height="32dp">
+
+            <ImageView
+                android:id="@+id/widget_image_bg"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="Photo AI"
+                android:src="@drawable/widget_pill_mask" />
+
+            <ImageView
+                android:id="@+id/widget_image_icon"
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:layout_gravity="center"
+                android:contentDescription="Photo AI"
+                android:src="@drawable/ic_widget_spark" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- Live Resume Last Chat Strip -->
+    <LinearLayout
+        android:id="@+id/widget_recent_card"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/widget_surface_dark"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="11dp"
+        android:paddingTop="7dp"
+        android:paddingEnd="11dp"
+        android:paddingBottom="7dp">
+
+        <ImageView
+            android:id="@+id/widget_recent_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:contentDescription="Recent"
+            android:src="@drawable/widget_pill_mask" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_recent_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Продолжить последний чат"
+                android:textColor="#F4F4F5"
+                android:textSize="11.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_recent_subtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Нажмите, чтобы открыть диалог"
+                android:textColor="#8E8E98"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Bottom 4-Action Quick Launch Dock -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="38dp"
+        android:layout_marginTop="8dp"
         android:orientation="horizontal">
 
-        <Button
+        <!-- New Chat (Accent Filled) -->
+        <FrameLayout
             android:id="@+id/widget_btn_chat"
             android:layout_width="0dp"
-            android:layout_height="38dp"
+            android:layout_height="match_parent"
             android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:backgroundTint="#EF4444"
-            android:text="Чат"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp" />
+            android:layout_weight="1.15">
 
-        <Button
+            <ImageView
+                android:id="@+id/widget_chat_bg"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="Chat"
+                android:src="@drawable/widget_tile_mask" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp">
+
+                <ImageView
+                    android:id="@+id/widget_chat_icon"
+                    android:layout_width="13dp"
+                    android:layout_height="13dp"
+                    android:contentDescription="Chat"
+                    android:src="@drawable/ic_widget_chat" />
+
+                <TextView
+                    android:id="@+id/widget_chat_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="5dp"
+                    android:maxLines="1"
+                    android:text="Чат"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- Flow -->
+        <LinearLayout
             android:id="@+id/widget_btn_flow"
             android:layout_width="0dp"
-            android:layout_height="38dp"
+            android:layout_height="match_parent"
             android:layout_marginEnd="6dp"
             android:layout_weight="1"
-            android:backgroundTint="#1E1B1B"
-            android:text="Flow"
-            android:textAllCaps="false"
-            android:textColor="#F6F5F5"
-            android:textSize="12sp" />
+            android:background="@drawable/widget_surface_dark"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
 
-        <Button
+            <ImageView
+                android:id="@+id/widget_flow_icon"
+                android:layout_width="13dp"
+                android:layout_height="13dp"
+                android:contentDescription="Flow"
+                android:src="@drawable/ic_widget_flow" />
+
+            <TextView
+                android:id="@+id/widget_flow_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:maxLines="1"
+                android:text="Flow"
+                android:textColor="#E4E4E7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Engine -->
+        <LinearLayout
+            android:id="@+id/widget_btn_engine"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_surface_dark"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <ImageView
+                android:id="@+id/widget_engine_icon"
+                android:layout_width="13dp"
+                android:layout_height="13dp"
+                android:contentDescription="Engine"
+                android:src="@drawable/ic_widget_engine" />
+
+            <TextView
+                android:id="@+id/widget_engine_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:maxLines="1"
+                android:text="Engine"
+                android:textColor="#E4E4E7"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Library -->
+        <LinearLayout
             android:id="@+id/widget_btn_library"
             android:layout_width="0dp"
-            android:layout_height="38dp"
-            android:layout_weight="1"
-            android:backgroundTint="#1E1B1B"
-            android:text="Engine"
-            android:textAllCaps="false"
-            android:textColor="#F6F5F5"
-            android:textSize="12sp" />
+            android:layout_height="match_parent"
+            android:layout_weight="0.85"
+            android:background="@drawable/widget_surface_dark"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/widget_library_icon"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:contentDescription="Library"
+                android:src="@drawable/ic_widget_library" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

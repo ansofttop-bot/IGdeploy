@@ -159,6 +159,7 @@ import {
   CloudOff,
   Crown,
   Bell,
+  History as HistoryIcon,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -320,6 +321,46 @@ type WebImagePayload = {
   }>;
 };
 
+type ChatMessageVariant = {
+  content: string;
+  reasoning?: string;
+  artifacts?: Artifact[];
+  images?: GeneratedImage[];
+  webImages?: WebImagePayload[];
+  timestamp?: string;
+  createdAt?: number;
+};
+
+const MAX_SAVED_VARIANTS = 10;
+
+function compactVariantsForStorage(variants: ChatMessageVariant[]): ChatMessageVariant[] {
+  const sliced = variants.slice(-MAX_SAVED_VARIANTS);
+  const stripHeavyImages = (list: ChatMessageVariant[], keepLatestImages: boolean): ChatMessageVariant[] =>
+    list.map((v, i) => {
+      const isLast = i === list.length - 1;
+      if (keepLatestImages && isLast) return v;
+      if (!v.images?.some((img) => typeof img.dataUrl === "string" && img.dataUrl.startsWith("data:"))) {
+        return v;
+      }
+      return {
+        ...v,
+        images: v.images.map((img) =>
+          typeof img.dataUrl === "string" && img.dataUrl.startsWith("data:")
+            ? { ...img, dataUrl: "" }
+            : img,
+        ),
+      };
+    });
+  try {
+    if (JSON.stringify(sliced).length <= 240_000) return sliced;
+    const pass1 = stripHeavyImages(sliced, true);
+    if (JSON.stringify(pass1).length <= 240_000) return pass1;
+    return stripHeavyImages(pass1, false);
+  } catch {
+    return sliced;
+  }
+}
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -335,6 +376,8 @@ type ChatMessage = {
   };
   imageFallbackNotice?: string;
   memorySaved?: boolean;
+  variants?: ChatMessageVariant[];
+  activeVariantIndex?: number;
   calendarEvents?: Array<CalendarEventPayload & { id?: string; action?: string; eventId?: string; query?: string }>;
   taskEvents?: Array<{ id?: string; action: string; title: string; notes?: string; due?: string; taskId?: string; taskListId?: string }>;
   gmailEvents?: Array<{
@@ -378,6 +421,8 @@ type GuestStoredMessage = {
   refusals?: ChatMessage["refusals"];
   tabTransitions?: ChatMessage["tabTransitions"];
   memorySaved?: boolean;
+  variants?: ChatMessageVariant[];
+  activeVariantIndex?: number;
   position: number;
 };
 
@@ -500,6 +545,8 @@ function Index() {
   const [engineGeneratingChatIds, setEngineGeneratingChatIds] = useState<Set<string>>(new Set());
   const [thinking, setThinking] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
+  const [councilMode, setCouncilMode] = useState(false);
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const backgroundJobsRef = useRef<
     Map<
       string,
@@ -688,6 +735,10 @@ function Index() {
     });
   };
 
+  const cloudMemoriesRef = useRef<
+    Array<{ id: string; kind: string; content: string; attachmentName?: string; attachmentText?: string }>
+  >([]);
+
   useEffect(() => {
     if (!user || isGuest || user.id === GUEST_ID || user.id.startsWith("local_")) {
       setSubscriptionState(DEFAULT_FREE_SUBSCRIPTION);
@@ -802,12 +853,20 @@ function Index() {
         return next;
       });
     });
-    const unsubMemories = subscribeCloudMemories(uid, () => {
+    const unsubMemories = subscribeCloudMemories(uid, (rows) => {
+      cloudMemoriesRef.current = rows.slice(0, 40).map((m) => ({
+        id: m.id,
+        kind: m.kind || "other",
+        content: m.content || "",
+        ...(m.attachment?.name ? { attachmentName: m.attachment.name } : {}),
+        ...(m.attachment?.textContent ? { attachmentText: m.attachment.textContent.slice(0, 600) } : {}),
+      }));
       try {
         window.dispatchEvent(new CustomEvent("igseek:memory-updated"));
       } catch {}
     });
     return () => {
+      cloudMemoriesRef.current = [];
       unsubLibrary();
       unsubChats();
       unsubProjects();
@@ -844,6 +903,8 @@ function Index() {
           refusals: (r.refusals as ChatMessage["refusals"] | null) ?? undefined,
           tabTransitions: (r.tab_transitions as ChatMessage["tabTransitions"] | null) ?? undefined,
           memorySaved: Boolean(r.memory_saved) || undefined,
+          variants: Array.isArray(r.variants) ? (r.variants as ChatMessageVariant[]) : undefined,
+          activeVariantIndex: typeof r.active_variant_index === "number" ? r.active_variant_index : undefined,
         })),
       );
     });
@@ -1660,6 +1721,8 @@ function Index() {
           refusals: r.refusals ?? undefined,
           tabTransitions: r.tabTransitions ?? undefined,
           memorySaved: r.memorySaved ?? undefined,
+          variants: Array.isArray(r.variants) ? r.variants : undefined,
+          activeVariantIndex: typeof r.activeVariantIndex === "number" ? r.activeVariantIndex : undefined,
         })),
       );
       setTab("chat");
@@ -1667,7 +1730,7 @@ function Index() {
     }
     const { data, error: loadErr } = await supabase
       .from("chat_messages")
-      .select("id, role, content, reasoning, artifacts, images, web_images, calendar_events, task_events, gmail_events, refusals, tab_transitions, memory_saved, created_at, position")
+      .select("id, role, content, reasoning, artifacts, images, web_images, calendar_events, task_events, gmail_events, refusals, tab_transitions, memory_saved, variants, active_variant_index, created_at, position")
       .eq("user_id", user.id)
       .eq("chat_id", chatId)
       .order("position", { ascending: true });
@@ -1691,6 +1754,8 @@ function Index() {
           refusals: (r.refusals as ChatMessage["refusals"] | null) ?? undefined,
           tabTransitions: (r.tab_transitions as ChatMessage["tabTransitions"] | null) ?? undefined,
           memorySaved: Boolean(r.memory_saved) || undefined,
+          variants: Array.isArray(r.variants) ? (r.variants as ChatMessageVariant[]) : undefined,
+          activeVariantIndex: typeof (r.active_variant_index ?? r.activeVariantIndex) === "number" ? (r.active_variant_index ?? r.activeVariantIndex) : undefined,
         })),
       );
     }
@@ -1761,6 +1826,7 @@ function Index() {
     receipt: PromptReceipt | null = null,
     chatEnsureMeta?: { title: string; userMsg?: ChatMessage; userPosition?: number },
     preSavePromise?: Promise<void>,
+    regenMeta?: { previousVariants: ChatMessageVariant[]; isProVariants: boolean },
   ) => {
     const controller = new AbortController();
     const currentAssistantMsg: ChatMessage = { ...assistantMsg };
@@ -1917,16 +1983,36 @@ function Index() {
             ? m.content.replace(/!\[[^\]]*\]\(data:image\/[a-z+.-]+;base64,[A-Za-z0-9+/=]+\)/g, "[прикреплённое изображение]")
             : m.content,
       }));
+      const nowClient = new Date();
+      const clientTimezone = (() => {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        } catch {
+          return "UTC";
+        }
+      })();
       const requestPayload = JSON.stringify({
         messages: payloadMessages,
-        reasoning: thinking,
+        reasoning: thinking && subscriptionState.isPro,
+        councilMode: councilMode && subscriptionState.isPro,
         webSearch,
         model,
-        agent,
-        aiStyle: window.localStorage.getItem("igseek:ai_style") || "",
-        aiCreativity: window.localStorage.getItem("igseek:ai_creativity") || "balance",
-        aiLength: window.localStorage.getItem("igseek:ai_length") || "medium",
+        agent: !subscriptionState.isPro && (agent === "coder" || agent === "hacker" || agent === "creative") ? "universal" : agent,
+        aiStyle: subscriptionState.isPro ? (window.localStorage.getItem("igseek:ai_style") || "") : "",
+        aiCreativity: subscriptionState.isPro ? (window.localStorage.getItem("igseek:ai_creativity") || "balance") : "balance",
+        aiLength: subscriptionState.isPro ? (window.localStorage.getItem("igseek:ai_length") || "medium") : "medium",
         gmailConnected: !!getCachedGmailToken(),
+        clientTimeIso: nowClient.toISOString(),
+        clientLocalTime: nowClient.toLocaleString(localeFor(lang), {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        clientTimezone,
+        clientTzOffsetMinutes: nowClient.getTimezoneOffset(),
         userAttachments: sentAttachments.map((a) => {
           const isImg = a.kind === "image" || a.dataUrl.startsWith("data:image/");
           const hasExtractedText =
@@ -1944,6 +2030,7 @@ function Index() {
           };
         }),
         libraryFiles: chatLibraryPayload,
+        ...(cloudMemoriesRef.current.length > 0 ? { clientMemories: cloudMemoriesRef.current } : {}),
         ...(previousGeneratedImage ? { previousGeneratedImage } : {}),
         ...(deviceFp ? { deviceFp } : {}),
         imageQuota: {
@@ -2303,8 +2390,12 @@ function Index() {
         if (!hasExistingResult) {
           const cleanErr = err?.message ? sanitizeErrorForUser(err.message, "") : "";
           const errorDetail = cleanErr ? `: ${cleanErr}` : "";
-          currentAssistantMsg.content = currentAssistantMsg.content || ("⚠️ " + t("Something went wrong. Please try again.") + errorDetail);
-          updateLiveUi(true);
+          if (regenMeta?.previousVariants.length) {
+            toast.error(t("Something went wrong. Please try again.") + errorDetail);
+          } else {
+            currentAssistantMsg.content = currentAssistantMsg.content || ("⚠️ " + t("Something went wrong. Please try again.") + errorDetail);
+            updateLiveUi(true);
+          }
         }
       }
     } finally {
@@ -2322,6 +2413,54 @@ function Index() {
         next.delete(assistantMsg.id);
         return next;
       });
+      const hasGeneratedOutput = Boolean(
+        currentAssistantMsg.content?.trim() ||
+        currentAssistantMsg.reasoning?.trim() ||
+        currentAssistantMsg.artifacts?.length ||
+        currentAssistantMsg.images?.length ||
+        currentAssistantMsg.webImages?.length ||
+        currentAssistantMsg.calendarEvents?.length ||
+        currentAssistantMsg.taskEvents?.length ||
+        currentAssistantMsg.gmailEvents?.length ||
+        currentAssistantMsg.refusals?.length ||
+        currentAssistantMsg.tabTransitions?.length ||
+        currentAssistantMsg.limitCooldown
+      );
+      if (!hasGeneratedOutput && regenMeta?.previousVariants.length) {
+        const fallback = regenMeta.previousVariants[regenMeta.previousVariants.length - 1];
+        currentAssistantMsg.content = fallback.content;
+        currentAssistantMsg.reasoning = fallback.reasoning;
+        currentAssistantMsg.artifacts = fallback.artifacts;
+        currentAssistantMsg.images = fallback.images;
+        currentAssistantMsg.webImages = fallback.webImages;
+        currentAssistantMsg.timestamp = fallback.timestamp || currentAssistantMsg.timestamp;
+        if (regenMeta.isProVariants) {
+          currentAssistantMsg.variants = compactVariantsForStorage(regenMeta.previousVariants);
+          currentAssistantMsg.activeVariantIndex = Math.max(0, currentAssistantMsg.variants.length - 1);
+        } else {
+          currentAssistantMsg.variants = undefined;
+          currentAssistantMsg.activeVariantIndex = undefined;
+        }
+        updateLiveUi(true);
+      } else if (regenMeta?.isProVariants && hasGeneratedOutput && !currentAssistantMsg.limitCooldown) {
+        const newVariant: ChatMessageVariant = {
+          content: currentAssistantMsg.content ?? "",
+          reasoning: currentAssistantMsg.reasoning,
+          artifacts: currentAssistantMsg.artifacts,
+          images: currentAssistantMsg.images,
+          webImages: currentAssistantMsg.webImages,
+          timestamp: currentAssistantMsg.timestamp || new Date().toLocaleTimeString(localeFor(lang), { hour: "2-digit", minute: "2-digit" }),
+          createdAt: Date.now(),
+        };
+        const mergedVariants = compactVariantsForStorage([...(regenMeta.previousVariants ?? []), newVariant]);
+        currentAssistantMsg.variants = mergedVariants;
+        currentAssistantMsg.activeVariantIndex = Math.max(0, mergedVariants.length - 1);
+        updateLiveUi(true);
+      } else if (regenMeta && !regenMeta.isProVariants) {
+        currentAssistantMsg.variants = undefined;
+        currentAssistantMsg.activeVariantIndex = undefined;
+        updateLiveUi(true);
+      }
       if (chatId) {
         setGeneratingChatIds((prev) => {
           const next = new Set(prev);
@@ -2352,6 +2491,8 @@ function Index() {
               refusals: asst.refusals ?? undefined,
               tabTransitions: asst.tabTransitions ?? undefined,
               memorySaved: asst.memorySaved ?? undefined,
+              variants: asst.variants ?? undefined,
+              activeVariantIndex: typeof asst.activeVariantIndex === "number" ? asst.activeVariantIndex : undefined,
               position: assistantPosition,
             };
             if (existingIdx >= 0) {
@@ -2403,6 +2544,8 @@ function Index() {
                   refusals: (asst.refusals as unknown as Json) ?? null,
                   tab_transitions: (asst.tabTransitions as unknown as Json) ?? null,
                   memory_saved: asst.memorySaved ?? null,
+                  variants: (asst.variants as unknown as Json) ?? null,
+                  active_variant_index: typeof asst.activeVariantIndex === "number" ? asst.activeVariantIndex : null,
                   position: assistantPosition,
                 });
                 if (saveErr) {
@@ -2621,6 +2764,134 @@ function Index() {
       }
     }
     await runAssistantTurn(baseMessages, activeChatId, assistantMsg, idx + 1, [], receipt, undefined, editPreSavePromise);
+  };
+
+  const regenerateMessage = async (msgId: string) => {
+    if (!isAuthed) { setAuthOpen(true); return; }
+    if (isLocked) { setProfileOpen(true); return; }
+    if (isSending) return;
+    const idx = messages.findIndex((m) => m.id === msgId);
+    if (idx < 0 || messages[idx].role !== "assistant") return;
+
+    const target = messages[idx];
+    const isProNow = subscriptionState.isPro;
+    let previousVariants: ChatMessageVariant[] = [];
+    if (isProNow) {
+      if (target.variants && target.variants.length > 0) {
+        previousVariants = [...target.variants];
+      } else if (
+        target.content?.trim() ||
+        target.reasoning?.trim() ||
+        target.artifacts?.length ||
+        target.images?.length ||
+        target.webImages?.length
+      ) {
+        previousVariants = [
+          {
+            content: target.content ?? "",
+            reasoning: target.reasoning,
+            artifacts: target.artifacts,
+            images: target.images,
+            webImages: target.webImages,
+            timestamp: target.timestamp,
+            createdAt: Date.now(),
+          },
+        ];
+      }
+    }
+
+    const baseMessages = messages.slice(0, idx);
+    const currentTime = new Date().toLocaleTimeString(localeFor(lang), { hour: "2-digit", minute: "2-digit" });
+    const freshAssistantMsg: ChatMessage = {
+      id: target.id,
+      role: "assistant",
+      content: "",
+      reasoning: thinking ? "" : undefined,
+      timestamp: currentTime,
+      variants: isProNow ? previousVariants : undefined,
+      activeVariantIndex: isProNow ? previousVariants.length : undefined,
+    };
+
+    setStreamingMsgIds((prev) => new Set(prev).add(freshAssistantMsg.id));
+    if (activeChatId) {
+      setGeneratingChatIds((prev) => new Set(prev).add(activeChatId));
+    }
+    setMessages((prev) => prev.map((m) => (m.id === target.id ? freshAssistantMsg : m)));
+
+    await runAssistantTurn(
+      baseMessages,
+      activeChatId,
+      freshAssistantMsg,
+      idx,
+      [],
+      null,
+      undefined,
+      undefined,
+      { previousVariants, isProVariants: isProNow },
+    );
+  };
+
+  const selectMessageVariant = async (msgId: string, variantIdx: number) => {
+    if (!subscriptionState.isPro) {
+      toast.info(lang === "ru" ? "📜 Возврат к прошлым вариантам при зажатии доступен в IGseek Pro" : "📜 Long-press reply history is available in IGseek Pro");
+      openProfileTab("subscription");
+      return;
+    }
+    const target = messages.find((m) => m.id === msgId);
+    if (!target || target.role !== "assistant" || !target.variants?.length) return;
+    if (variantIdx < 0 || variantIdx >= target.variants.length) return;
+    const chosen = target.variants[variantIdx];
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              content: chosen.content ?? "",
+              reasoning: chosen.reasoning,
+              artifacts: chosen.artifacts,
+              images: chosen.images,
+              webImages: chosen.webImages,
+              timestamp: chosen.timestamp || m.timestamp,
+              activeVariantIndex: variantIdx,
+            }
+          : m,
+      ),
+    );
+
+    if (user && activeChatId) {
+      if (isGuest || user.id === GUEST_ID) {
+        const store = readGuestStore();
+        const list = store.messages[activeChatId] ?? [];
+        store.messages[activeChatId] = list.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                content: chosen.content ?? "",
+                reasoning: chosen.reasoning ?? undefined,
+                artifacts: chosen.artifacts ?? undefined,
+                images: chosen.images ?? undefined,
+                webImages: chosen.webImages ?? undefined,
+                activeVariantIndex: variantIdx,
+              }
+            : m,
+        );
+        writeGuestStore(store);
+      } else {
+        await supabase
+          .from("chat_messages")
+          .update({
+            content: chosen.content ?? "",
+            reasoning: chosen.reasoning ?? null,
+            artifacts: (chosen.artifacts as unknown as Json) ?? null,
+            images: (chosen.images as unknown as Json) ?? null,
+            web_images: (chosen.webImages as unknown as Json) ?? null,
+            active_variant_index: variantIdx,
+          })
+          .eq("id", msgId);
+      }
+    }
+    toast.success(lang === "ru" ? `Выбран вариант #${variantIdx + 1}` : `Selected version #${variantIdx + 1}`);
   };
 
   const deleteMessage = async (msgId: string) => {
@@ -3137,15 +3408,70 @@ function Index() {
                   </span>
                 </button>
                 {messages.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={newChat}
-                    title={t("New chat")}
-                    aria-label={t("New chat")}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer"
-                  >
-                    <SquarePen className="h-4 w-4" />
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!subscriptionState.isPro) {
+                          toast.info(
+                            lang === "ru"
+                              ? "Экспорт чата в Markdown (.md) доступен в IGseek Pro"
+                              : "1-click Markdown (.md) chat export is an IGseek Pro feature",
+                          );
+                          openProfileTab("subscription");
+                          return;
+                        }
+                        const title = activeChatTitle || "IGseek Chat";
+                        const mdLines = [
+                          `# ${title}`,
+                          `_Exported from IGseek · ${new Date().toLocaleString(localeFor(lang))}_`,
+                          "",
+                          ...messages.flatMap((m) => [
+                            `## ${m.role === "user" ? (lang === "ru" ? "Пользователь" : "User") : "IGseek"}`,
+                            m.content || "",
+                            "",
+                          ]),
+                        ];
+                        const blob = new Blob([mdLines.join("\n")], { type: "text/markdown;charset=utf-8" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `${title.replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "igseek-chat"}.md`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        toast.success(lang === "ru" ? "Чат экспортирован в .md" : "Chat exported to .md");
+                      }}
+                      title={
+                        subscriptionState.isPro
+                          ? lang === "ru"
+                            ? "Экспорт чата в .md"
+                            : "Export chat (.md)"
+                          : lang === "ru"
+                            ? "Экспорт в .md (Pro)"
+                            : "Export to .md (Pro)"
+                      }
+                      aria-label={lang === "ru" ? "Экспорт чата в Markdown" : "Export chat to Markdown"}
+                      className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer"
+                    >
+                      <Download className="h-4 w-4" />
+                      {!subscriptionState.isPro && (
+                        <span className="absolute -top-1 -right-1 rounded-full bg-[var(--brand)] px-1 text-[8px] font-bold text-white leading-tight">
+                          PRO
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={newChat}
+                      title={t("New chat")}
+                      aria-label={t("New chat")}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-white/90 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white transition-colors cursor-pointer"
+                    >
+                      <SquarePen className="h-4 w-4" />
+                    </button>
+                  </>
                 )}
               </div>
             )}
@@ -3263,6 +3589,8 @@ function Index() {
                     }
                     onRequireAuth={() => setAuthOpen(true)}
                     onLocked={() => setProfileOpen(true)}
+                    isPro={subscriptionState.isPro}
+                    onOpenSubscription={() => openProfileTab("subscription")}
                     thinking={thinking}
                     onToggleThinking={() => {
                       if (!isAuthed) { setAuthOpen(true); return; }
@@ -3277,6 +3605,72 @@ function Index() {
                         return;
                       }
                       setThinking((v) => !v);
+                    }}
+                    councilMode={councilMode}
+                    onToggleCouncilMode={() => {
+                      if (!isAuthed) { setAuthOpen(true); return; }
+                      if (isLocked) { setProfileOpen(true); return; }
+                      if (!councilMode && !subscriptionState.isPro) {
+                        toast.info(
+                          lang === "ru"
+                            ? "⚔️ Совет ИИ (2 эксперта + синтез) доступен в IGseek Pro"
+                            : "⚔️ AI Council (2 parallel experts + synthesis) is an IGseek Pro feature",
+                        );
+                        openProfileTab("subscription");
+                        return;
+                      }
+                      setCouncilMode((v) => !v);
+                    }}
+                    isEnhancingPrompt={isEnhancingPrompt}
+                    onEnhancePrompt={async () => {
+                      if (!isAuthed) { setAuthOpen(true); return; }
+                      if (isLocked) { setProfileOpen(true); return; }
+                      const draft = input.trim();
+                      if (draft.length < 3 || isEnhancingPrompt) return;
+                      if (!subscriptionState.isPro) {
+                        toast.info(
+                          lang === "ru"
+                            ? "✨ Усиление промпта в 1 клик доступно в IGseek Pro"
+                            : "✨ 1-Click Magic Prompt Enhancer is an IGseek Pro feature",
+                        );
+                        openProfileTab("subscription");
+                        return;
+                      }
+                      setIsEnhancingPrompt(true);
+                      try {
+                        let token = accessTokenRef.current.token || "";
+                        if (!token) {
+                          const { data } = await supabase.auth.getSession();
+                          token = data.session?.access_token ?? "";
+                          if (token) accessTokenRef.current = { token, fetchedAt: Date.now() };
+                        }
+                        const res = await fetch("/api/chat", {
+                          method: "POST",
+                          headers: {
+                            "content-type": "application/json",
+                            ...(token ? { authorization: `Bearer ${token}` } : {}),
+                          },
+                          body: JSON.stringify({
+                            messages: [{ role: "user", content: draft }],
+                            enhancePrompt: true,
+                          }),
+                        });
+                        const data = await res.json().catch(() => null);
+                        if (!res.ok) {
+                          if (res.status === 403) openProfileTab("subscription");
+                          toast.error(data?.error || (lang === "ru" ? "Не удалось усилить промпт" : "Failed to enhance prompt"));
+                          return;
+                        }
+                        const enhanced = typeof data?.enhanced === "string" ? data.enhanced.trim() : "";
+                        if (enhanced) {
+                          setInput(enhanced);
+                          toast.success(lang === "ru" ? "✨ Промпт усилен!" : "✨ Prompt enhanced!");
+                        }
+                      } catch {
+                        toast.error(lang === "ru" ? "Ошибка сети при усилении промпта" : "Network error while enhancing prompt");
+                      } finally {
+                        setIsEnhancingPrompt(false);
+                      }
                     }}
                     webSearch={webSearch}
                     onToggleWebSearch={() => {
@@ -3299,6 +3693,8 @@ function Index() {
                     onEdit={editMessage}
                     onUpdateText={updateMessageText}
                     onDelete={deleteMessage}
+                    onRegenerate={regenerateMessage}
+                    onSelectVariant={selectMessageVariant}
                     messagesEndRef={messagesEndRef}
                   />
 
@@ -3695,6 +4091,47 @@ function Index() {
                       onClick={() => {
                         if (!isAuthed) { setAuthOpen(true); return; }
                         if (isLocked) { setProfileOpen(true); return; }
+                        if (!councilMode && !subscriptionState.isPro) {
+                          toast.info(
+                            lang === "ru"
+                              ? "⚔️ Совет ИИ (2 эксперта + синтез) доступен в IGseek Pro"
+                              : "⚔️ AI Council (2 parallel experts + synthesis) is an IGseek Pro feature",
+                          );
+                          openProfileTab("subscription");
+                          return;
+                        }
+                        setCouncilMode((v) => !v);
+                      }}
+                      title={
+                        lang === "ru"
+                          ? councilMode
+                            ? "Совет ИИ включён (2 эксперта + синтез)"
+                            : "Совет ИИ — Pro (2 эксперта + синтез)"
+                          : councilMode
+                            ? "AI Council on (2 experts + synthesis)"
+                            : "AI Council — Pro (2 experts + synthesis)"
+                      }
+                      aria-label={lang === "ru" ? "Совет ИИ" : "AI Council"}
+                      aria-pressed={councilMode}
+                      className={`flex h-8 sm:h-9 shrink-0 items-center justify-center gap-1 rounded-full px-2 sm:px-2.5 transition-colors cursor-pointer ${
+                        councilMode
+                          ? "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/35 dark:bg-amber-400/15 dark:text-amber-300"
+                          : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
+                      }`}
+                    >
+                      <Users className="h-4 w-4 shrink-0" />
+                      {councilMode && (
+                        <span className="hidden sm:inline text-[11px] font-semibold">
+                          {lang === "ru" ? "Совет ИИ" : "Council"}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!isAuthed) { setAuthOpen(true); return; }
+                        if (isLocked) { setProfileOpen(true); return; }
                         setWebSearch((v) => !v);
                       }}
                       title={webSearch ? t("Web search on") : t("Web search off")}
@@ -3711,6 +4148,70 @@ function Index() {
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1.5 ml-auto">
+                    {input.trim().length >= 3 && !isSending && (
+                      <button
+                        type="button"
+                        disabled={isEnhancingPrompt}
+                        onClick={async () => {
+                          if (!isAuthed) { setAuthOpen(true); return; }
+                          if (isLocked) { setProfileOpen(true); return; }
+                          if (!subscriptionState.isPro) {
+                            toast.info(
+                              lang === "ru"
+                                ? "✨ Усиление промпта в 1 клик доступно в IGseek Pro"
+                                : "✨ 1-Click Magic Prompt Enhancer is an IGseek Pro feature",
+                            );
+                            openProfileTab("subscription");
+                            return;
+                          }
+                          if (isEnhancingPrompt) return;
+                          setIsEnhancingPrompt(true);
+                          try {
+                            let token = accessTokenRef.current.token || "";
+                            if (!token) {
+                              const { data } = await supabase.auth.getSession();
+                              token = data.session?.access_token ?? "";
+                              if (token) accessTokenRef.current = { token, fetchedAt: Date.now() };
+                            }
+                            const res = await fetch("/api/chat", {
+                              method: "POST",
+                              headers: {
+                                "content-type": "application/json",
+                                ...(token ? { authorization: `Bearer ${token}` } : {}),
+                              },
+                              body: JSON.stringify({
+                                messages: [{ role: "user", content: input.trim() }],
+                                enhancePrompt: true,
+                              }),
+                            });
+                            const data = await res.json().catch(() => null);
+                            if (!res.ok) {
+                              if (res.status === 403) openProfileTab("subscription");
+                              toast.error(data?.error || (lang === "ru" ? "Не удалось усилить промпт" : "Failed to enhance prompt"));
+                              return;
+                            }
+                            const enhanced = typeof data?.enhanced === "string" ? data.enhanced.trim() : "";
+                            if (enhanced) {
+                              setInput(enhanced);
+                              toast.success(lang === "ru" ? "✨ Промпт усилен!" : "✨ Prompt enhanced!");
+                            }
+                          } catch {
+                            toast.error(lang === "ru" ? "Ошибка сети при усилении промпта" : "Network error while enhancing prompt");
+                          } finally {
+                            setIsEnhancingPrompt(false);
+                          }
+                        }}
+                        title={lang === "ru" ? "✨ Усилить промпт в 1 клик (Pro)" : "✨ Enhance prompt in 1 click (Pro)"}
+                        aria-label={lang === "ru" ? "Усилить промпт" : "Enhance prompt"}
+                        className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {isEnhancingPrompt ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-4 w-4" />
+                        )}
+                      </button>
+                    )}
                     {isLongTextOverLimit(input) && (
                       <button
                         type="button"
@@ -3987,8 +4488,14 @@ function ChatView({
   onOpenLibraryPicker,
   onRequireAuth,
   onLocked,
+  isPro = false,
+  onOpenSubscription,
   thinking = false,
   onToggleThinking,
+  councilMode = false,
+  onToggleCouncilMode,
+  isEnhancingPrompt = false,
+  onEnhancePrompt,
   webSearch = false,
   onToggleWebSearch,
   isVoiceRecording = false,
@@ -4002,6 +4509,8 @@ function ChatView({
   onEdit,
   onUpdateText,
   onDelete,
+  onRegenerate,
+  onSelectVariant,
   messagesEndRef,
 }: {
   isAuthed: boolean;
@@ -4014,8 +4523,14 @@ function ChatView({
   onOpenLibraryPicker?: () => void;
   onRequireAuth: () => void;
   onLocked: () => void;
+  isPro?: boolean;
+  onOpenSubscription?: () => void;
   thinking?: boolean;
   onToggleThinking?: () => void;
+  councilMode?: boolean;
+  onToggleCouncilMode?: () => void;
+  isEnhancingPrompt?: boolean;
+  onEnhancePrompt?: () => void;
   webSearch?: boolean;
   onToggleWebSearch?: () => void;
   isVoiceRecording?: boolean;
@@ -4029,6 +4544,8 @@ function ChatView({
   onEdit: (msgId: string, newText: string) => void;
   onUpdateText?: (msgId: string, newText: string) => void;
   onDelete: (msgId: string) => void;
+  onRegenerate?: (msgId: string) => void;
+  onSelectVariant?: (msgId: string, variantIdx: number) => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const t = useT();
@@ -4161,9 +4678,14 @@ function ChatView({
             key={m.id}
             message={m}
             isStreamingLast={Boolean(streamingMsgIds?.has(m.id)) || (isSending && i === messages.length - 1 && m.role === "assistant")}
+            isPro={isPro}
+            onOpenSubscription={onOpenSubscription}
             onEdit={onEdit}
             onUpdateText={onUpdateText}
             onDelete={onDelete}
+            onRegenerate={onRegenerate}
+            onSelectVariant={onSelectVariant}
+            disableRegenerate={isSending}
           />
         ))}
         <div ref={messagesEndRef} />
@@ -4325,6 +4847,23 @@ function ChatView({
                     <Brain className="h-4 w-4" />
                   </button>
                 )}
+                {onToggleCouncilMode && (
+                  <button
+                    type="button"
+                    onClick={() => { if (guard()) onToggleCouncilMode(); }}
+                    title={councilMode ? "Совет ИИ включён (2 эксперта + синтез)" : "Совет ИИ — Pro (2 эксперта + синтез)"}
+                    aria-label="AI Council"
+                    aria-pressed={councilMode}
+                    className={`flex h-8 sm:h-9 shrink-0 items-center justify-center gap-1 rounded-full px-2 sm:px-2.5 transition-colors cursor-pointer ${
+                      councilMode
+                        ? "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/35 dark:bg-amber-400/15 dark:text-amber-300"
+                        : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    <Users className="h-4 w-4 shrink-0" />
+                    {councilMode && <span className="hidden sm:inline text-[11px] font-semibold">Совет ИИ</span>}
+                  </button>
+                )}
                 {onToggleWebSearch && (
                   <button
                     type="button"
@@ -4343,6 +4882,22 @@ function ChatView({
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-1.5 ml-auto">
+                {onEnhancePrompt && input.trim().length >= 3 && !isSending && (
+                  <button
+                    type="button"
+                    disabled={isEnhancingPrompt}
+                    onClick={() => { if (guard()) onEnhancePrompt(); }}
+                    title="✨ Усилить промпт в 1 клик (Pro)"
+                    aria-label="Enhance prompt"
+                    className="flex h-8 w-8 sm:h-9 sm:w-9 shrink-0 items-center justify-center rounded-full text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {isEnhancingPrompt ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-4 w-4" />
+                    )}
+                  </button>
+                )}
                 {isLongTextOverLimit(input) && (
                   <button
                     type="button"
@@ -6233,24 +6788,89 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+let activeTtsMessageId: string | null = null;
+const ttsListeners = new Set<(id: string | null) => void>();
+function notifyTtsListeners(id: string | null) {
+  activeTtsMessageId = id;
+  ttsListeners.forEach((fn) => fn(id));
+}
+function cleanTextForSpeech(raw: string): string {
+  return raw
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[#>*_~|-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 4500);
+}
+function toggleSpeechForMessage(msgId: string, rawText: string) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    toast.error("Озвучка не поддерживается в этом браузере");
+    return;
+  }
+  const synth = window.speechSynthesis;
+  if (activeTtsMessageId === msgId) {
+    synth.cancel();
+    notifyTtsListeners(null);
+    return;
+  }
+  synth.cancel();
+  const cleaned = cleanTextForSpeech(rawText);
+  if (!cleaned) return;
+  const utter = new SpeechSynthesisUtterance(cleaned);
+  utter.lang = /[а-яё]/i.test(cleaned) ? "ru-RU" : "en-US";
+  utter.rate = 1.04;
+  utter.onend = () => {
+    if (activeTtsMessageId === msgId) notifyTtsListeners(null);
+  };
+  utter.onerror = () => {
+    if (activeTtsMessageId === msgId) notifyTtsListeners(null);
+  };
+  notifyTtsListeners(msgId);
+  synth.speak(utter);
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
   isStreamingLast,
+  isPro = false,
+  onOpenSubscription,
   onEdit,
   onUpdateText,
   onDelete,
+  onRegenerate,
+  onSelectVariant,
+  disableRegenerate = false,
 }: {
   message: ChatMessage;
   isStreamingLast: boolean;
+  isPro?: boolean;
+  onOpenSubscription?: () => void;
   onEdit?: (id: string, text: string) => void;
   onUpdateText?: (id: string, text: string) => void;
   onDelete?: (id: string) => void;
+  onRegenerate?: (id: string) => void;
+  onSelectVariant?: (id: string, variantIdx: number) => void;
+  disableRegenerate?: boolean;
 }) {
   const t = useT();
+  const lang = useLang();
+  const isRu = lang === "ru";
   const [showReasoning, setShowReasoning] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [longTextOpen, setLongTextOpen] = useState(false);
+  const [variantPickerOpen, setVariantPickerOpen] = useState(false);
   const [copiedInline, setCopiedInline] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(() => activeTtsMessageId === message.id);
+  useEffect(() => {
+    const listener = (id: string | null) => setIsSpeaking(id === message.id);
+    ttsListeners.add(listener);
+    return () => {
+      ttsListeners.delete(listener);
+    };
+  }, [message.id]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{
     mode: "above" | "below" | "floating";
@@ -6268,12 +6888,42 @@ const MessageBubble = memo(function MessageBubble({
   const pointerDownActiveRef = useRef(false);
   const backdropArmedRef = useRef(false);
   const suppressContextMenuUntilRef = useRef(0);
+  const regenHoldTimerRef = useRef<number | null>(null);
+  const regenLongPressedRef = useRef(false);
   const onEditRef = useRef(onEdit);
   const onUpdateTextRef = useRef(onUpdateText);
   const onDeleteRef = useRef(onDelete);
+  const onRegenerateRef = useRef(onRegenerate);
+  const onSelectVariantRef = useRef(onSelectVariant);
   onEditRef.current = onEdit;
   onUpdateTextRef.current = onUpdateText;
   onDeleteRef.current = onDelete;
+  onRegenerateRef.current = onRegenerate;
+  onSelectVariantRef.current = onSelectVariant;
+
+  const variants = message.variants ?? [];
+  const activeVariantIdx =
+    typeof message.activeVariantIndex === "number" && message.activeVariantIndex >= 0 && message.activeVariantIndex < variants.length
+      ? message.activeVariantIndex
+      : Math.max(0, variants.length - 1);
+
+  const openVariantHistory = () => {
+    setMenuOpen(false);
+    if (!isPro) {
+      toast.info(isRu ? "📜 Возврат к прошлым вариантам при зажатии доступен в IGseek Pro" : "📜 Long-press reply history is available in IGseek Pro");
+      onOpenSubscription?.();
+      return;
+    }
+    if (variants.length <= 1) {
+      toast.info(
+        isRu
+          ? "Пока 1 вариант — нажмите «Ещё раз», затем зажмите кнопку для выбора прошлых"
+          : "Only 1 version so far — click Retry, then hold it to switch versions",
+      );
+      return;
+    }
+    setVariantPickerOpen(true);
+  };
 
   const isUser = message.role === "user";
   const displayTextForCount = isUser ? stripAttachmentsForLineCount(message.content) : message.content;
@@ -6512,6 +7162,33 @@ const MessageBubble = memo(function MessageBubble({
           <span>{t("Copy")}</span>
         </button>
       )}
+      {!isUser && onRegenerate && !isStreamingLast && (
+        <button
+          type="button"
+          onClick={() => {
+            setMenuOpen(false);
+            if (!disableRegenerate) onRegenerateRef.current?.(message.id);
+          }}
+          className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-zinc-800 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-white/10 transition-colors whitespace-nowrap cursor-pointer"
+        >
+          <RefreshCw className="h-3.5 w-3.5 text-zinc-500 dark:text-zinc-300" />
+          <span>{isRu ? "Ещё раз" : t("Retry")}</span>
+        </button>
+      )}
+      {!isUser && !isStreamingLast && (isPro ? variants.length > 1 : Boolean(onRegenerate)) && (
+        <button
+          type="button"
+          onClick={openVariantHistory}
+          className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium text-[var(--brand)] hover:bg-[var(--brand-soft)] transition-colors whitespace-nowrap cursor-pointer"
+        >
+          <HistoryIcon className="h-3.5 w-3.5" />
+          <span>
+            {isPro && variants.length > 1
+              ? (isRu ? `Варианты (${variants.length})` : `Versions (${variants.length})`)
+              : (isRu ? "Варианты (Pro)" : "Versions (Pro)")}
+          </span>
+        </button>
+      )}
       {onDelete && (
         <button
           type="button"
@@ -6557,7 +7234,7 @@ const MessageBubble = memo(function MessageBubble({
     !hasAnyCards
   );
   const showFooterRow = !isEditing && !isStreamingLast && Boolean(
-    message.timestamp || copyableText.trim().length > 0 || showLongTextBtn || (isUser && onEdit) || onDelete
+    message.timestamp || copyableText.trim().length > 0 || showLongTextBtn || (isUser && onEdit) || (!isUser && onRegenerate) || onDelete
   );
 
   return (
@@ -6602,6 +7279,103 @@ const MessageBubble = memo(function MessageBubble({
               <AnimatePresence>{menuBarNode}</AnimatePresence>
             </div>
           ),
+          document.body,
+        )}
+
+      {variantPickerOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+            onClick={() => setVariantPickerOpen(false)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-2xl border border-zinc-200 dark:border-white/12 bg-white dark:bg-[#141418] p-4 sm:p-5 shadow-2xl max-h-[82vh] flex flex-col"
+            >
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-zinc-200/80 dark:border-white/10">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
+                    <HistoryIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        {isRu ? "Варианты ответа" : "Reply versions"}
+                      </h3>
+                      <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                        <Crown className="h-2.5 w-2.5" />
+                        Pro
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {isRu
+                        ? "Выберите любую прошлую версию ответа после регенерации"
+                        : "Pick any previous version generated for this reply"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVariantPickerOpen(false)}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mt-3 space-y-2 overflow-y-auto pr-1">
+                {variants.map((variant, vIdx) => {
+                  const isActive = vIdx === activeVariantIdx;
+                  const preview = (variant.content || "").replace(/\s+/g, " ").trim().slice(0, 200);
+                  const imgCount = variant.images?.length ?? 0;
+                  return (
+                    <button
+                      key={`${message.id}-v-${vIdx}`}
+                      type="button"
+                      onClick={() => {
+                        setVariantPickerOpen(false);
+                        if (!isActive) {
+                          onSelectVariantRef.current?.(message.id, vIdx);
+                        }
+                      }}
+                      className={`w-full text-left rounded-xl border p-3 transition-colors cursor-pointer ${
+                        isActive
+                          ? "border-[var(--brand)] bg-[var(--brand-soft)]/50"
+                          : "border-zinc-200/80 dark:border-white/10 bg-zinc-50/70 dark:bg-white/[0.03] hover:bg-zinc-100/80 dark:hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                            {isRu ? `Вариант ${vIdx + 1}` : `Version ${vIdx + 1}`}
+                          </span>
+                          {variant.timestamp && (
+                            <span className="text-[11px] text-zinc-400 dark:text-zinc-500 tabular-nums">
+                              {variant.timestamp}
+                            </span>
+                          )}
+                          {imgCount > 0 && (
+                            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                              · {imgCount} {isRu ? "изобр." : "img"}
+                            </span>
+                          )}
+                        </div>
+                        {isActive && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-[var(--brand)] px-2 py-0.5 text-[10px] font-semibold text-white">
+                            <Check className="h-2.5 w-2.5" />
+                            {isRu ? "Текущий" : "Active"}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300 line-clamp-3">
+                        {preview || (isRu ? "Ответ без текста" : "Non-text reply")}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>,
           document.body,
         )}
 
@@ -6966,7 +7740,7 @@ const MessageBubble = memo(function MessageBubble({
                   {message.timestamp && (
                     <span className="tabular-nums select-none">{message.timestamp}</span>
                   )}
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                     {copyableText.trim().length > 0 && (
                       <button
                         type="button"
@@ -6975,6 +7749,86 @@ const MessageBubble = memo(function MessageBubble({
                         className="flex h-6 w-6 items-center justify-center rounded-md text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-white/[0.07] transition-colors cursor-pointer"
                       >
                         {copiedInline ? <Check className="h-3 w-3 text-brand" /> : <Copy className="h-3 w-3" />}
+                      </button>
+                    )}
+                    {!isUser && copyableText.trim().length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!isPro) {
+                            toast.info("🔊 Озвучка ответов ИИ доступна в IGseek Pro");
+                            onOpenSubscription?.();
+                            return;
+                          }
+                          toggleSpeechForMessage(message.id, copyableText);
+                        }}
+                        title={isSpeaking ? "Остановить озвучку" : "🔊 Озвучить ответ (Pro)"}
+                        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer ${
+                          isSpeaking
+                            ? "text-amber-600 bg-amber-500/15 dark:text-amber-400"
+                            : "text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-white/[0.07]"
+                        }`}
+                      >
+                        {isSpeaking ? <Square className="h-2.5 w-2.5 fill-current" /> : <Volume2 className="h-3 w-3" />}
+                      </button>
+                    )}
+                    {!isUser && onRegenerate && (
+                      <button
+                        type="button"
+                        disabled={disableRegenerate}
+                        onPointerDown={(e) => {
+                          if (e.button !== 0 || disableRegenerate) return;
+                          regenLongPressedRef.current = false;
+                          if (regenHoldTimerRef.current) window.clearTimeout(regenHoldTimerRef.current);
+                          regenHoldTimerRef.current = window.setTimeout(() => {
+                            regenHoldTimerRef.current = null;
+                            regenLongPressedRef.current = true;
+                            openVariantHistory();
+                          }, 420);
+                        }}
+                        onPointerUp={() => {
+                          if (regenHoldTimerRef.current) {
+                            window.clearTimeout(regenHoldTimerRef.current);
+                            regenHoldTimerRef.current = null;
+                          }
+                        }}
+                        onPointerCancel={() => {
+                          if (regenHoldTimerRef.current) {
+                            window.clearTimeout(regenHoldTimerRef.current);
+                            regenHoldTimerRef.current = null;
+                          }
+                        }}
+                        onPointerLeave={() => {
+                          if (regenHoldTimerRef.current) {
+                            window.clearTimeout(regenHoldTimerRef.current);
+                            regenHoldTimerRef.current = null;
+                          }
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (regenHoldTimerRef.current) {
+                            window.clearTimeout(regenHoldTimerRef.current);
+                            regenHoldTimerRef.current = null;
+                          }
+                          openVariantHistory();
+                        }}
+                        onClick={() => {
+                          if (regenLongPressedRef.current) {
+                            regenLongPressedRef.current = false;
+                            return;
+                          }
+                          if (!disableRegenerate) onRegenerateRef.current?.(message.id);
+                        }}
+                        title={
+                          isRu
+                            ? "Ещё раз (зажмите для выбора прошлых вариантов · Pro)"
+                            : "Retry (hold to switch past versions · Pro)"
+                        }
+                        className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-white/[0.07] disabled:opacity-40 transition-colors cursor-pointer select-none"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        <span className="text-[11px]">{isRu ? "Ещё раз" : t("Retry")}</span>
                       </button>
                     )}
                     {onDelete && (
@@ -6988,6 +7842,17 @@ const MessageBubble = memo(function MessageBubble({
                       </button>
                     )}
                   </div>
+                  {!isUser && isPro && variants.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={openVariantHistory}
+                      title={isRu ? "Выбрать вариант ответа" : "Switch reply version"}
+                      className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--brand)] hover:opacity-85 transition-opacity cursor-pointer"
+                    >
+                      <HistoryIcon className="h-2.5 w-2.5" />
+                      <span className="tabular-nums">{activeVariantIdx + 1}/{variants.length}</span>
+                    </button>
+                  )}
                   {showLongTextBtn && (
                     <button
                       type="button"
@@ -7037,7 +7902,12 @@ const MessageBubble = memo(function MessageBubble({
       </div>
     </motion.div>
   );
-}, (prev, next) => prev.message === next.message && prev.isStreamingLast === next.isStreamingLast);
+}, (prev, next) =>
+  prev.message === next.message &&
+  prev.isStreamingLast === next.isStreamingLast &&
+  prev.isPro === next.isPro &&
+  prev.disableRegenerate === next.disableRegenerate
+);
 
 function LockedShell({
   title,
@@ -11072,75 +11942,131 @@ function ProfileModal({
               </div>
 
               <div className="space-y-1.5">
-                <label className="font-medium text-foreground flex items-center gap-1.5">
-                  ✍️ {t("Personality / communication style")}
+                <label className="font-medium text-foreground flex items-center justify-between gap-1.5">
+                  <span className="flex items-center gap-1.5">✍️ {t("Personality / communication style")}</span>
+                  {!isProPlan && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-brand/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand">
+                      <Crown className="h-2.5 w-2.5" /> PRO
+                    </span>
+                  )}
                 </label>
                 <p className="text-[11px] text-muted-foreground">
                   {t("Describe how the AI should communicate — tone, manner, persona")}
                 </p>
                 <textarea
                   value={styleInput}
-                  onChange={(e) => setStyleInput(e.target.value)}
+                  readOnly={!isProPlan}
+                  onClick={() => {
+                    if (!isProPlan) {
+                      toast.info(
+                        lang === "ru"
+                          ? "Свой стиль и системная роль ИИ доступны в IGseek Pro"
+                          : "Custom AI personality & style is an IGseek Pro feature",
+                      );
+                      setActiveTab("subscription");
+                    }
+                  }}
+                  onChange={(e) => {
+                    if (isProPlan) setStyleInput(e.target.value);
+                  }}
                   placeholder={t("E.g.: reply like a cynical noir detective, always brief and sarcastic")}
                   rows={3}
-                  className="w-full rounded-xl border border-border/80 bg-surface-elevated/50 p-3 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-brand transition-colors resize-none"
+                  className={`w-full rounded-xl border border-border/80 bg-surface-elevated/50 p-3 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-brand transition-colors resize-none ${!isProPlan ? "opacity-75 cursor-pointer" : ""}`}
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="font-medium text-foreground flex items-center gap-1.5">
-                  🌡️ {t("Creativity")}
+                <label className="font-medium text-foreground flex items-center justify-between gap-1.5">
+                  <span className="flex items-center gap-1.5">🌡️ {t("Creativity")}</span>
+                  {!isProPlan && (
+                    <span className="text-[10px] font-semibold text-brand">PRO</span>
+                  )}
                 </label>
                 <p className="text-[11px] text-muted-foreground">{t("Precision vs. unpredictability of answers")}</p>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {[
-                    { id: "exact", label: `🎯 ${t("Exact")}` },
-                    { id: "balance", label: `⚖️ ${t("Balance")}` },
-                    { id: "vivid", label: `🎨 ${t("Vivid")}` },
-                    { id: "chaos", label: `🎲 ${t("Chaos")}` },
-                  ].map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setCreativity(item.id)}
-                      className={`rounded-xl border p-2.5 text-center font-medium transition-all cursor-pointer ${
-                        creativity === item.id
-                          ? "border-brand bg-brand/15 text-brand shadow-sm"
-                          : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
+                    { id: "exact", label: `🎯 ${t("Exact")}`, pro: true },
+                    { id: "balance", label: `⚖️ ${t("Balance")}`, pro: false },
+                    { id: "vivid", label: `🎨 ${t("Vivid")}`, pro: true },
+                    { id: "chaos", label: `🎲 ${t("Chaos")}`, pro: true },
+                  ].map((item) => {
+                    const locked = item.pro && !isProPlan;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          if (locked) {
+                            toast.info(
+                              lang === "ru"
+                                ? "Тонкая настройка креативности ИИ доступна в IGseek Pro"
+                                : "Custom AI creativity presets are available in IGseek Pro",
+                            );
+                            setActiveTab("subscription");
+                            return;
+                          }
+                          setCreativity(item.id);
+                        }}
+                        className={`rounded-xl border p-2.5 text-center font-medium transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                          creativity === item.id
+                            ? "border-brand bg-brand/15 text-brand shadow-sm"
+                            : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {locked && <Lock className="h-3 w-3 opacity-60 shrink-0" />}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="font-medium text-foreground flex items-center gap-1.5">
-                  📏 {t("Response length")}
+                <label className="font-medium text-foreground flex items-center justify-between gap-1.5">
+                  <span className="flex items-center gap-1.5">📏 {t("Response length")}</span>
+                  {!isProPlan && (
+                    <span className="text-[10px] font-semibold text-brand">PRO</span>
+                  )}
                 </label>
                 <p className="text-[11px] text-muted-foreground">{t("How much the AI writes per message")}</p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { id: "short", label: `⚡ ${t("Short")}`, hint: t("~1-3 sentences") },
-                    { id: "medium", label: `📝 ${t("Medium")}`, hint: t("~1 paragraph") },
-                    { id: "long", label: `📖 ${t("Long")}`, hint: t("detailed") },
-                    { id: "unlimited", label: `∞ ${t("Unlimited")}`, hint: t("full longform") },
-                  ].map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setLengthOpt(item.id)}
-                      className={`rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
-                        lengthOpt === item.id
-                          ? "border-brand bg-brand/15 text-brand shadow-sm"
-                          : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <div className="font-medium">{item.label}</div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">{item.hint}</div>
-                    </button>
-                  ))}
+                    { id: "short", label: `⚡ ${t("Short")}`, hint: t("~1-3 sentences"), pro: true },
+                    { id: "medium", label: `📝 ${t("Medium")}`, hint: t("~1 paragraph"), pro: false },
+                    { id: "long", label: `📖 ${t("Long")}`, hint: t("detailed"), pro: true },
+                    { id: "unlimited", label: `∞ ${t("Unlimited")}`, hint: t("full longform"), pro: true },
+                  ].map((item) => {
+                    const locked = item.pro && !isProPlan;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          if (locked) {
+                            toast.info(
+                              lang === "ru"
+                                ? "Выбор длины ответов доступен в IGseek Pro"
+                                : "Custom response length modes are available in IGseek Pro",
+                            );
+                            setActiveTab("subscription");
+                            return;
+                          }
+                          setLengthOpt(item.id);
+                        }}
+                        className={`rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
+                          lengthOpt === item.id
+                            ? "border-brand bg-brand/15 text-brand shadow-sm"
+                            : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <div className="font-medium flex items-center justify-between gap-1">
+                          <span>{item.label}</span>
+                          {locked && <Lock className="h-3 w-3 opacity-60 shrink-0" />}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">{item.hint}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -11150,26 +12076,47 @@ function ProfileModal({
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {[
-                    { id: "universal", name: t("Universal"), desc: t("Direct, witty, versatile") },
-                    { id: "coder", name: t("Code"), desc: t("Programming, debugging") },
-                    { id: "mentor", name: t("Learning"), desc: t("Explains & takes structured notes") },
-                    { id: "psy", name: t("Psychologist"), desc: t("Brutal honesty, no sugarcoating") },
-                    { id: "hacker", name: t("Hacker"), desc: t("Cybersecurity, OSINT, deeply technical") },
-                  ].map((agentItem) => (
-                    <button
-                      key={agentItem.id}
-                      type="button"
-                      onClick={() => setCurrentAgent(agentItem.id as any)}
-                      className={`rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
-                        currentAgent === agentItem.id
-                          ? "border-brand bg-brand/15 text-brand shadow-sm"
-                          : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <div className="font-medium">{agentItem.name}</div>
-                      <div className="text-[10px] text-muted-foreground truncate">{agentItem.desc}</div>
-                    </button>
-                  ))}
+                    { id: "universal", name: t("Universal"), desc: t("Direct, witty, versatile"), pro: false },
+                    { id: "mentor", name: t("Learning"), desc: t("Explains & takes structured notes"), pro: false },
+                    { id: "psy", name: t("Psychologist"), desc: t("Brutal honesty, no sugarcoating"), pro: false },
+                    { id: "coder", name: t("Code"), desc: t("Programming, debugging"), pro: true },
+                    { id: "hacker", name: t("Hacker"), desc: t("Cybersecurity, OSINT, deeply technical"), pro: true },
+                  ].map((agentItem) => {
+                    const locked = agentItem.pro && !isProPlan;
+                    return (
+                      <button
+                        key={agentItem.id}
+                        type="button"
+                        onClick={() => {
+                          if (locked) {
+                            toast.info(
+                              lang === "ru"
+                                ? `Спецагент «${agentItem.name}» доступен в IGseek Pro`
+                                : `${agentItem.name} Pro agent is available in IGseek Pro`,
+                            );
+                            setActiveTab("subscription");
+                            return;
+                          }
+                          setCurrentAgent(agentItem.id as any);
+                        }}
+                        className={`rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
+                          currentAgent === agentItem.id
+                            ? "border-brand bg-brand/15 text-brand shadow-sm"
+                            : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        <div className="font-medium flex items-center justify-between gap-1">
+                          <span>{agentItem.name}</span>
+                          {locked && (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-brand/15 px-1.5 py-0.5 text-[9px] font-bold text-brand">
+                              <Lock className="h-2.5 w-2.5" /> PRO
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground truncate">{agentItem.desc}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -11230,17 +12177,35 @@ function ProfileModal({
                 <div className="grid grid-cols-3 gap-2 pt-1">
                   {ACCENT_PRESETS.map((item) => {
                     const isSelected = accent === item.id;
+                    const isFreeAccent = item.id === "default" || item.id === "black" || item.id === "blue";
+                    const isLockedAccent = !isFreeAccent && !isProPlan;
                     return (
                       <button
                         key={item.id}
                         type="button"
-                        onClick={() => setAccent(item.id)}
-                        className={`rounded-xl border p-2.5 flex flex-col items-center justify-center gap-2 transition-all cursor-pointer text-center ${
+                        onClick={() => {
+                          if (isLockedAccent) {
+                            toast.info(
+                              lang === "ru"
+                                ? "Премиальные цветовые акценты доступны в IGseek Pro"
+                                : "Premium accent color themes are available in IGseek Pro",
+                            );
+                            setActiveTab("subscription");
+                            return;
+                          }
+                          setAccent(item.id);
+                        }}
+                        className={`relative rounded-xl border p-2.5 flex flex-col items-center justify-center gap-2 transition-all cursor-pointer text-center ${
                           isSelected
                             ? "border-brand bg-brand/15 text-brand shadow-sm ring-1 ring-brand/50 font-semibold"
                             : "border-border/70 bg-surface-elevated/40 text-muted-foreground hover:text-foreground"
                         }`}
                       >
+                        {isLockedAccent && (
+                          <span className="absolute top-1.5 right-1.5 rounded-full bg-brand/15 px-1 text-[8px] font-bold text-brand">
+                            PRO
+                          </span>
+                        )}
                         <span
                           className="h-5 w-5 rounded-full border border-white/20 shadow-sm shrink-0"
                           style={{ background: item.swatch }}

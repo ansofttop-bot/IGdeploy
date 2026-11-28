@@ -162,6 +162,8 @@ export interface SyncedChatMessageRow {
   refusals?: any[] | null;
   tab_transitions?: any[] | null;
   memory_saved?: boolean | null;
+  variants?: any[] | null;
+  active_variant_index?: number | null;
   position: number;
   created_at: string;
 }
@@ -482,6 +484,11 @@ export function subscribeCloudChatMessages(
         refusals: Array.isArray(data.refusals) ? data.refusals : null,
         tab_transitions: Array.isArray(data.tab_transitions ?? data.tabTransitions) ? (data.tab_transitions ?? data.tabTransitions) : null,
         memory_saved: Boolean(data.memory_saved ?? data.memorySaved ?? false),
+        variants: Array.isArray(data.variants) ? data.variants : null,
+        active_variant_index:
+          typeof (data.active_variant_index ?? data.activeVariantIndex) === "number"
+            ? (data.active_variant_index ?? data.activeVariantIndex)
+            : null,
         position: typeof data.position === "number" ? data.position : 0,
         created_at: String(data.created_at || data.createdAt || new Date().toISOString()),
       });

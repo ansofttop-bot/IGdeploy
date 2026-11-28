@@ -8,6 +8,8 @@ import android.net.Uri
 import android.provider.CalendarContract
 import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,9 +24,11 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +55,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,6 +67,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -82,9 +88,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -134,6 +142,85 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val isEn = state.layoutPrefs.language == "en"
     var showModelSheet by remember { mutableStateOf(false) }
+    var variantPickerMessageId by remember { mutableStateOf<String?>(null) }
+
+    // Native Android TTS (Pro Voice Read-Aloud)
+    var speakingMessageId by remember { mutableStateOf<String?>(null) }
+    var ttsReady by remember { mutableStateOf(false) }
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    val ttsEngine = remember(context) {
+        TextToSpeech(context.applicationContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                mainHandler.post { ttsReady = true }
+            }
+        }
+    }
+    LaunchedEffect(ttsReady, ttsEngine) {
+        if (ttsReady) {
+            ttsEngine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) {
+                    mainHandler.post {
+                        if (speakingMessageId == utteranceId) speakingMessageId = null
+                    }
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    mainHandler.post {
+                        if (speakingMessageId == utteranceId) speakingMessageId = null
+                    }
+                }
+            })
+        }
+    }
+    DisposableEffect(ttsEngine) {
+        onDispose {
+            runCatching {
+                ttsEngine.stop()
+                ttsEngine.shutdown()
+            }
+        }
+    }
+    fun toggleSpeakMessage(msgId: String, rawText: String) {
+        if (!state.subscription.isPro) {
+            viewModel.showToast(
+                if (isEn) "🔊 Voice Read-Aloud is an IGseek Pro feature"
+                else "🔊 Озвучка ответов ИИ доступна в IGseek Pro"
+            )
+            viewModel.openProSheet()
+            return
+        }
+        if (speakingMessageId == msgId) {
+            runCatching { ttsEngine.stop() }
+            speakingMessageId = null
+            return
+        }
+        if (!ttsReady) {
+            viewModel.showToast(if (isEn) "Voice engine initializing…" else "Озвучка запускается, нажмите ещё раз")
+            return
+        }
+        val clean = rawText
+            .replace(Regex("```[\\s\\S]*?```"), " ")
+            .replace(Regex("`([^`]+)`"), "$1")
+            .replace(Regex("!\\[[^\\]]*\\]\\([^)]*\\)"), " ")
+            .replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+            .replace(Regex("[#>*_~|-]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(3800)
+        if (clean.isBlank()) return
+        val hasCyrillic = clean.any { it in '\u0400'..'\u04FF' }
+        val targetLocale = if (hasCyrillic) Locale("ru", "RU") else Locale.US
+        runCatching {
+            ttsEngine.language = targetLocale
+            ttsEngine.setSpeechRate(1.03f)
+            speakingMessageId = msgId
+            ttsEngine.speak(clean, TextToSpeech.QUEUE_FLUSH, null, msgId)
+        }.onFailure {
+            speakingMessageId = null
+            viewModel.showToast(if (isEn) "Unable to start speech playback" else "Не удалось запустить озвучку")
+        }
+    }
 
     val activeChat = state.chats.firstOrNull { it.id == state.activeChatId }
     val isChatSaved = activeChat?.isSaved == true
@@ -250,6 +337,42 @@ fun ChatScreen(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.messages.isNotEmpty()) {
+                    IconButton(
+                        onClick = {
+                            if (!state.subscription.isPro) {
+                                viewModel.showToast(
+                                    if (isEn) "1-click Markdown (.md) chat export is an IGseek Pro feature"
+                                    else "Экспорт чата в Markdown (.md) доступен в IGseek Pro"
+                                )
+                                viewModel.openProSheet()
+                            } else {
+                                val md = viewModel.buildCurrentChatMarkdown()
+                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/markdown"
+                                    putExtra(Intent.EXTRA_SUBJECT, activeChat?.title ?: "IGseek Chat")
+                                    putExtra(Intent.EXTRA_TEXT, md)
+                                }
+                                runCatching {
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            shareIntent,
+                                            if (isEn) "Export chat (.md)" else "Экспорт чата (.md)"
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = LucideIcons.Share2,
+                            contentDescription = "Export Markdown",
+                            tint = if (state.subscription.isPro) palette.textMuted else palette.brand,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
                 IconButton(
                     onClick = { viewModel.toggleSaveChat(state.activeChatId) },
                     modifier = Modifier.size(38.dp)
@@ -322,14 +445,33 @@ fun ChatScreen(
                     ChatMessageRow(
                         msg = msg,
                         isLastAssistant = msg.id == lastAssistantId && !state.isStreaming,
+                        isSpeaking = speakingMessageId == msg.id,
+                        isPro = state.subscription.isPro,
                         pendingImage = state.pendingImage?.takeIf { it.messageId == msg.id },
                         isEn = isEn,
                         onCopy = {
                             clipboard.setText(AnnotatedString(msg.content))
                             viewModel.showToast(if (isEn) "Copied" else "Скопировано")
                         },
+                        onSpeakToggle = { toggleSpeakMessage(msg.id, msg.content) },
                         onBookmark = { viewModel.toggleBookmarkMessage(msg.id) },
-                        onRegenerate = { viewModel.regenerateLastReply() },
+                        onRegenerate = { viewModel.regenerateLastReply(msg.id) },
+                        onOpenVariants = {
+                            if (!state.subscription.isPro) {
+                                viewModel.showToast(
+                                    if (isEn) "📜 Long-press version history is an IGseek Pro feature"
+                                    else "📜 Возврат к прошлым вариантам при зажатии доступен в IGseek Pro"
+                                )
+                                viewModel.openProSheet()
+                            } else if (msg.variants.size > 1) {
+                                variantPickerMessageId = msg.id
+                            } else {
+                                viewModel.showToast(
+                                    if (isEn) "Only 1 version saved yet — tap Retry to generate another, then long-press to switch"
+                                    else "Пока только 1 вариант — нажмите «Ещё раз», а потом зажмите кнопку для выбора прошлых"
+                                )
+                            }
+                        },
                         onShare = {
                             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
@@ -374,7 +516,9 @@ fun ChatScreen(
             onRemoveAttachment = { viewModel.removeAttachment(it) },
             onToggleWeb = { viewModel.toggleWebSearch() },
             onToggleReasoning = { viewModel.toggleReasoning() },
+            onToggleCouncil = { viewModel.toggleCouncilMode() },
             onToggleImage = { viewModel.toggleImageMode() },
+            onEnhancePrompt = { viewModel.enhanceDraftPrompt() },
             onVoiceClick = {
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -387,6 +531,122 @@ fun ChatScreen(
             onSend = { viewModel.sendMessage() },
             onStop = { viewModel.stopStreaming() }
         )
+    }
+
+    // Regenerated Reply Variants Picker Bottom Sheet (opened by long-pressing "Ещё раз" or tapping variant counter)
+    val pickerMsg = variantPickerMessageId?.let { id -> state.messages.firstOrNull { it.id == id } }
+    if (pickerMsg != null && pickerMsg.variants.size > 1) {
+        ModalBottomSheet(
+            onDismissRequest = { variantPickerMessageId = null },
+            containerColor = palette.sidebarBg,
+            contentColor = palette.textPrimary
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 18.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = LucideIcons.RefreshCw,
+                        contentDescription = null,
+                        tint = palette.brand,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = if (isEn) "Reply versions (${pickerMsg.variants.size})" else "Варианты ответа (${pickerMsg.variants.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textPrimary
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = if (isEn) "Tap any version to restore it in the chat" else "Нажмите на нужный вариант, чтобы вернуться к нему",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textMuted
+                )
+                Spacer(Modifier.height(12.dp))
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 14.dp)
+                ) {
+                    val timeFmt = remember { DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()) }
+                    pickerMsg.variants.forEachIndexed { idx, variant ->
+                        val isActive = idx == pickerMsg.activeVariantIndex
+                        val timeStr = runCatching { timeFmt.format(Instant.ofEpochMilli(variant.createdAtMs)) }.getOrDefault("")
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable {
+                                    viewModel.selectMessageVariant(pickerMsg.id, idx)
+                                    variantPickerMessageId = null
+                                },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isActive) palette.brandSoft else palette.glassBg,
+                            border = BorderStroke(1.dp, if (isActive) palette.brandBorder else palette.glassBorder)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isEn) "Version ${idx + 1}" else "Вариант ${idx + 1}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isActive) palette.brand else palette.textPrimary
+                                        )
+                                        if (timeStr.isNotBlank()) {
+                                            Text(
+                                                text = timeStr,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = palette.textMuted
+                                            )
+                                        }
+                                    }
+                                    if (isActive) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(14.dp))
+                                            Text(
+                                                text = if (isEn) "Active" else "Текущий",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.brand
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = variant.content.replace("\n", " ").trim().ifBlank {
+                                        if (variant.images.isNotEmpty()) (if (isEn) "[Image]" else "[Изображение]") else "…"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.textSecondary,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Model & Agent Selector Bottom Sheet
@@ -499,8 +759,15 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     AgentRoleId.entries.forEach { agent ->
+                        val isProAgent = agent == AgentRoleId.CODER || agent == AgentRoleId.HACKER || agent == AgentRoleId.CREATIVE
+                        val isLockedAgent = isProAgent && !state.subscription.isPro
+                        val labelText = if (isLockedAgent) {
+                            "${agent.label(state.layoutPrefs.language)} · PRO"
+                        } else {
+                            agent.label(state.layoutPrefs.language)
+                        }
                         IGseekGlassChip(
-                            label = agent.label(state.layoutPrefs.language),
+                            label = labelText,
                             selected = state.selectedAgent == agent,
                             onClick = { viewModel.setAgent(agent) }
                         )
@@ -621,15 +888,20 @@ private fun ChatWelcomeHero(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatMessageRow(
     msg: ChatMessageItem,
     isLastAssistant: Boolean,
+    isSpeaking: Boolean,
+    isPro: Boolean,
     pendingImage: PendingImageState?,
     isEn: Boolean,
     onCopy: () -> Unit,
+    onSpeakToggle: () -> Unit,
     onBookmark: () -> Unit,
     onRegenerate: () -> Unit,
+    onOpenVariants: () -> Unit,
     onShare: () -> Unit,
     onSaveImage: (GeneratedImageItem) -> Unit,
     onOpenUrl: (String) -> Unit,
@@ -638,6 +910,7 @@ private fun ChatMessageRow(
     onConfirmGmailEvent: (GmailEventItem) -> Unit
 ) {
     val palette = LocalIGseekPalette.current
+    val haptic = LocalHapticFeedback.current
     val isUser = msg.role == "user"
     var showReasoning by remember(msg.id) { mutableStateOf(false) }
 
@@ -906,7 +1179,24 @@ private fun ChatMessageRow(
                         modifier = Modifier.clickable(onClick = onCopy)
                     ) {
                         Icon(LucideIcons.Copy, contentDescription = "Copy", tint = palette.textMuted, modifier = Modifier.size(13.dp))
-                        Text("Копировать", style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
+                        Text(if (isEn) "Copy" else "Копировать", style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clickable(onClick = onSpeakToggle)
+                    ) {
+                        Icon(
+                            imageVector = if (isSpeaking) LucideIcons.Square else LucideIcons.AudioLines,
+                            contentDescription = "Speak",
+                            tint = if (isSpeaking) palette.brand else palette.textMuted,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = if (isSpeaking) (if (isEn) "Stop" else "Стоп") else (if (isEn) "Listen" else "Озвучить"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isSpeaking) palette.brand else palette.textMuted
+                        )
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -929,10 +1219,37 @@ private fun ChatMessageRow(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.clickable(onClick = onRegenerate)
+                            modifier = Modifier.combinedClickable(
+                                onClick = onRegenerate,
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onOpenVariants()
+                                }
+                            )
                         ) {
                             Icon(LucideIcons.RefreshCw, contentDescription = "Retry", tint = palette.textMuted, modifier = Modifier.size(13.dp))
-                            Text("Ещё раз", style = MaterialTheme.typography.labelSmall, color = palette.textMuted)
+                            Text(
+                                text = if (isPro && msg.variants.size > 1) {
+                                    "${if (isEn) "Retry" else "Ещё раз"} ${msg.activeVariantIndex + 1}/${msg.variants.size}"
+                                } else {
+                                    if (isEn) "Retry" else "Ещё раз"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isPro && msg.variants.size > 1) palette.brand else palette.textMuted
+                            )
+                        }
+                    } else if (isPro && msg.variants.size > 1) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.clickable(onClick = onOpenVariants)
+                        ) {
+                            Icon(LucideIcons.RefreshCw, contentDescription = "Versions", tint = palette.brand, modifier = Modifier.size(13.dp))
+                            Text(
+                                text = "${msg.activeVariantIndex + 1}/${msg.variants.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.brand
+                            )
                         }
                     }
                     Icon(
@@ -960,7 +1277,9 @@ private fun ChatGlassComposer(
     onRemoveAttachment: (String) -> Unit,
     onToggleWeb: () -> Unit,
     onToggleReasoning: () -> Unit,
+    onToggleCouncil: () -> Unit,
     onToggleImage: () -> Unit,
+    onEnhancePrompt: () -> Unit,
     onVoiceClick: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit
@@ -970,7 +1289,7 @@ private fun ChatGlassComposer(
     val canSend = !state.isStreaming && (state.draftInput.isNotBlank() || state.pendingAttachments.isNotEmpty())
     var showToolsMenu by remember { mutableStateOf(false) }
 
-    val hasActiveModes = state.webSearchEnabled || state.reasoningEnabled || state.imageModeEnabled
+    val hasActiveModes = state.webSearchEnabled || state.reasoningEnabled || state.councilModeEnabled || state.imageModeEnabled
 
     Column(
         modifier = Modifier
@@ -995,9 +1314,16 @@ private fun ChatGlassComposer(
                 }
                 if (state.reasoningEnabled) {
                     ActiveModeBadge(
-                        icon = LucideIcons.Sparkles,
+                        icon = LucideIcons.Brain,
                         label = if (isEn) "Thinking" else "Мышление",
                         onClear = onToggleReasoning
+                    )
+                }
+                if (state.councilModeEnabled) {
+                    ActiveModeBadge(
+                        icon = LucideIcons.Users,
+                        label = if (isEn) "AI Council" else "Совет ИИ",
+                        onClear = onToggleCouncil
                     )
                 }
                 if (state.imageModeEnabled) {
@@ -1110,14 +1436,25 @@ private fun ChatGlassComposer(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(if (isEn) "Deep Thinking" else "Глубокое мышление", color = palette.textPrimary) },
-                                    leadingIcon = { Icon(LucideIcons.Sparkles, contentDescription = null, tint = if (state.reasoningEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    text = { Text(if (isEn) "Deep Thinking (Pro)" else "Глубокое мышление (Pro)", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Brain, contentDescription = null, tint = if (state.reasoningEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
                                     trailingIcon = if (state.reasoningEnabled) {
                                         { Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp)) }
                                     } else null,
                                     onClick = {
                                         showToolsMenu = false
                                         onToggleReasoning()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isEn) "⚔️ AI Council (Pro)" else "⚔️ Совет ИИ (Pro)", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(LucideIcons.Users, contentDescription = null, tint = if (state.councilModeEnabled) palette.brand else palette.textSecondary, modifier = Modifier.size(17.dp)) },
+                                    trailingIcon = if (state.councilModeEnabled) {
+                                        { Icon(LucideIcons.Check, contentDescription = null, tint = palette.brand, modifier = Modifier.size(15.dp)) }
+                                    } else null,
+                                    onClick = {
+                                        showToolsMenu = false
+                                        onToggleCouncil()
                                     }
                                 )
                                 DropdownMenuItem(
@@ -1162,6 +1499,35 @@ private fun ChatGlassComposer(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        if (state.draftInput.trim().length >= 3 && !state.isStreaming) {
+                            Surface(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = !state.isEnhancingPrompt, onClick = onEnhancePrompt),
+                                shape = CircleShape,
+                                color = palette.brandSoft,
+                                border = BorderStroke(1.dp, palette.brandBorder)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    if (state.isEnhancingPrompt) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(15.dp),
+                                            strokeWidth = 2.dp,
+                                            color = palette.brand
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = LucideIcons.Sparkles,
+                                            contentDescription = if (isEn) "Enhance prompt (Pro)" else "Усилить промпт (Pro)",
+                                            tint = palette.brand,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         Surface(
                             modifier = Modifier
                                 .size(36.dp)

@@ -186,15 +186,15 @@ export function SubscriptionPanel({
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{isRu ? "3 фото в сутки (базовая модель)" : "3 photo generations / 24h (fast model)"}</span>
+              <span>{isRu ? "5 фото в сутки (базовая модель)" : "5 photo generations / 24h (fast model)"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{isRu ? "2 запуска Flow и 2 сборки Engine / 12ч" : "2 Flow runs & 2 Engine builds / 12h"}</span>
+              <span>{isRu ? "4 запуска Flow и 4 сборки Engine / 12ч" : "4 Flow runs & 4 Engine builds / 12h"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />
-              <span>{isRu ? "До 5 записей в облачной памяти" : "Up to 5 saved Cloud Memories"}</span>
+              <span>{isRu ? "До 12 фактов в облачной памяти" : "Up to 12 saved Cloud Memories"}</span>
             </li>
           </ul>
         </div>
@@ -212,19 +212,23 @@ export function SubscriptionPanel({
           <ul className="space-y-1.5 text-[11px] text-foreground/90">
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{isRu ? "Безлимит на Фото, Flow, Engine и Память" : "Unlimited Photos, Flow, Engine & Memory"}</span>
+              <span>{isRu ? "⚔️ Совет ИИ (синтез ответа из 2 независимых экспертов)" : "⚔️ AI Council (2-expert parallel synthesis)"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{isRu ? "Режим Deep Reasoning (глубокое мышление)" : "Exclusive Deep Reasoning mode"}</span>
+              <span>{isRu ? "✨ Усиление промпта в 1 клик + 🔊 Озвучка ответов ИИ" : "✨ 1-click Prompt Enhancer + 🔊 Voice Read-Aloud"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{isRu ? "Редактирование фото по референсу + Pro модель" : "Reference photo editing + Pro Studio model"}</span>
+              <span>{isRu ? "Безлимит Фото, Flow, Engine, Память + Deep Reasoning" : "Unlimited Photos, Flow, Engine, Memory + Deep Reasoning"}</span>
             </li>
             <li className="flex items-start gap-1.5">
               <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
-              <span>{isRu ? "Режим Flow Autopilot и флагманские модели" : "Flow Autopilot mode & flagship AI models"}</span>
+              <span>{isRu ? "📜 История вариантов ответа — зажатие «Ещё раз»" : "📜 Reply version history — long-press Retry"}</span>
+            </li>
+            <li className="flex items-start gap-1.5">
+              <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />
+              <span>{isRu ? "Редактирование фото по референсу, Autopilot, экспорт .md" : "Reference photo editing, Autopilot & .md export"}</span>
             </li>
           </ul>
         </div>

@@ -1,12 +1,14 @@
 package app.igseek.mobile
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
 import android.util.Base64
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -63,6 +65,29 @@ class MainActivity : FragmentActivity() {
             IGseekNotificationManager.ensureChannels(this)
             viewModel.showToast(if (isEn) "Push notifications enabled" else "Push-уведомления включены")
         }
+    }
+
+    private val widgetVoiceLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            val spoken = res.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spoken.isNullOrBlank()) {
+                viewModel.appendVoiceTranscript(spoken)
+            }
+        }
+    }
+
+    private fun launchWidgetVoiceInput() {
+        val isEn = viewModel.state.value.layoutPrefs.language == "en"
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (isEn) "en-US" else "ru-RU")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, if (isEn) "Ask IGseek…" else "Скажите запрос для IGseek…")
+        }
+        runCatching { widgetVoiceLauncher.launch(intent) }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -271,8 +296,28 @@ class MainActivity : FragmentActivity() {
             return
         }
 
+        val widgetAction = intent.getStringExtra(IGseekQuickWidget.EXTRA_WIDGET_ACTION)
+        val widgetChatId = intent.getStringExtra(IGseekQuickWidget.EXTRA_WIDGET_CHAT_ID)
         val tabKey = intent.getStringExtra(IGseekQuickWidget.EXTRA_START_TAB)
-        if (!tabKey.isNullOrBlank()) viewModel.selectTabByKey(tabKey)
+        if (!widgetAction.isNullOrBlank()) {
+            intent.removeExtra(IGseekQuickWidget.EXTRA_WIDGET_ACTION)
+            intent.removeExtra(IGseekQuickWidget.EXTRA_WIDGET_CHAT_ID)
+            when (widgetAction) {
+                IGseekQuickWidget.ACTION_NEW_CHAT -> viewModel.openFreshChatFromWidget()
+                IGseekQuickWidget.ACTION_IMAGE_MODE -> viewModel.openImageModeFromWidget()
+                IGseekQuickWidget.ACTION_VOICE -> {
+                    viewModel.openFreshChatFromWidget()
+                    launchWidgetVoiceInput()
+                }
+                IGseekQuickWidget.ACTION_OPEN_CHAT -> {
+                    if (!widgetChatId.isNullOrBlank()) viewModel.openChatFromWidget(widgetChatId)
+                    else viewModel.selectTabByKey("chat")
+                }
+                else -> if (!tabKey.isNullOrBlank()) viewModel.selectTabByKey(tabKey)
+            }
+        } else if (!tabKey.isNullOrBlank()) {
+            viewModel.selectTabByKey(tabKey)
+        }
 
         if (intent.action == Intent.ACTION_SEND) {
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)

@@ -733,17 +733,21 @@ private fun ProSubscriptionSheet(
             ) {
                 val perks = if (isEn) {
                     listOf(
-                        "Unlimited Photos, Flow, Engine & Cloud Memory (Free: 3 photos/24h, 2 Flow & 2 Engine/12h, 5 memories; Chat always unlimited)",
-                        "Exclusive Deep Reasoning mode & flagship Pro AI models",
-                        "Reference photo editing & Pro Studio image generation",
-                        "30 days per key · no auto-charges"
+                        "⚔️ AI Council — 2 parallel expert minds analyze your question and synthesize one verified Master Answer",
+                        "✨ 1-Click Magic Prompt Enhancer — turns a rough 3-word draft into an expert prompt right in the chat bar",
+                        "🔊 Voice Read-Aloud — listen to any IGseek answer aloud in RU/EN with 1 tap",
+                        "📜 Reply Version History — long-press Retry after regeneration to switch back to any previous reply",
+                        "Unlimited Photos, Flow, Engine & Cloud Memory (Free: 5 photos/24h, 4 Flow & 4 Engine/12h, 12 memories; Chat always unlimited)",
+                        "Deep Reasoning, Pro Agents (Code, Hacker, Creative), reference photo editing & 30 days per key"
                     )
                 } else {
                     listOf(
-                        "Безлимит на Фото, Flow, Engine и Память (Free: 3 фото/24ч, 2 Flow и 2 Engine/12ч, 5 фактов памяти; Чат всегда безлимитный)",
-                        "Режим Deep Reasoning (глубокое мышление) и флагманские модели",
-                        "Редактирование фото по референсу и Pro Studio-модель фото",
-                        "30 дней по ключу · без автосписаний"
+                        "⚔️ Совет ИИ — 2 независимых эксперта одновременно разбирают задачу и собирают единый выверенный ответ",
+                        "✨ Усиление промпта в 1 клик — превращает черновик из пары слов в сильный экспертный запрос прямо в строке ввода",
+                        "🔊 Озвучка ответов ИИ — слушайте любой ответ IGseek вслух одним нажатием (RU/EN)",
+                        "📜 История вариантов ответа — зажмите «Ещё раз» после регенерации, чтобы вернуться к прошлым ответам",
+                        "Безлимит на Фото, Flow, Engine и Память (Free: 5 фото/24ч, 4 Flow и 4 Engine/12ч, 12 фактов памяти; Чат всегда безлимитный)",
+                        "Deep Reasoning, спецагенты (Code, Hacker, Creative), редактирование фото по референсу · 30 дней по ключу"
                     )
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

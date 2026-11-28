@@ -108,10 +108,11 @@ export function RegistrationProOfferModal({
           </div>
           <ul className="space-y-1.5 text-xs text-foreground/90">
             {[
-              t("Unlimited Photos, Flow, Engine & Cloud Memory"),
-              t("Exclusive Deep Reasoning mode & flagship AI models"),
-              t("Reference photo editing & Studio image generation"),
-              t("Flow Autopilot mode — no auto-charges"),
+              t("AI Council mode: 2 parallel experts synthesize a verified master answer"),
+              t("1-click Magic Prompt Enhancer & AI Voice Read-Aloud on every reply"),
+              t("Long-press Retry to switch back to past reply versions"),
+              t("Unlimited Photos, Flow, Engine, Cloud Memory & Deep Reasoning"),
+              t("Reference photo editing, Flow Autopilot, Pro Agents & .md export"),
             ].map((feature) => (
               <li key={feature} className="flex items-start gap-2">
                 <Check className="h-3.5 w-3.5 text-brand shrink-0 mt-0.5" />

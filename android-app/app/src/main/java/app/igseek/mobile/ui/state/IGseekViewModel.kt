@@ -24,6 +24,7 @@ import app.igseek.mobile.data.models.GmailEventItem
 import app.igseek.mobile.data.models.IGseekTab
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
+import app.igseek.mobile.data.models.MessageVariant
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
 import app.igseek.mobile.data.models.ProjectFolder
@@ -32,6 +33,7 @@ import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
 import app.igseek.mobile.data.models.TaskEventItem
 import app.igseek.mobile.notifications.IGseekNotificationManager
+import app.igseek.mobile.widget.IGseekQuickWidget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +44,7 @@ import kotlinx.coroutines.launch
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
@@ -70,6 +73,8 @@ data class IGseekUiState(
     val selectedAgent: AgentRoleId = AgentRoleId.UNIVERSAL,
     val webSearchEnabled: Boolean = false,
     val reasoningEnabled: Boolean = false,
+    val councilModeEnabled: Boolean = false,
+    val isEnhancingPrompt: Boolean = false,
     val imageModeEnabled: Boolean = false,
     val isStreaming: Boolean = false,
     val pendingImage: PendingImageState? = null,
@@ -98,10 +103,10 @@ data class PendingImageState(
 class IGseekViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
-        const val FREE_IMAGE_LIMIT = 3
-        const val FREE_FLOW_LIMIT = 2
-        const val FREE_ENGINE_LIMIT = 2
-        const val FREE_MEMORY_LIMIT = 5
+        const val FREE_IMAGE_LIMIT = 5
+        const val FREE_FLOW_LIMIT = 4
+        const val FREE_ENGINE_LIMIT = 4
+        const val FREE_MEMORY_LIMIT = 12
         const val IMAGE_QUOTA_WINDOW_MS = 24L * 60L * 60L * 1000L
         const val WORK_QUOTA_WINDOW_MS = 12L * 60L * 60L * 1000L
     }
@@ -768,6 +773,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         val next = transform(_state.value.layoutPrefs)
         store.saveLayoutPrefs(next)
         _state.update { it.copy(layoutPrefs = next) }
+        IGseekQuickWidget.requestUpdate(app)
         viewModelScope.launch {
             val s = getFreshSession()
             if (s != null && !s.isGuest && _state.value.isOnline) {
@@ -784,9 +790,38 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     fun handleAiPushNotification(event: PushNotificationEvent) {
         val layout = _state.value.layoutPrefs
-        if (!layout.notificationsEnabled) return
+        val isEn = layout.language == "en"
+        if (!layout.notificationsEnabled) {
+            showToast(
+                if (isEn) "Notifications are turned off in IGseek Settings"
+                else "Уведомления выключены в настройках IGseek"
+            )
+            return
+        }
+        val hasPerm = IGseekNotificationManager.hasNotificationPermission(app)
         val delivered = IGseekNotificationManager.triggerOrSchedule(app, event)
-        if (!delivered && event.delaySeconds <= 0 && event.scheduledAt.isNullOrBlank()) {
+        if (!hasPerm) {
+            showToast(
+                if (isEn) "Allow notification permission in Android settings for push reminders"
+                else "Разрешите уведомления в настройках Android, чтобы напоминание пришло"
+            )
+            return
+        }
+        if (event.delaySeconds > 0 || !event.scheduledAt.isNullOrBlank()) {
+            val formattedTime = event.scheduledAt?.let { iso ->
+                runCatching {
+                    val zdt = Instant.parse(iso).atZone(ZoneId.systemDefault())
+                    DateTimeFormatter.ofPattern("dd.MM HH:mm").format(zdt)
+                }.getOrNull()
+            } ?: run {
+                val mins = (event.delaySeconds / 60).coerceAtLeast(1)
+                if (isEn) "in $mins min" else "через $mins мин"
+            }
+            showToast(
+                if (isEn) "Push reminder scheduled ($formattedTime)"
+                else "Push-напоминание запланировано ($formattedTime)"
+            )
+        } else if (!delivered) {
             showToast("${event.title}: ${event.body}".take(110))
         }
     }
@@ -892,7 +927,32 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAgent(agent: AgentRoleId) {
+        val st = _state.value
+        val isProAgent = agent == AgentRoleId.CODER || agent == AgentRoleId.HACKER || agent == AgentRoleId.CREATIVE
+        if (isProAgent && !st.subscription.isPro) {
+            val isEn = st.layoutPrefs.language == "en"
+            showToast(
+                if (isEn) "${agent.label("en")} agent is available in IGseek Pro"
+                else "Спецагент «${agent.label("ru")}» доступен в IGseek Pro"
+            )
+            openProSheet()
+            return
+        }
         _state.update { it.copy(selectedAgent = agent) }
+    }
+
+    fun buildCurrentChatMarkdown(): String {
+        val st = _state.value
+        val isEn = st.layoutPrefs.language == "en"
+        val title = st.chats.firstOrNull { it.id == st.activeChatId }?.title?.ifBlank { "IGseek Chat" } ?: "IGseek Chat"
+        val sb = StringBuilder()
+        sb.append("# ").append(title).append("\n\n")
+        st.messages.forEach { m ->
+            val speaker = if (m.role == "user") (if (isEn) "User" else "Пользователь") else "IGseek"
+            sb.append("## ").append(speaker).append("\n")
+            sb.append(m.content).append("\n\n")
+        }
+        return sb.toString()
     }
 
     fun toggleWebSearch() {
@@ -911,6 +971,48 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         _state.update { it.copy(reasoningEnabled = !it.reasoningEnabled) }
+    }
+
+    fun toggleCouncilMode() {
+        val st = _state.value
+        if (!st.councilModeEnabled && !st.subscription.isPro) {
+            val isEn = st.layoutPrefs.language == "en"
+            showToast(
+                if (isEn) "⚔️ AI Council (2 parallel experts + synthesis) is an IGseek Pro feature"
+                else "⚔️ Совет ИИ (2 эксперта + синтез) доступен в IGseek Pro"
+            )
+            openProSheet()
+            return
+        }
+        _state.update { it.copy(councilModeEnabled = !it.councilModeEnabled) }
+    }
+
+    fun enhanceDraftPrompt() {
+        val st = _state.value
+        val draft = st.draftInput.trim()
+        val isEn = st.layoutPrefs.language == "en"
+        if (draft.length < 3 || st.isEnhancingPrompt) return
+        if (!st.subscription.isPro) {
+            showToast(
+                if (isEn) "✨ 1-Click Magic Prompt Enhancer is an IGseek Pro feature"
+                else "✨ Усиление промпта в 1 клик доступно в IGseek Pro"
+            )
+            openProSheet()
+            return
+        }
+        _state.update { it.copy(isEnhancingPrompt = true) }
+        viewModelScope.launch {
+            val session = kotlinx.coroutines.withTimeoutOrNull(1200L) { getFreshSession() } ?: _state.value.session
+            runCatching { api.enhancePrompt(session, draft) }
+                .onSuccess { enhanced ->
+                    _state.update { it.copy(draftInput = enhanced, isEnhancingPrompt = false) }
+                    showToast(if (isEn) "✨ Prompt enhanced!" else "✨ Промпт усилен!")
+                }
+                .onFailure { err ->
+                    _state.update { it.copy(isEnhancingPrompt = false) }
+                    showToast(err.message ?: if (isEn) "Failed to enhance prompt" else "Не удалось усилить промпт")
+                }
+        }
     }
 
     fun toggleImageMode() {
@@ -952,8 +1054,36 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 activeTab = IGseekTab.CHAT
             )
         }
+        IGseekQuickWidget.requestUpdate(app)
         viewModelScope.launch {
             getFreshSession()?.let { firestore.syncChat(it, chat) }
+        }
+    }
+
+    fun openFreshChatFromWidget() {
+        val current = _state.value
+        if (current.messages.isEmpty() && current.activeChatId.isNotBlank()) {
+            _state.update { it.copy(activeTab = IGseekTab.CHAT, imageModeEnabled = false) }
+        } else {
+            createNewChat()
+            _state.update { it.copy(imageModeEnabled = false) }
+        }
+    }
+
+    fun openImageModeFromWidget() {
+        openFreshChatFromWidget()
+        val st = _state.value
+        if (!st.imageModeEnabled) {
+            toggleImageMode()
+        }
+    }
+
+    fun openChatFromWidget(chatId: String) {
+        val exists = store.listChats().any { it.id == chatId }
+        if (exists) {
+            selectChat(chatId)
+        } else {
+            selectTab(IGseekTab.CHAT)
         }
     }
 
@@ -1034,27 +1164,101 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         sendMessage(prompt)
     }
 
-    fun regenerateLastReply() {
+    fun regenerateLastReply(targetMessageId: String? = null) {
         val st = _state.value
         if (st.isStreaming) return
-        val lastUser = st.messages.lastOrNull { it.role == "user" } ?: return
-        val lastMsg = st.messages.lastOrNull()
-        if (lastMsg != null && lastMsg.role == "assistant") {
-            store.deleteMessage(lastMsg.id)
+        val targetIndex = if (targetMessageId != null) {
+            st.messages.indexOfFirst { it.id == targetMessageId && it.role == "assistant" }
+        } else {
+            st.messages.indexOfLast { it.role == "assistant" }
         }
-        val updatedHistory = store.listMessages(st.activeChatId)
-        _state.update { it.copy(messages = updatedHistory) }
+        if (targetIndex < 0) return
+        val targetMsg = st.messages[targetIndex]
+        val historyBefore = st.messages.take(targetIndex)
+        if (historyBefore.none { it.role == "user" }) return
+
+        val existingVariants = if (st.subscription.isPro) {
+            when {
+                targetMsg.variants.isNotEmpty() -> {
+                    val list = targetMsg.variants.toMutableList()
+                    val idx = targetMsg.activeVariantIndex.coerceIn(0, list.lastIndex)
+                    if (targetMsg.content.isNotBlank() && list[idx].content.isBlank()) {
+                        list[idx] = list[idx].copy(
+                            content = targetMsg.content,
+                            reasoning = targetMsg.reasoning,
+                            images = targetMsg.images,
+                            webSources = targetMsg.webSources
+                        )
+                    }
+                    list.filter { it.content.isNotBlank() || it.images.isNotEmpty() }.takeLast(10)
+                }
+                targetMsg.content.isNotBlank() || targetMsg.images.isNotEmpty() -> listOf(
+                    MessageVariant(
+                        content = targetMsg.content,
+                        reasoning = targetMsg.reasoning,
+                        images = targetMsg.images,
+                        webSources = targetMsg.webSources,
+                        createdAtMs = targetMsg.createdAtMs
+                    )
+                )
+                else -> emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
         executeChatStream(
             chatId = st.activeChatId,
-            history = updatedHistory,
+            history = historyBefore,
             model = st.selectedModel,
             agent = st.selectedAgent,
             webSearch = st.webSearchEnabled,
             reasoning = st.reasoningEnabled,
+            councilMode = st.councilModeEnabled,
             imageMode = st.imageModeEnabled,
             attachments = emptyList(),
-            idempotencyKey = UUID.randomUUID().toString()
+            idempotencyKey = UUID.randomUUID().toString(),
+            existingAssistantId = targetMsg.id,
+            existingCreatedAtMs = targetMsg.createdAtMs,
+            previousVariants = existingVariants
         )
+    }
+
+    fun selectMessageVariant(messageId: String, variantIndex: Int) {
+        val st = _state.value
+        val isEn = st.layoutPrefs.language == "en"
+        if (!st.subscription.isPro) {
+            showToast(
+                if (isEn) "📜 Switching past reply versions is an IGseek Pro feature"
+                else "📜 Возврат к прошлым вариантам ответа доступен в IGseek Pro"
+            )
+            openProSheet()
+            return
+        }
+        val target = st.messages.firstOrNull { it.id == messageId } ?: return
+        if (variantIndex !in target.variants.indices) return
+        val chosen = target.variants[variantIndex]
+        val updated = target.copy(
+            content = chosen.content,
+            reasoning = chosen.reasoning,
+            images = chosen.images,
+            webSources = chosen.webSources,
+            activeVariantIndex = variantIndex,
+            isError = false
+        )
+        store.upsertMessage(updated)
+        val updatedList = store.listMessages(target.chatId)
+        _state.update {
+            it.copy(messages = if (it.activeChatId == target.chatId) updatedList else it.messages)
+        }
+        showToast(if (isEn) "Switched to version #${variantIndex + 1}" else "Выбран вариант #${variantIndex + 1}")
+        viewModelScope.launch {
+            val s = getFreshSession()
+            if (s != null && !s.isGuest) {
+                val pos = updatedList.indexOfFirst { it.id == updated.id }.coerceAtLeast(0)
+                firestore.syncMessage(s, updated, pos + 1)
+            }
+        }
     }
 
     fun sendMessage(overrideText: String? = null) {
@@ -1160,6 +1364,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             agent = st.selectedAgent,
             webSearch = st.webSearchEnabled,
             reasoning = st.reasoningEnabled,
+            councilMode = st.councilModeEnabled,
             imageMode = st.imageModeEnabled,
             attachments = attachments,
             idempotencyKey = UUID.randomUUID().toString()
@@ -1173,10 +1378,40 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         val partial = activeStreamingMessage
         activeStreamingMessage = null
         if (partial != null) {
+            val savedPrevious = partial.variants.filter { it.content.isNotBlank() || it.images.isNotEmpty() }
             if (partial.content.isBlank() && partial.images.isEmpty() && partial.reasoning.isBlank()) {
-                store.deleteMessage(partial.id)
+                if (savedPrevious.isNotEmpty()) {
+                    val fallback = savedPrevious.last()
+                    store.upsertMessage(
+                        partial.copy(
+                            content = fallback.content,
+                            reasoning = fallback.reasoning,
+                            images = fallback.images,
+                            webSources = fallback.webSources,
+                            variants = savedPrevious,
+                            activeVariantIndex = savedPrevious.lastIndex,
+                            isError = false
+                        )
+                    )
+                } else {
+                    store.deleteMessage(partial.id)
+                }
             } else {
-                store.upsertMessage(partial.copy(isError = false))
+                val partialVariant = MessageVariant(
+                    content = partial.content,
+                    reasoning = partial.reasoning,
+                    images = partial.images,
+                    webSources = partial.webSources,
+                    createdAtMs = System.currentTimeMillis()
+                )
+                val updatedVariants = savedPrevious + partialVariant
+                store.upsertMessage(
+                    partial.copy(
+                        isError = false,
+                        variants = updatedVariants,
+                        activeVariantIndex = updatedVariants.lastIndex
+                    )
+                )
             }
         }
         val activeId = _state.value.activeChatId
@@ -1197,21 +1432,34 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         agent: AgentRoleId,
         webSearch: Boolean,
         reasoning: Boolean,
+        councilMode: Boolean = false,
         imageMode: Boolean,
         attachments: List<ChatAttachment>,
-        idempotencyKey: String
+        idempotencyKey: String,
+        existingAssistantId: String? = null,
+        existingCreatedAtMs: Long? = null,
+        previousVariants: List<MessageVariant> = emptyList()
     ) {
         api.cancelActiveStream()
         activeStreamJob?.cancel()
         var launchedJob: kotlinx.coroutines.Job? = null
         launchedJob = viewModelScope.launch {
-            val assistantId = newSafeId("msg")
+            val assistantId = existingAssistantId ?: newSafeId("msg")
+            val nowMs = System.currentTimeMillis()
+            val initialVariants = if (previousVariants.isNotEmpty()) {
+                previousVariants + MessageVariant(content = "", createdAtMs = nowMs)
+            } else {
+                emptyList()
+            }
+            val newVariantIdx = if (initialVariants.isNotEmpty()) initialVariants.lastIndex else 0
             var assistantMsg = ChatMessageItem(
                 id = assistantId,
                 chatId = chatId,
                 role = "assistant",
                 content = "",
-                createdAtMs = System.currentTimeMillis() + 1L
+                createdAtMs = existingCreatedAtMs ?: (nowMs + 1L),
+                variants = initialVariants,
+                activeVariantIndex = newVariantIdx
             )
             activeStreamingMessage = assistantMsg
             store.upsertMessage(assistantMsg)
@@ -1255,6 +1503,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     agent = agent,
                     webSearch = webSearch,
                     reasoning = reasoning && isProNow,
+                    councilMode = councilMode && isProNow,
                     imageMode = imageMode,
                     memories = memories,
                     language = language,
@@ -1328,19 +1577,55 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         activeStreamingMessage = assistantMsg
                         store.upsertMessage(assistantMsg)
                         updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onMemoryUpdated = {
+                        refreshMemories()
+                    },
+                    onTabTransition = { targetTab, reason ->
+                        val isEn = _state.value.layoutPrefs.language == "en"
+                        val tabLabel = when (targetTab.lowercase()) {
+                            "engine" -> "Engine"
+                            "flow" -> "Flow"
+                            "library" -> "Library"
+                            "saved" -> if (isEn) "Saved" else "Сохранённые"
+                            else -> targetTab
+                        }
+                        showToast(
+                            if (reason.isNotBlank()) "$tabLabel: ${reason.take(80)}"
+                            else if (isEn) "Recommended tab: $tabLabel"
+                            else "Рекомендуется вкладка: $tabLabel"
+                        )
                     }
                 )
             }.onSuccess { result ->
                 activeStreamingMessage = null
+                val finalContent = result.content.ifBlank { assistantMsg.content.ifBlank { if (language == "en") "Done." else "Готово." } }
+                val finalReasoning = result.reasoning.ifBlank { assistantMsg.reasoning }
+                val finalImages = result.images.ifEmpty { assistantMsg.images }
+                val finalSources = result.webSources.ifEmpty { assistantMsg.webSources }
+                val completedVariant = MessageVariant(
+                    content = finalContent,
+                    reasoning = finalReasoning,
+                    images = finalImages,
+                    webSources = finalSources,
+                    createdAtMs = System.currentTimeMillis()
+                )
+                val finalVariants = if (isProNow) {
+                    (if (previousVariants.isNotEmpty()) previousVariants + completedVariant else listOf(completedVariant)).takeLast(10)
+                } else {
+                    emptyList()
+                }
                 assistantMsg = assistantMsg.copy(
-                    content = result.content.ifBlank { assistantMsg.content.ifBlank { if (language == "en") "Done." else "Готово." } },
-                    reasoning = result.reasoning.ifBlank { assistantMsg.reasoning },
-                    images = result.images.ifEmpty { assistantMsg.images },
-                    webSources = result.webSources.ifEmpty { assistantMsg.webSources },
+                    content = finalContent,
+                    reasoning = finalReasoning,
+                    images = finalImages,
+                    webSources = finalSources,
                     calendarEvents = result.calendarEvents.ifEmpty { assistantMsg.calendarEvents },
                     taskEvents = result.taskEvents.ifEmpty { assistantMsg.taskEvents },
                     gmailEvents = result.gmailEvents.ifEmpty { assistantMsg.gmailEvents },
-                    isError = false
+                    isError = false,
+                    variants = finalVariants,
+                    activeVariantIndex = (finalVariants.size - 1).coerceAtLeast(0)
                 )
                 store.upsertMessage(assistantMsg)
                 assistantMsg.images.forEach { img ->
@@ -1355,6 +1640,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         messages = if (it.activeChatId == chatId) finalMsgs else it.messages
                     )
                 }
+                IGseekQuickWidget.requestUpdate(app)
                 if (session != null && !session.isGuest) {
                     firestore.syncMessage(session, assistantMsg, finalMsgs.size)
                 }
@@ -1365,9 +1651,42 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     err.message?.contains("Socket closed", ignoreCase = true) == true
                 if (isCanceled) {
                     if (assistantMsg.content.isBlank() && assistantMsg.images.isEmpty() && assistantMsg.reasoning.isBlank()) {
-                        store.deleteMessage(assistantMsg.id)
+                        if (previousVariants.isNotEmpty()) {
+                            val fallback = previousVariants.last()
+                            store.upsertMessage(
+                                assistantMsg.copy(
+                                    content = fallback.content,
+                                    reasoning = fallback.reasoning,
+                                    images = fallback.images,
+                                    webSources = fallback.webSources,
+                                    variants = previousVariants,
+                                    activeVariantIndex = previousVariants.lastIndex,
+                                    isError = false
+                                )
+                            )
+                        } else {
+                            store.deleteMessage(assistantMsg.id)
+                        }
                     } else {
-                        store.upsertMessage(assistantMsg.copy(isError = false))
+                        val partialVariant = MessageVariant(
+                            content = assistantMsg.content,
+                            reasoning = assistantMsg.reasoning,
+                            images = assistantMsg.images,
+                            webSources = assistantMsg.webSources,
+                            createdAtMs = System.currentTimeMillis()
+                        )
+                        val savedVariants = if (isProNow) {
+                            (if (previousVariants.isNotEmpty()) previousVariants + partialVariant else listOf(partialVariant)).takeLast(10)
+                        } else {
+                            emptyList()
+                        }
+                        store.upsertMessage(
+                            assistantMsg.copy(
+                                isError = false,
+                                variants = savedVariants,
+                                activeVariantIndex = (savedVariants.size - 1).coerceAtLeast(0)
+                            )
+                        )
                     }
                     _state.update {
                         it.copy(
@@ -1824,6 +2143,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     val merged = (remote + _state.value.memories).distinctBy { it.id }
                     store.cacheMemories(merged)
                     _state.update { it.copy(memories = merged, isMemoriesLoading = false) }
+                    IGseekQuickWidget.requestUpdate(app)
                 }
                 .onFailure {
                     _state.update { it.copy(isMemoriesLoading = false) }

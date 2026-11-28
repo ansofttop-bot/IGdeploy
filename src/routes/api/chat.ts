@@ -20,8 +20,10 @@ import { checkContent, refusalMessage } from "../../lib/content-filters";
 import { isChinaSensitive } from "../../lib/sensitive-topics";
 import {
   callOpenRouterDeepSeekStream,
+  callOpenRouterDeepSeekText,
   isOpenRouterConfigured,
 } from "../../lib/openrouter-deepseek";
+import { callGroqFreeText } from "../../lib/groq-free";
 import { routeChatStream } from "../../lib/ai-router";
 import { generateImageWithOpenRouter } from "../../lib/openrouter-image";
 import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
@@ -72,6 +74,8 @@ const MessageSchema = z.object({
 const BodySchema = z.object({
   messages: z.array(MessageSchema).min(1).max(50),
   reasoning: z.boolean().optional().default(false),
+  councilMode: z.boolean().optional().default(false),
+  enhancePrompt: z.boolean().optional().default(false),
   webSearch: z.boolean().optional().default(false),
   imageMode: z.boolean().optional().default(false),
   model: z.enum(["instinct", "chat", "f1"]).optional().default("instinct"),
@@ -97,6 +101,10 @@ const BodySchema = z.object({
     })
     .optional(),
   deviceFp: z.string().max(128).optional(),
+  clientTimeIso: z.string().max(64).optional(),
+  clientLocalTime: z.string().max(120).optional(),
+  clientTimezone: z.string().max(80).optional(),
+  clientTzOffsetMinutes: z.number().int().min(-840).max(840).optional(),
   imageQuota: z
     .object({
       used: z.number().int().min(0).max(100),
@@ -118,6 +126,18 @@ const BodySchema = z.object({
       })
     )
     .max(60)
+    .optional(),
+  clientMemories: z
+    .array(
+      z.object({
+        id: z.string().max(120).optional(),
+        kind: z.string().max(40).optional(),
+        content: z.string().max(1500),
+        attachmentName: z.string().max(240).optional(),
+        attachmentText: z.string().max(1200).optional(),
+      })
+    )
+    .max(50)
     .optional(),
 });
 
@@ -970,6 +990,68 @@ export async function handleChatPost(request: Request): Promise<Response> {
           });
         }
 
+        if (parsed.enhancePrompt) {
+          const authedEnh = token
+            ? await Promise.race([
+                getUserFromToken(token).catch(() => null),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+              ])
+            : null;
+          const tierEnh = authedEnh
+            ? await Promise.race([
+                resolveEffectiveUserTier(authedEnh).catch(() => ({ tier: "free" as const, isPro: false, expiresAt: null })),
+                new Promise<{ tier: "pro" | "free"; isPro: boolean; expiresAt: string | null }>((resolve) =>
+                  setTimeout(() => resolve({ tier: "free", isPro: false, expiresAt: null }), 1200),
+                ),
+              ])
+            : { tier: "free" as const, isPro: false, expiresAt: null };
+          if (!tierEnh.isPro) {
+            return new Response(
+              JSON.stringify({ error: "Улучшение промпта доступно в подписке IGseek Pro." }),
+              { status: 403, headers: { "content-type": "application/json; charset=utf-8" } },
+            );
+          }
+          const rawDraft = lastUserMessage.trim().slice(0, 2500);
+          if (!rawDraft) {
+            return new Response(
+              JSON.stringify({ enhanced: "" }),
+              { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
+            );
+          }
+          const enhancerMessages = [
+            {
+              role: "system",
+              content:
+                "You are IGseek Pro Prompt Enhancer. Rewrite the user's rough draft into a crisp, super-clear, high-impact prompt that gets dramatically better AI results. Preserve the EXACT language (Russian stays Russian, English stays English) and original intent. Add helpful context, structure, and expected output format concisely (2-5 lines max). Output ONLY the improved prompt text with NO quotes, NO preamble, NO explanation.",
+            },
+            { role: "user", content: rawDraft },
+          ];
+          const enhancedRaw =
+            (await callOpenRouterDeepSeekText({
+              tier: "pro",
+              uiModel: "instinct",
+              messages: enhancerMessages,
+              maxTokens: 450,
+              temperature: 0.35,
+              timeoutMs: 12_000,
+              signal: request.signal,
+            }).catch(() => null)) ||
+            (await callGroqFreeText({
+              messages: enhancerMessages,
+              maxTokens: 450,
+              temperature: 0.35,
+              signal: request.signal,
+            }).catch(() => null));
+          const enhanced = (enhancedRaw || rawDraft)
+            .trim()
+            .replace(/^["«']+|["»']+$/g, "")
+            .trim();
+          return new Response(
+            JSON.stringify({ enhanced: enhanced || rawDraft }),
+            { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
+          );
+        }
+
         let streamClosed = false;
         const streamAbort = new AbortController();
         if (request.signal) {
@@ -1096,7 +1178,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                 intentProbeText,
               );
             const wantsNotification =
-              /(уведомл|пуш|push|напомн|таймер|будильн|оповест|пришли.{0,18}(уведомл|пуш|напомин)|notify|notification|alert\b|remind\s+me|timer\b|ping\s+me)/i.test(
+              /(уведомл|пуш|push|напомн|таймер|будильн|разбуд|оповест|пришли.{0,18}(уведомл|пуш|напомин)|поставь.{0,16}(таймер|будильн|напомин)|через\s+\d+\s*(сек|мин|час|дн|sec|min|hour)|в\s+\d{1,2}[:.]\d{2}|notify|notification|alert\b|remind\b|alarm\b|timer\b|ping\s+me)/i.test(
                 intentProbeText,
               );
             const wantsTabTransition =
@@ -1109,19 +1191,19 @@ export async function handleChatPost(request: Request): Promise<Response> {
             const authed = token
               ? await Promise.race([
                   getUserFromToken(token).catch(() => null),
-                  new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
                 ])
               : null;
 
-            const [memories, initialLibraryItems, userTierInfo]: [
+            const [serverMemories, initialLibraryItems, userTierInfo]: [
               MemoryRow[],
               ServerLibraryItem[],
               { tier: "pro" | "free"; isPro: boolean; expiresAt: string | null },
             ] = await Promise.all([
-              authed && lastUserMessage
+              authed
                 ? Promise.race([
-                    loadRelevantMemories(authed.client, authed.id, lastUserMessage, 12, authed.token).catch(() => []),
-                    new Promise<MemoryRow[]>((resolve) => setTimeout(() => resolve([]), 350)),
+                    loadRelevantMemories(authed.client, authed.id, lastUserMessage || "", 30, authed.token).catch(() => []),
+                    new Promise<MemoryRow[]>((resolve) => setTimeout(() => resolve([]), 1500)),
                   ])
                 : Promise.resolve([]),
               needsLibraryPrefetch
@@ -1143,7 +1225,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
             const useFreeModels = !isProUser;
 
             // Direct Image Mode (/img, /imagine, or explicit imageMode flag from mobile/web)
-            const FREE_IMAGE_DAILY_LIMIT = 3;
+            const FREE_IMAGE_DAILY_LIMIT = 5;
             const freeImageUsed = Math.max(0, Number(parsed.imageQuota?.used ?? 0));
             const freeImageResetAt =
               parsed.imageQuota?.resetAt && parsed.imageQuota.resetAt > Date.now()
@@ -1293,16 +1375,59 @@ export async function handleChatPost(request: Request): Promise<Response> {
               );
             }
 
+            // Merge server-fetched Firestore memories + client-cached memories (0ms fallback) so AI ALWAYS sees all facts
+            const memories: MemoryRow[] = (() => {
+              const merged: MemoryRow[] = [];
+              const seenIds = new Set<string>();
+              const seenNorm = new Set<string>();
+              const pushRow = (row: MemoryRow) => {
+                const text = String(row.content || "").trim();
+                if (!text) return;
+                const norm = text.toLowerCase().replace(/\s+/g, " ");
+                if (row.id && seenIds.has(row.id)) return;
+                if (seenNorm.has(norm)) return;
+                if (row.id) seenIds.add(row.id);
+                seenNorm.add(norm);
+                merged.push(row);
+              };
+              for (const m of serverMemories) pushRow(m);
+              for (const cm of parsed.clientMemories || []) {
+                pushRow({
+                  id: cm.id || `cm_${merged.length + 1}`,
+                  kind: cm.kind || "other",
+                  content: cm.content,
+                  created_at: new Date().toISOString(),
+                  ...(cm.attachmentName
+                    ? {
+                        attachment: {
+                          name: cm.attachmentName,
+                          type: "file",
+                          ...(cm.attachmentText ? { textContent: cm.attachmentText } : {}),
+                        },
+                      }
+                    : {}),
+                });
+              }
+              return merged.slice(0, 35);
+            })();
+
             const memoryBlock = memories.length
-              ? sanitizeTextForApi(`\n\nUSER LONG-TERM MEMORY (relevant facts and attachments remembered from previous conversations — treat as trusted context, refer to naturally, do not mention IDs):\n${memories
-                  .map((m) => {
-                    let s = `- [id:${m.id}] (${m.kind}) ${m.content}`;
-                    if (m.attachment) {
-                      s += ` [Вложение в памяти: "${m.attachment.name}" (${m.attachment.type}${m.attachment.textContent ? `, текст: "${m.attachment.textContent.slice(0, 500)}"` : ""})]`;
-                    }
-                    return s;
-                  })
-                  .join("\n")}`)
+              ? sanitizeTextForApi(`\n\nUSER LONG-TERM MEMORY — ACTIVE PERSONAL CONTEXT (AUTONOMOUS USE REQUIRED):
+You ALREADY know the following durable facts about this user from their IGseek memory.
+RULES FOR AUTONOMOUS MEMORY USE:
+1. PROACTIVELY and AUTOMATICALLY apply any relevant facts below in EVERY response — do NOT wait for the user to ask "do you remember?" or remind you.
+2. Personalize answers seamlessly using their name, preferences, communication style, tech stack, projects, devices, contacts, goals, and interests whenever relevant (e.g., tailor code to their stack, address them by name when natural, remember their constraints/preferences automatically).
+3. Integrate these facts naturally as shared background knowledge — do NOT awkwardly announce "According to your saved memory" or expose internal IDs.
+Known facts about this user:
+${memories
+  .map((m) => {
+    let s = `- [id:${m.id}] (${m.kind}) ${m.content}`;
+    if (m.attachment) {
+      s += ` [Вложение в памяти: "${m.attachment.name}" (${m.attachment.type}${m.attachment.textContent ? `, текст: "${m.attachment.textContent.slice(0, 500)}"` : ""})]`;
+    }
+    return s;
+  })
+  .join("\n")}`)
               : "";
 
             const supportsTools = !isEngineRequest;
@@ -1363,6 +1488,23 @@ export async function handleChatPost(request: Request): Promise<Response> {
               ? "Google Workspace (Gmail, Calendar, Tasks): connected."
               : "Google Workspace (Gmail, Calendar, Tasks): not yet signed in — still call manage_gmail / manage_calendar_event / manage_google_task so an interactive card appears where the user can sign in to Google and confirm execution.";
 
+            const serverNow = new Date();
+            const tzOffsetMins = typeof parsed.clientTzOffsetMinutes === "number" ? parsed.clientTzOffsetMinutes : 0;
+            const offsetSign = tzOffsetMins <= 0 ? "+" : "-";
+            const absOffset = Math.abs(tzOffsetMins);
+            const offsetH = String(Math.floor(absOffset / 60)).padStart(2, "0");
+            const offsetM = String(absOffset % 60).padStart(2, "0");
+            const formattedOffset = `${offsetSign}${offsetH}:${offsetM}`;
+            const localNowDate = new Date(serverNow.getTime() - tzOffsetMins * 60_000);
+            const localIsoApprox = `${localNowDate.toISOString().slice(0, 19)}${formattedOffset}`;
+            const currentTimeBlock = `\n\nCURRENT USER DATE & TIME:
+- Local ISO (user timezone ${parsed.clientTimezone || "UTC"}, offset ${formattedOffset}): ${localIsoApprox}
+- Local readable: ${parsed.clientLocalTime || localIsoApprox}
+- Server UTC ISO: ${serverNow.toISOString()}
+Use this exact clock for ALL scheduled push notifications (send_push_notification) and Calendar/Tasks dates:
+- For relative reminders ("через 5 минут", "in 10 min", "через час") ALWAYS set delay_seconds (e.g., 300, 600, 3600).
+- For specific clock times ("в 18:30", "завтра в 9:00") compute scheduled_at / start_time in ISO 8601 WITH the user's offset ${formattedOffset} (e.g., ${localIsoApprox.slice(0, 10)}T18:30:00${formattedOffset}). If that clock time has already passed today, schedule for tomorrow.`;
+
             const capabilities =
               activeTools.length > 0
                 ? `\n\nAutonomous tool rules (${gmailStatusInfo}):
@@ -1370,7 +1512,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
 - Memory: call manage_memory (save/update/delete) when asked to remember/forget or given durable personal facts (for Library files: search_and_read_library first, then manage_memory with library_id/library_filename); call search_and_read_memory for contacts ("мама", "босс") or saved docs.
 - Email: call manage_gmail autonomously; supports attachments from library (search_and_read_library + library_id), generated_image (generate_image first), user_upload, or memory (memory_id).
 - Images: analyze attached images directly; call edit_image whenever asked to modify/add/remove/restyle an attached or previously generated image (${isProUser ? "Pro tier: native reference-image model enabled" : "Free tier: fast text-to-image model; mention Pro unlocks reference-image editing when user asks to edit a photo"}); call generate_image to create a new image from scratch; call find_web_image ONLY when asked how something real looks ("покажи фото", "как выглядит").
-- Productivity & Push Notifications: call manage_calendar_event for events/reminders, manage_google_task for tasks, send_push_notification to dispatch an immediate or scheduled push alert on the user's device (for Google Tasks, Calendar, Gmail, timers, or general reminders), create_artifact for substantial code/docs${effectiveWebSearch ? ", web_search for live/current info (cite sources)" : ""}.
+- Productivity & Push Notifications: call send_push_notification whenever the user asks to remind them at a time or after a delay ("напомни в 18:30", "напомни через 10 минут", "поставь таймер") — it dispatches a real immediate or scheduled push notification on their device (Web/PWA & Android AlarmManager); call manage_calendar_event for calendar events, manage_google_task for tasks, create_artifact for substantial code/docs${effectiveWebSearch ? ", web_search for live/current info (cite sources)" : ""}.
 - Google Workspace honesty: manage_calendar_event, manage_google_task, and manage_gmail create an interactive confirmation card in the UI. NEVER claim the email is already sent or the event/task is already saved in Google — tell the user to click the Confirm button on the card (and sign in to Google if prompted).
 - Boundaries & Tabs: call refuse_unsupported_request immediately for impossible actions (calls, SMS, banking, physical acts, live hacking); call suggest_tab_transition ONLY for full-stack/IDE live preview ('engine'), GitHub/CI-CD/terminal ('flow'), or opening Library UI ('library' — NOT when asked to read/remember/email a Library file).
 - Never print raw tool markup; after tools, confirm briefly without repeating full payloads.`
@@ -1393,11 +1535,116 @@ export async function handleChatPost(request: Request): Promise<Response> {
               isEngineRequest && clientSystemBlocks.length > 0
                 ? `\n\nENGINE WORKSPACE FORMAT CONTRACT:\n${clientSystemBlocks.join("\n\n")}`
                 : "";
+            let councilSynthesisBlock = "";
+            if (parsed.councilMode && isProUser && !isEngineRequest && lastUserMessage.trim().length > 0) {
+              const isRuPrompt = /[а-яА-ЯёЁ]/.test(lastUserMessage);
+              send(
+                "reasoning",
+                JSON.stringify(
+                  isRuPrompt
+                    ? "⚔️ Совет ИИ IGseek Pro: 2 эксперта независимо анализируют запрос…\n\n"
+                    : "⚔️ IGseek Pro AI Council: 2 independent experts analyzing your request…\n\n",
+                ),
+              );
+              const compactQuestion = stripImageDataUrls(lastUserMessage).slice(0, 2200);
+              const councilContext = memoryBlock ? `${memoryBlock.slice(0, 1200)}\n\n` : "";
+              const [analystView, criticView] = await Promise.all([
+                callOpenRouterDeepSeekText({
+                  tier: "pro",
+                  uiModel: "instinct",
+                  messages: [
+                    {
+                      role: "system",
+                      content: isRuPrompt
+                        ? "Ты — Эксперт №1 (Системный аналитик) в Совете ИИ IGseek Pro. Дай краткий, предельно точный и структурированный разбор запроса (3-5 пунктов, факты, алгоритм действий). Без воды."
+                        : "You are Expert #1 (Systems Analyst) in the IGseek Pro AI Council. Give a concise, high-precision structured analysis (3-5 crisp points, concrete steps). No fluff.",
+                    },
+                    { role: "user", content: `${councilContext}${compactQuestion}` },
+                  ],
+                  maxTokens: 420,
+                  temperature: 0.2,
+                  timeoutMs: 12_000,
+                  signal: streamAbort.signal,
+                })
+                  .catch(() => null)
+                  .then((v) =>
+                    v ||
+                    callGroqFreeText({
+                      messages: [
+                        {
+                          role: "system",
+                          content: isRuPrompt
+                            ? "Ты — Эксперт №1 (Системный аналитик). Дай краткий точный разбор запроса (3-5 пунктов)."
+                            : "You are Expert #1 (Systems Analyst). Give a crisp 3-5 point structured analysis.",
+                        },
+                        { role: "user", content: compactQuestion },
+                      ],
+                      maxTokens: 380,
+                      temperature: 0.2,
+                      signal: streamAbort.signal,
+                    }).catch(() => null),
+                  ),
+                callOpenRouterDeepSeekText({
+                  tier: "pro",
+                  uiModel: "f1",
+                  messages: [
+                    {
+                      role: "system",
+                      content: isRuPrompt
+                        ? "Ты — Эксперт №2 (Стратег-критик) в Совете ИИ IGseek Pro. Найди скрытые риски, частые ошибки, неочевидные лучшие альтернативы и сильные инсайты по запросу (3-5 кратких пунктов)."
+                        : "You are Expert #2 (Strategist & Critic) in the IGseek Pro AI Council. Spot hidden pitfalls, blind spots, and superior non-obvious alternatives (3-5 crisp points).",
+                    },
+                    { role: "user", content: `${councilContext}${compactQuestion}` },
+                  ],
+                  maxTokens: 420,
+                  temperature: 0.55,
+                  timeoutMs: 12_000,
+                  signal: streamAbort.signal,
+                })
+                  .catch(() => null)
+                  .then((v) =>
+                    v ||
+                    callGroqFreeText({
+                      messages: [
+                        {
+                          role: "system",
+                          content: isRuPrompt
+                            ? "Ты — Эксперт №2 (Стратег-критик). Укажи скрытые риски и неочевидные сильные решения (3-5 пунктов)."
+                            : "You are Expert #2 (Strategist & Critic). Spot hidden risks and superior alternatives (3-5 points).",
+                        },
+                        { role: "user", content: compactQuestion },
+                      ],
+                      maxTokens: 380,
+                      temperature: 0.55,
+                      signal: streamAbort.signal,
+                    }).catch(() => null),
+                  ),
+              ]);
+
+              if (analystView || criticView) {
+                const analystSection = analystView
+                  ? `${isRuPrompt ? "📐 Эксперт 1 (Аналитик)" : "📐 Expert 1 (Analyst)"}:\n${analystView.trim()}\n\n`
+                  : "";
+                const criticSection = criticView
+                  ? `${isRuPrompt ? "⚡ Эксперт 2 (Стратег-критик)" : "⚡ Expert 2 (Strategist & Critic)"}:\n${criticView.trim()}\n\n`
+                  : "";
+                send(
+                  "reasoning",
+                  JSON.stringify(
+                    `${analystSection}${criticSection}${isRuPrompt ? "🏆 Синтезирую итоговый выверенный ответ…" : "🏆 Synthesizing the verified master answer…"}`,
+                  ),
+                );
+                councilSynthesisBlock = sanitizeTextForApi(
+                  `\n\nIGSEEK PRO AI COUNCIL — INTERNAL 2-EXPERT BRIEFINGS:\n${analystSection}${criticSection}Synthesize the strongest verified insights from both experts into ONE cohesive, decisive, crystal-clear master answer for the user (resolve any contradictions, include best ideas and key warnings, do not repeat boilerplate headers).`,
+                );
+              }
+            }
+
             const systemMessage: ChatMessage = {
               role: "system",
               content: isEngineRequest
                 ? `${effectiveSystemCore}${engineContextBlock}${memoryBlock}${libraryCatalogBlock}${userAttachmentsBlock}`
-                : `${effectiveSystemCore}${personalizationBlock}${capabilities}${memoryBlock}${libraryCatalogBlock}${userAttachmentsBlock}`,
+                : `${effectiveSystemCore}${currentTimeBlock}${personalizationBlock}${capabilities}${memoryBlock}${councilSynthesisBlock}${libraryCatalogBlock}${userAttachmentsBlock}`,
             };
             const historyForModel =
               useFreeModels && !isOpenRouterConfigured()

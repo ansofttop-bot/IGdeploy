@@ -163,6 +163,14 @@ data class GmailEventItem(
     val confirmed: Boolean = false
 )
 
+data class MessageVariant(
+    val content: String,
+    val reasoning: String = "",
+    val images: List<GeneratedImageItem> = emptyList(),
+    val webSources: List<WebSourceItem> = emptyList(),
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
 data class ChatMessageItem(
     val id: String,
     val chatId: String,
@@ -178,7 +186,9 @@ data class ChatMessageItem(
     val createdAtMs: Long = System.currentTimeMillis(),
     val isQueuedOffline: Boolean = false,
     val isError: Boolean = false,
-    val isBookmarked: Boolean = false
+    val isBookmarked: Boolean = false,
+    val variants: List<MessageVariant> = emptyList(),
+    val activeVariantIndex: Int = 0
 )
 
 data class OutboxQueuedMessage(

@@ -5,10 +5,10 @@ import { getDeviceFingerprint } from "./device-fingerprint";
 export type PromptScope = "engine" | "chat" | "flow" | "image";
 
 export const PROMPT_LIMITS: Record<PromptScope, number> = {
-  engine: 2,
+  engine: 4,
   chat: Number.POSITIVE_INFINITY,
-  flow: 2,
-  image: 3,
+  flow: 4,
+  image: 5,
 };
 
 export const UNLIMITED_SCOPES: Record<PromptScope, boolean> = {
@@ -18,7 +18,7 @@ export const UNLIMITED_SCOPES: Record<PromptScope, boolean> = {
   image: false,
 };
 
-export const FREE_MEMORY_LIMIT = 5;
+export const FREE_MEMORY_LIMIT = 12;
 
 const PRO_USER_MAP = new Map<string, boolean>();
 
