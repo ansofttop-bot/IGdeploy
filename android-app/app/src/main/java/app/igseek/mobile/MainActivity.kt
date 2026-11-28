@@ -34,12 +34,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
-import androidx.credentials.CredentialManager
-import androidx.credentials.CustomCredential
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.fragment.app.FragmentActivity
-import androidx.lifecycle.lifecycleScope
 import app.igseek.mobile.data.models.ChatAttachment
 import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.ui.IGseekAppRoot
@@ -48,10 +43,6 @@ import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.IGseekTheme
 import app.igseek.mobile.widget.IGseekQuickWidget
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
 
@@ -140,59 +131,13 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun launchGoogleSignIn() {
-        val clientId = BuildConfig.FIREBASE_OAUTH_CLIENT_ID.trim()
-        if (clientId.isBlank()) {
-            launchInAppGoogleAuthBridge()
-            return
-        }
-
-        lifecycleScope.launch {
-            viewModel.setGoogleAuthLoading(true)
-            val credentialManager = CredentialManager.create(this@MainActivity)
-
-            // 1. Try native Google Sign-In bottom sheet via Android Credential Manager (real Firebase ID token)
-            val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(clientId).build()
-            val googleIdOption = GetGoogleIdOption.Builder()
-                .setFilterByAuthorizedAccounts(false)
-                .setServerClientId(clientId)
-                .setAutoSelectEnabled(false)
-                .build()
-
-            try {
-                val result = try {
-                    credentialManager.getCredential(
-                        request = GetCredentialRequest.Builder()
-                            .addCredentialOption(signInWithGoogleOption)
-                            .build(),
-                        context = this@MainActivity
-                    )
-                } catch (e: Exception) {
-                    if (e is GetCredentialCancellationException) throw e
-                    credentialManager.getCredential(
-                        request = GetCredentialRequest.Builder()
-                            .addCredentialOption(googleIdOption)
-                            .build(),
-                        context = this@MainActivity
-                    )
-                }
-
-                val credential = result.credential
-                if (credential is CustomCredential &&
-                    credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
-                ) {
-                    val googleCred = GoogleIdTokenCredential.createFrom(credential.data)
-                    viewModel.signInWithGoogleIdToken(googleCred.idToken)
-                } else {
-                    launchInAppGoogleAuthBridge()
-                }
-            } catch (_: GetCredentialCancellationException) {
-                viewModel.setGoogleAuthLoading(false)
-            } catch (_: Exception) {
-                // Fallback to in-app Chrome Custom Tab Firebase Auth bridge on our Vercel domain
-                // so Android ALWAYS receives a real Firebase Auth token & exact same UID as the web app for cloud sync!
-                launchInAppGoogleAuthBridge()
-            }
-        }
+        // Launch the in-app Chrome Custom Tab Firebase Auth bridge directly.
+        // Native Credential Manager requires a fixed Android OAuth client SHA-1 in Google Cloud Console,
+        // which fails silently on CI-signed debug APKs after picking an account.
+        // The Chrome Custom Tab bridge runs Firebase Web Auth on our authorized domain and returns
+        // the exact same Firebase UID + real idToken + refreshToken as the web app for instant cloud sync.
+        viewModel.setGoogleAuthLoading(true)
+        launchInAppGoogleAuthBridge()
     }
 
     private fun launchInAppGoogleAuthBridge() {
@@ -202,10 +147,13 @@ class MainActivity : FragmentActivity() {
             return
         }
         val state = viewModel.createAndStoreOAuthState()
+        val lang = viewModel.state.value.layoutPrefs.language
         val authUrl = Uri.parse("$bridgeBase/login")
             .buildUpon()
             .appendQueryParameter("mobile_auth", "1")
             .appendQueryParameter("state", state)
+            .appendQueryParameter("redirect_uri", "app.igseek.mobile://auth")
+            .appendQueryParameter("lang", lang)
             .build()
 
         awaitingCustomTabAuth = true

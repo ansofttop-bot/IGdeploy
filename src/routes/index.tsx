@@ -40,6 +40,7 @@ import { syncDocumentLang, useLang, useT, type LangCode } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 import { auth } from "@/lib/firebase";
 import { firebaseClient } from "@/lib/firebase-service";
+import { PWAInstallButton } from "@/components/PWAInstallButton";
 
 const LANDING_LANGUAGES: { code: LangCode; native: string }[] = [
   { code: "en", native: "English" },
@@ -798,13 +799,16 @@ function Landing() {
                 {t("Specialized AI agents, reasoning mode and code artifacts in one interface. Universal, Coder, Hacker, Mentor, Psy and Creative — switch between minds without losing context and get depth where you need it.")}
               </p>
 
-              <Link
-                to="/app"
-                className="group mt-7 inline-flex items-center gap-3 rounded-xl bg-foreground px-6 py-3 text-sm font-semibold text-background shadow-md transition-all duration-300 hover:opacity-90 sm:mt-8 sm:px-8 sm:py-3.5"
-              >
-                <Play size={14} fill="currentColor" />
-                <span className="tracking-wider">{t("START CHATTING")}</span>
-              </Link>
+              <div className="mt-7 flex flex-wrap items-center justify-center gap-3 sm:mt-8">
+                <Link
+                  to="/app"
+                  className="group inline-flex items-center gap-3 rounded-xl bg-foreground px-6 py-3 text-sm font-semibold text-background shadow-md transition-all duration-300 hover:opacity-90 sm:px-8 sm:py-3.5"
+                >
+                  <Play size={14} fill="currentColor" />
+                  <span className="tracking-wider">{t("START CHATTING")}</span>
+                </Link>
+                <PWAInstallButton variant="inline" />
+              </div>
 
               <div className="mt-6 flex flex-wrap items-stretch justify-center gap-2 text-sm text-foreground sm:gap-3">
                 <div className="flex items-center gap-2 rounded-md border border-border bg-surface/80 px-3 py-2 backdrop-blur-sm sm:px-4 shadow-xs">

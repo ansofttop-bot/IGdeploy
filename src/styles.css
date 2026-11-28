@@ -158,6 +158,13 @@
     overflow: hidden;
   }
 
+  @media (display-mode: standalone) {
+    #root {
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+  }
+
   ::selection {
     background: oklch(0.55 0.22 27 / 0.35);
     color: var(--color-foreground);

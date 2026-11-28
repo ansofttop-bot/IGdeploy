@@ -6,7 +6,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.igseek.mobile.BuildConfig
 import app.igseek.mobile.IGseekApplication
-import app.igseek.mobile.data.api.FirebaseOperationNotAllowedException
 import app.igseek.mobile.data.models.AccentPresetId
 import app.igseek.mobile.data.models.AgentRoleId
 import app.igseek.mobile.data.models.AiModelId
@@ -28,7 +27,6 @@ import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,6 +45,7 @@ data class IGseekUiState(
     val showProSheet: Boolean = false,
     val isOnline: Boolean = true,
     val cloudSyncStatus: CloudSyncStatus = CloudSyncStatus.IDLE,
+    val cloudSyncError: String? = null,
     val layoutPrefs: MobileLayoutPrefs = MobileLayoutPrefs(),
     val serverBaseUrl: String = "",
     val activeTab: IGseekTab = IGseekTab.CHAT,
@@ -177,15 +176,31 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun getFreshSession(): AuthSession? {
+    private suspend fun getFreshSession(forceRefresh: Boolean = false): AuthSession? {
         val current = _state.value.session ?: return null
         if (!current.isCloudSynced) return current
-        val refreshed = runCatching { authApi.refreshSession(current) }.getOrDefault(current)
+        val refreshed = runCatching { authApi.refreshSession(current, force = forceRefresh) }.getOrDefault(current)
         if (refreshed != current) {
             store.saveSession(refreshed)
             _state.update { it.copy(session = refreshed) }
         }
         return refreshed
+    }
+
+    private fun prepareLocalStoreForSession(session: AuthSession) {
+        val prevUid = store.getLastSyncedUid()
+        if (!prevUid.isNullOrBlank() && prevUid != session.uid) {
+            store.clearAllUserData()
+        } else if (prevUid.isNullOrBlank()) {
+            // Wipe any anonymous pre-login placeholder rows before pulling real cloud account data
+            val localChats = store.listChats()
+            val hasOnlyEmptyPlaceholder = localChats.all { it.title == "Новый чат" && store.listMessages(it.id).isEmpty() }
+            if (hasOnlyEmptyPlaceholder) {
+                store.clearAllUserData()
+            }
+        }
+        store.setLastSyncedUid(session.uid)
+        store.saveSession(session)
     }
 
     // ==================== CLOUD FIRESTORE SYNC ====================
@@ -203,154 +218,174 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     fun syncAllFromCloud() {
         viewModelScope.launch {
-            val session = getFreshSession() ?: return@launch
+            var session = getFreshSession() ?: return@launch
             if (!session.isCloudSynced) {
-                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY) }
+                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY, cloudSyncError = null) }
                 return@launch
             }
             if (!_state.value.isOnline) {
-                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.OFFLINE) }
+                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.OFFLINE, cloudSyncError = null) }
                 return@launch
             }
-            _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.SYNCING) }
+            _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.SYNCING, cloudSyncError = null) }
 
-            runCatching {
-                val profileDef = async { firestore.fetchProfile(session) }
-                val projectsDef = async { firestore.fetchProjects(session) }
-                val chatsDef = async { firestore.fetchChats(session) }
-                val memoriesDef = async { firestore.fetchMemories(session) }
-                val libraryDef = async { firestore.fetchLibraryFiles(session) }
-                val engineDef = async { firestore.fetchEngineProjects(session) }
+            val firstAttempt = runCatching { performCloudSync(session) }
+            val finalAttempt = if (firstAttempt.isFailure &&
+                (firstAttempt.exceptionOrNull()?.message?.contains("401") == true)
+            ) {
+                val refreshed = getFreshSession(forceRefresh = true) ?: session
+                session = refreshed
+                runCatching { performCloudSync(session) }
+            } else {
+                firstAttempt
+            }
 
-                val remoteProfile = profileDef.await()
-                val remoteProjects = projectsDef.await()
-                val remoteChats = chatsDef.await()
-                val remoteMemories = memoriesDef.await()
-                val remoteLibrary = libraryDef.await()
-                val remoteEngine = engineDef.await()
-
-                val remoteProjectIds = remoteProjects.map { it.id }.toSet()
-                val remoteChatIds = remoteChats.map { it.id }.toSet()
-                val remoteMemoryIds = remoteMemories.map { it.id }.toSet()
-                val remoteLibraryIds = remoteLibrary.map { it.id }.toSet()
-                val remoteEngineIds = remoteEngine.map { it.id }.toSet()
-
-                // Push any local-only items up to Firestore so cross-device sync is truly bi-directional
-                val localProjectsBefore = store.listProjects()
-                localProjectsBefore.filter { it.id !in remoteProjectIds }.forEach { proj ->
-                    runCatching { firestore.syncProject(session, proj) }
+            finalAttempt.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        cloudSyncStatus = CloudSyncStatus.ERROR,
+                        cloudSyncError = err.message?.take(180) ?: "Не удалось синхронизироваться с облаком"
+                    )
                 }
+            }
+        }
+    }
 
-                val localChatsBefore = store.listChats()
-                localChatsBefore.filter { it.id !in remoteChatIds }.forEach { chat ->
-                    val localMsgs = store.listMessages(chat.id)
-                    if (localMsgs.isNotEmpty() || chat.title != "Новый чат") {
-                        runCatching { firestore.syncChat(session, chat) }
-                        localMsgs.forEachIndexed { idx, msg ->
-                            if (!msg.isError) {
-                                runCatching { firestore.syncMessage(session, msg, idx + 1) }
-                            }
-                        }
+    private suspend fun performCloudSync(session: AuthSession) {
+        val lp = _state.value.layoutPrefs
+        runCatching {
+            firestore.ensureProfileExists(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+        }
+
+        val remoteProfile = firestore.fetchProfile(session)
+        val remoteProjects = firestore.fetchProjects(session)
+        val remoteChats = firestore.fetchChats(session)
+        val remoteMemories = firestore.fetchMemories(session)
+        val remoteLibrary = firestore.fetchLibraryFiles(session)
+        val remoteEngine = firestore.fetchEngineProjects(session)
+
+        val remoteProjectIds = remoteProjects.map { it.id }.toSet()
+        val remoteChatIds = remoteChats.map { it.id }.toSet()
+        val remoteMemoryIds = remoteMemories.map { it.id }.toSet()
+        val remoteLibraryIds = remoteLibrary.map { it.id }.toSet()
+        val remoteEngineIds = remoteEngine.map { it.id }.toSet()
+
+        // Push any local-only items belonging to THIS account up to Firestore (bi-directional sync)
+        store.listProjects().filter { it.id !in remoteProjectIds }.forEach { proj ->
+            runCatching { firestore.syncProject(session, proj) }
+        }
+
+        val localChatsBefore = store.listChats()
+        localChatsBefore.filter { it.id !in remoteChatIds }.forEach { chat ->
+            val localMsgs = store.listMessages(chat.id)
+            if (localMsgs.isNotEmpty() || chat.title != "Новый чат") {
+                runCatching { firestore.syncChat(session, chat) }
+                localMsgs.forEachIndexed { idx, msg ->
+                    if (!msg.isError) {
+                        runCatching { firestore.syncMessage(session, msg, idx + 1) }
                     }
                 }
-
-                _state.value.memories.filter { it.id !in remoteMemoryIds }.forEach { mem ->
-                    runCatching { firestore.syncMemory(session, mem) }
-                }
-                _state.value.libraryFiles.filter { it.id !in remoteLibraryIds }.forEach { item ->
-                    runCatching { firestore.syncLibraryFile(session, item) }
-                }
-                store.listEngineProjects().filter { it.id !in remoteEngineIds }.forEach { eng ->
-                    runCatching { firestore.syncEngineProject(session, eng) }
-                }
-
-                // Merge Projects
-                remoteProjects.forEach { store.upsertProject(it) }
-                val mergedProjects = store.listProjects()
-
-                // Merge Chats
-                remoteChats.forEach { store.upsertChat(it) }
-                var mergedChats = store.listChats()
-                if (mergedChats.isEmpty()) {
-                    val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
-                    store.upsertChat(fresh)
-                    mergedChats = listOf(fresh)
-                }
-
-                // Merge Memories
-                val mergedMemories = (remoteMemories + _state.value.memories)
-                    .distinctBy { it.id }
-                    .sortedByDescending { it.createdAt }
-                store.cacheMemories(mergedMemories)
-
-                // Merge Library
-                val mergedLibrary = (remoteLibrary + _state.value.libraryFiles)
-                    .distinctBy { it.id }
-                    .sortedByDescending { it.updatedAt }
-                store.cacheLibraryFiles(mergedLibrary)
-
-                // Merge Engine Projects
-                remoteEngine.forEach { store.upsertEngineProject(it) }
-                val mergedEngine = store.listEngineProjects()
-
-                // Optional gateway subscription fallback if configured
-                val sub = if (remoteProfile != null) {
-                    remoteProfile.subscription
-                } else {
-                    runCatching { api.getSubscription(session) }.getOrDefault(_state.value.subscription)
-                }
-
-                // Sync accent/theme/lang from cloud profile if present & local hasn't diverged
-                var updatedLayout = _state.value.layoutPrefs
-                if (remoteProfile != null) {
-                    val remoteAccent = remoteProfile.accent?.let { AccentPresetId.fromId(it) }
-                    val remoteDark = remoteProfile.theme?.let { it != "light" }
-                    val remoteLang = remoteProfile.lang?.takeIf { it == "ru" || it == "en" }
-                    updatedLayout = updatedLayout.copy(
-                        accent = remoteAccent ?: updatedLayout.accent,
-                        darkTheme = remoteDark ?: updatedLayout.darkTheme,
-                        language = remoteLang ?: updatedLayout.language
-                    )
-                    store.saveLayoutPrefs(updatedLayout)
-                }
-
-                // Prefer most recently updated remote chat if current active chat is empty placeholder
-                val currentActiveId = _state.value.activeChatId
-                val currentLocalMsgs = if (currentActiveId.isNotBlank()) store.listMessages(currentActiveId) else emptyList()
-                val activeId = if (currentActiveId.isNotBlank() && mergedChats.any { it.id == currentActiveId } && (currentLocalMsgs.isNotEmpty() || remoteChats.isEmpty())) {
-                    currentActiveId
-                } else {
-                    mergedChats.first().id
-                }
-
-                // ALWAYS pull remote messages for the active chat so messages from Web appear immediately
-                val remoteMsgs = runCatching { firestore.fetchMessagesForChat(session, activeId) }.getOrDefault(emptyList())
-                val remoteMsgIds = remoteMsgs.map { it.id }.toSet()
-                store.listMessages(activeId).filter { it.id !in remoteMsgIds && !it.isError }.forEachIndexed { idx, msg ->
-                    runCatching { firestore.syncMessage(session, msg, idx + 1) }
-                }
-                remoteMsgs.forEach { store.upsertMessage(it) }
-                val activeMessages = store.listMessages(activeId)
-
-                lastCloudSyncAtMs = System.currentTimeMillis()
-                _state.update { st ->
-                    st.copy(
-                        cloudSyncStatus = CloudSyncStatus.SYNCED,
-                        layoutPrefs = updatedLayout,
-                        projects = mergedProjects,
-                        chats = mergedChats,
-                        activeChatId = activeId,
-                        messages = activeMessages,
-                        memories = mergedMemories,
-                        libraryFiles = mergedLibrary,
-                        engineProjects = mergedEngine,
-                        activeEngineProjectId = st.activeEngineProjectId ?: mergedEngine.firstOrNull()?.id,
-                        subscription = sub
-                    )
-                }
-            }.onFailure {
-                _state.update { it.copy(cloudSyncStatus = CloudSyncStatus.ERROR) }
+            } else if (remoteChats.isNotEmpty()) {
+                // Remove empty default placeholder chat when real cloud chats exist
+                store.deleteChat(chat.id)
             }
+        }
+
+        _state.value.memories.filter { it.id !in remoteMemoryIds }.forEach { mem ->
+            runCatching { firestore.syncMemory(session, mem) }
+        }
+        _state.value.libraryFiles.filter { it.id !in remoteLibraryIds }.forEach { item ->
+            runCatching { firestore.syncLibraryFile(session, item) }
+        }
+        store.listEngineProjects().filter { it.id !in remoteEngineIds }.forEach { eng ->
+            runCatching { firestore.syncEngineProject(session, eng) }
+        }
+
+        // Merge Projects
+        remoteProjects.forEach { store.upsertProject(it) }
+        val mergedProjects = store.listProjects()
+
+        // Merge Chats
+        remoteChats.forEach { store.upsertChat(it) }
+        var mergedChats = store.listChats()
+        if (mergedChats.isEmpty()) {
+            val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
+            store.upsertChat(fresh)
+            mergedChats = listOf(fresh)
+        }
+
+        // Merge Memories
+        val mergedMemories = (remoteMemories + _state.value.memories)
+            .distinctBy { it.id }
+            .sortedByDescending { it.createdAt }
+        store.cacheMemories(mergedMemories)
+
+        // Merge Library
+        val mergedLibrary = (remoteLibrary + _state.value.libraryFiles)
+            .distinctBy { it.id }
+            .sortedByDescending { it.updatedAt }
+        store.cacheLibraryFiles(mergedLibrary)
+
+        // Merge Engine Projects
+        remoteEngine.forEach { store.upsertEngineProject(it) }
+        val mergedEngine = store.listEngineProjects()
+
+        val sub = if (remoteProfile != null) {
+            remoteProfile.subscription
+        } else {
+            runCatching { api.getSubscription(session) }.getOrDefault(_state.value.subscription)
+        }
+
+        var updatedLayout = _state.value.layoutPrefs
+        if (remoteProfile != null) {
+            val remoteAccent = remoteProfile.accent?.let { AccentPresetId.fromId(it) }
+            val remoteDark = remoteProfile.theme?.let { it != "light" }
+            val remoteLang = remoteProfile.lang?.takeIf { it == "ru" || it == "en" }
+            updatedLayout = updatedLayout.copy(
+                accent = remoteAccent ?: updatedLayout.accent,
+                darkTheme = remoteDark ?: updatedLayout.darkTheme,
+                language = remoteLang ?: updatedLayout.language
+            )
+            store.saveLayoutPrefs(updatedLayout)
+        }
+
+        // Prefer most recently updated remote chat if current active chat is empty placeholder
+        val currentActiveId = _state.value.activeChatId
+        val currentLocalMsgs = if (currentActiveId.isNotBlank()) store.listMessages(currentActiveId) else emptyList()
+        val activeId = if (currentActiveId.isNotBlank() && mergedChats.any { it.id == currentActiveId } && (currentLocalMsgs.isNotEmpty() || remoteChats.isEmpty())) {
+            currentActiveId
+        } else {
+            mergedChats.first().id
+        }
+
+        // Pull remote messages for active chat and pre-cache up to 4 other recent synced chats
+        val chatIdsToFetch = (listOf(activeId) + remoteChats.take(5).map { it.id }).distinct()
+        for (cid in chatIdsToFetch) {
+            val remoteMsgs = runCatching { firestore.fetchMessagesForChat(session, cid) }.getOrDefault(emptyList())
+            val remoteMsgIds = remoteMsgs.map { it.id }.toSet()
+            store.listMessages(cid).filter { it.id !in remoteMsgIds && !it.isError }.forEachIndexed { idx, msg ->
+                runCatching { firestore.syncMessage(session, msg, idx + 1) }
+            }
+            remoteMsgs.forEach { store.upsertMessage(it) }
+        }
+        val activeMessages = store.listMessages(activeId)
+
+        lastCloudSyncAtMs = System.currentTimeMillis()
+        _state.update { st ->
+            st.copy(
+                cloudSyncStatus = CloudSyncStatus.SYNCED,
+                cloudSyncError = null,
+                layoutPrefs = updatedLayout,
+                projects = mergedProjects,
+                chats = mergedChats,
+                activeChatId = activeId,
+                messages = activeMessages,
+                memories = mergedMemories,
+                libraryFiles = mergedLibrary,
+                engineProjects = mergedEngine,
+                activeEngineProjectId = st.activeEngineProjectId ?: mergedEngine.firstOrNull()?.id,
+                subscription = sub
+            )
         }
     }
 
@@ -400,19 +435,18 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             runCatching {
                 authApi.signInWithEmail(cleanEmail, password)
             }.onSuccess { session ->
-                store.saveSession(session)
+                prepareLocalStoreForSession(session)
                 _state.update {
                     it.copy(
                         session = session,
                         isAuthLoading = false,
                         authError = null,
                         needsAccentOnboarding = false,
-                        cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
+                        cloudSyncStatus = CloudSyncStatus.SYNCING,
+                        cloudSyncError = null
                     )
                 }
-                if (session.isCloudSynced) {
-                    syncAllFromCloud()
-                }
+                syncAllFromCloud()
             }.onFailure { err ->
                 _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка входа") }
             }
@@ -435,23 +469,22 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             runCatching {
                 authApi.signUpWithEmail(cleanEmail, password, cleanName)
             }.onSuccess { session ->
-                store.saveSession(session)
+                prepareLocalStoreForSession(session)
                 _state.update {
                     it.copy(
                         session = session,
                         isAuthLoading = false,
                         authError = null,
                         needsAccentOnboarding = true,
-                        cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
+                        cloudSyncStatus = CloudSyncStatus.SYNCING,
+                        cloudSyncError = null
                     )
                 }
-                if (session.isCloudSynced) {
-                    val lp = _state.value.layoutPrefs
-                    viewModelScope.launch {
-                        firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
-                    }
-                    syncAllFromCloud()
+                val lp = _state.value.layoutPrefs
+                viewModelScope.launch {
+                    firestore.ensureProfileExists(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
                 }
+                syncAllFromCloud()
             }.onFailure { err ->
                 _state.update { it.copy(isAuthLoading = false, authError = err.message ?: "Ошибка регистрации") }
             }
@@ -530,42 +563,23 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun signInWithDeviceGoogleAccount(email: String, displayName: String = "") {
-        val cleanEmail = email.trim()
-        if (cleanEmail.isBlank()) {
-            onGoogleAuthError("Не удалось получить email выбранного аккаунта Google")
-            return
-        }
-        val isFirstTime = !store.hasRegisteredAccount(cleanEmail)
-        val session = store.authenticateOrCreateGoogleDeviceAccount(cleanEmail, displayName)
-        store.saveSession(session)
-        _state.update {
-            it.copy(
-                session = session,
-                isGoogleAuthLoading = false,
-                isAuthLoading = false,
-                authError = null,
-                needsAccentOnboarding = isFirstTime,
-                cloudSyncStatus = if (session.isCloudSynced) it.cloudSyncStatus else CloudSyncStatus.LOCAL_ONLY
-            )
-        }
-    }
-
     private fun completeGoogleSession(session: AuthSession) {
-        store.saveSession(session)
+        prepareLocalStoreForSession(session)
         _state.update {
             it.copy(
                 session = session,
                 isGoogleAuthLoading = false,
                 isAuthLoading = false,
                 authError = null,
-                needsAccentOnboarding = false
+                needsAccentOnboarding = false,
+                cloudSyncStatus = CloudSyncStatus.SYNCING,
+                cloudSyncError = null
             )
         }
         if (session.isCloudSynced) {
             val lp = _state.value.layoutPrefs
             viewModelScope.launch {
-                firestore.saveProfilePrefs(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
+                firestore.ensureProfileExists(session, if (lp.darkTheme) "dark" else "light", lp.accent.id, lp.language)
             }
             syncAllFromCloud()
         }
@@ -587,7 +601,8 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                 session = guest,
                 authError = null,
                 needsAccentOnboarding = false,
-                cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY
+                cloudSyncStatus = CloudSyncStatus.LOCAL_ONLY,
+                cloudSyncError = null
             )
         }
     }
@@ -602,11 +617,27 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     fun signOut() {
         store.clearSession()
+        store.clearAllUserData()
+        val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
+        store.upsertChat(fresh)
+        lastCloudSyncAtMs = 0L
         _state.update {
             it.copy(
                 session = null,
                 needsAccentOnboarding = false,
                 cloudSyncStatus = CloudSyncStatus.IDLE,
+                cloudSyncError = null,
+                projects = emptyList(),
+                activeProjectId = null,
+                chats = listOf(fresh),
+                activeChatId = fresh.id,
+                messages = emptyList(),
+                bookmarkedMessages = emptyList(),
+                libraryFiles = emptyList(),
+                memories = emptyList(),
+                engineProjects = emptyList(),
+                activeEngineProjectId = null,
+                outboxCount = 0,
                 subscription = SubscriptionInfo()
             )
         }

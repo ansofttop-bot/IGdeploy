@@ -24,9 +24,6 @@ import app.igseek.mobile.data.models.ProjectFolder
 import app.igseek.mobile.data.models.WebSourceItem
 import org.json.JSONArray
 import org.json.JSONObject
-import java.security.MessageDigest
-import java.security.SecureRandom
-import java.util.UUID
 
 class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db", null, 2) {
 
@@ -191,7 +188,33 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         prefs.edit().remove("auth_session").apply()
     }
 
-    // ==================== LOCAL EMAIL ACCOUNT FALLBACK (MATCHES WEB) ====================
+    fun getLastSyncedUid(): String? = prefs.getString("last_synced_uid", null)
+
+    fun setLastSyncedUid(uid: String) {
+        prefs.edit().putString("last_synced_uid", uid).apply()
+    }
+
+    fun clearAllUserData() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("projects", null, null)
+            db.delete("chats", null, null)
+            db.delete("messages", null, null)
+            db.delete("outbox", null, null)
+            db.delete("engine_projects", null, null)
+            db.delete("kv_cache", null, null)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        prefs.edit()
+            .remove("last_synced_uid")
+            .remove("local_email_accounts_v1")
+            .apply()
+    }
+
+    // ==================== OAUTH STATE ====================
 
     fun savePendingOAuthState(state: String) {
         prefs.edit().putString("pending_oauth_state", state).apply()
@@ -201,130 +224,6 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         val state = prefs.getString("pending_oauth_state", null)
         prefs.edit().remove("pending_oauth_state").apply()
         return state
-    }
-
-    fun registerLocalEmailAccount(email: String, password: String, displayName: String): AuthSession {
-        val cleanEmail = email.trim()
-        val key = cleanEmail.lowercase()
-        val accounts = readLocalAccountsJson()
-        if (accounts.has(key)) {
-            throw IllegalStateException("Аккаунт с таким email уже существует. Перейдите на вкладку «Вход».")
-        }
-
-        val saltBytes = ByteArray(16)
-        SecureRandom().nextBytes(saltBytes)
-        val saltHex = saltBytes.joinToString("") { "%02x".format(it) }
-        val hashHex = hashLocalPassword(password, saltHex)
-        val uid = "local_${UUID.randomUUID().toString().replace("-", "").take(16)}"
-        val resolvedName = displayName.trim().ifBlank { cleanEmail.substringBefore("@").ifBlank { "User" } }
-
-        val record = JSONObject().apply {
-            put("uid", uid)
-            put("email", cleanEmail)
-            put("displayName", resolvedName)
-            put("salt", saltHex)
-            put("passwordHash", hashHex)
-            put("createdAtMs", System.currentTimeMillis())
-        }
-        accounts.put(key, record)
-        prefs.edit().putString("local_email_accounts_v1", accounts.toString()).apply()
-
-        return AuthSession(
-            uid = uid,
-            email = cleanEmail,
-            displayName = resolvedName,
-            idToken = "",
-            refreshToken = "",
-            expiresAtMs = Long.MAX_VALUE,
-            isGuest = false
-        )
-    }
-
-    fun hasRegisteredAccount(email: String): Boolean {
-        val key = email.trim().lowercase()
-        return key.isNotBlank() && readLocalAccountsJson().has(key)
-    }
-
-    fun authenticateOrCreateGoogleDeviceAccount(email: String, displayName: String = ""): AuthSession {
-        val cleanEmail = email.trim()
-        val key = cleanEmail.lowercase()
-        val accounts = readLocalAccountsJson()
-        val resolvedName = displayName.trim().ifBlank { cleanEmail.substringBefore("@").ifBlank { "Google User" } }
-
-        val existing = accounts.optJSONObject(key)
-        if (existing != null) {
-            val uid = existing.optString("uid").ifBlank {
-                "google_${UUID.nameUUIDFromBytes(key.toByteArray()).toString().replace("-", "").take(16)}"
-            }
-            val savedName = existing.optString("displayName").ifBlank { resolvedName }
-            return AuthSession(
-                uid = uid,
-                email = cleanEmail,
-                displayName = savedName,
-                idToken = uid,
-                refreshToken = "",
-                expiresAtMs = Long.MAX_VALUE,
-                isGuest = false
-            )
-        }
-
-        val uid = "local_${UUID.nameUUIDFromBytes(key.toByteArray()).toString().replace("-", "").take(16)}"
-        val record = JSONObject().apply {
-            put("uid", uid)
-            put("email", cleanEmail)
-            put("displayName", resolvedName)
-            put("provider", "google_device")
-            put("createdAtMs", System.currentTimeMillis())
-        }
-        accounts.put(key, record)
-        prefs.edit().putString("local_email_accounts_v1", accounts.toString()).apply()
-
-        return AuthSession(
-            uid = uid,
-            email = cleanEmail,
-            displayName = resolvedName,
-            idToken = uid,
-            refreshToken = "",
-            expiresAtMs = Long.MAX_VALUE,
-            isGuest = false
-        )
-    }
-
-    fun authenticateLocalEmailAccount(email: String, password: String): AuthSession? {
-        val cleanEmail = email.trim()
-        val key = cleanEmail.lowercase()
-        val accounts = readLocalAccountsJson()
-        val record = accounts.optJSONObject(key) ?: return null
-        val saltHex = record.optString("salt")
-        val storedHash = record.optString("passwordHash")
-        val computedHash = hashLocalPassword(password, saltHex)
-        val matches = MessageDigest.isEqual(
-            storedHash.toByteArray(Charsets.UTF_8),
-            computedHash.toByteArray(Charsets.UTF_8)
-        )
-        if (!matches) {
-            throw IllegalStateException("Неверный email или пароль")
-        }
-        return AuthSession(
-            uid = record.optString("uid"),
-            email = record.optString("email").ifBlank { cleanEmail },
-            displayName = record.optString("displayName").ifBlank { cleanEmail.substringBefore("@") },
-            idToken = "",
-            refreshToken = "",
-            expiresAtMs = Long.MAX_VALUE,
-            isGuest = false
-        )
-    }
-
-    private fun readLocalAccountsJson(): JSONObject {
-        val raw = prefs.getString("local_email_accounts_v1", null) ?: return JSONObject()
-        return runCatching { JSONObject(raw) }.getOrElse { JSONObject() }
-    }
-
-    private fun hashLocalPassword(password: String, salt: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$salt:$password:igseek_android_v1".toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
     }
 
     // ==================== LAYOUT PREFERENCES ====================

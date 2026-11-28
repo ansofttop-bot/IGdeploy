@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { useT } from "../lib/i18n";
+import { PWAInstallButton, OfflineIndicator } from "../components/PWAInstallButton";
 
 function NotFoundComponent() {
   const t = useT();
@@ -137,6 +138,8 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <Outlet />
+      <PWAInstallButton variant="floating" />
+      <OfflineIndicator />
     </QueryClientProvider>
   );
 }

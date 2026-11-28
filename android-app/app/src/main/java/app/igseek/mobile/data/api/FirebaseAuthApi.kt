@@ -83,9 +83,9 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         session
     }
 
-    suspend fun refreshSession(current: AuthSession): AuthSession = withContext(Dispatchers.IO) {
+    suspend fun refreshSession(current: AuthSession, force: Boolean = false): AuthSession = withContext(Dispatchers.IO) {
         if (!current.isCloudSynced || current.refreshToken.isBlank() || apiKey.isBlank()) return@withContext current
-        if (System.currentTimeMillis() < current.expiresAtMs - 120_000L) return@withContext current
+        if (!force && System.currentTimeMillis() < current.expiresAtMs - 120_000L) return@withContext current
 
         val body = JSONObject().apply {
             put("grant_type", "refresh_token")
@@ -111,11 +111,13 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     }
 
     suspend fun signInWithGoogleIdToken(googleIdToken: String): AuthSession = withContext(Dispatchers.IO) {
-        signInWithGooglePostBody("id_token=$googleIdToken&providerId=google.com")
+        val encoded = java.net.URLEncoder.encode(googleIdToken, Charsets.UTF_8.name())
+        signInWithGooglePostBody("id_token=$encoded&providerId=google.com")
     }
 
     suspend fun signInWithGoogleAccessToken(accessToken: String): AuthSession = withContext(Dispatchers.IO) {
-        signInWithGooglePostBody("access_token=$accessToken&providerId=google.com")
+        val encoded = java.net.URLEncoder.encode(accessToken, Charsets.UTF_8.name())
+        signInWithGooglePostBody("access_token=$encoded&providerId=google.com")
     }
 
     private fun signInWithGooglePostBody(postBody: String): AuthSession {
@@ -123,7 +125,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         val authDomain = BuildConfig.FIREBASE_AUTH_DOMAIN.ifBlank { "localhost" }
         val body = JSONObject().apply {
             put("postBody", postBody)
-            put("requestUri", "https://$authDomain")
+            put("requestUri", "https://$authDomain/__/auth/handler")
             put("returnIdpCredential", true)
             put("returnSecureToken", true)
         }

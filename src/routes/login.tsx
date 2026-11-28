@@ -207,7 +207,7 @@ function MobileGoogleAuthBridge({
 
   useEffect(() => {
     let active = true;
-    persistMobileBridgeState(oauthState || resolvedState);
+    persistMobileBridgeState(oauthState || resolvedState, resolvedRedirect);
 
     (async () => {
       try {
@@ -238,12 +238,12 @@ function MobileGoogleAuthBridge({
     return () => {
       active = false;
     };
-  }, [oauthState]);
+  }, [oauthState, resolvedRedirect]);
 
   const startGoogleSignIn = async (forceAccountPicker = false) => {
     setBusy(true);
     setError(null);
-    persistMobileBridgeState(resolvedState);
+    persistMobileBridgeState(resolvedState, resolvedRedirect);
 
     try {
       if (forceAccountPicker && auth.currentUser) {

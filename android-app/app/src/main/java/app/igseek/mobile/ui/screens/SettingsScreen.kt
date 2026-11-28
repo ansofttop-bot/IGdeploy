@@ -152,13 +152,31 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = LucideIcons.Cloud,
                                     contentDescription = null,
-                                    tint = if (state.cloudSyncStatus == CloudSyncStatus.SYNCED) palette.success else palette.textMuted,
+                                    tint = when (state.cloudSyncStatus) {
+                                        CloudSyncStatus.SYNCED -> palette.success
+                                        CloudSyncStatus.ERROR -> palette.danger
+                                        else -> palette.textMuted
+                                    },
                                     modifier = Modifier.size(13.dp)
                                 )
                                 Text(
                                     text = syncLabel,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (state.cloudSyncStatus == CloudSyncStatus.SYNCED) palette.success else palette.textMuted
+                                    color = when (state.cloudSyncStatus) {
+                                        CloudSyncStatus.SYNCED -> palette.success
+                                        CloudSyncStatus.ERROR -> palette.danger
+                                        else -> palette.textMuted
+                                    }
+                                )
+                            }
+                            if (!state.cloudSyncError.isNullOrBlank()) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = state.cloudSyncError,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.danger,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }

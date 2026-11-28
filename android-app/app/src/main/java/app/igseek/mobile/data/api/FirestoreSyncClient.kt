@@ -192,42 +192,91 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
             .header("Authorization", "Bearer ${session.idToken}")
             .get()
             .build()
-        runCatching {
-            client.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return@use null
-                val obj = JSONObject(res.body?.string().orEmpty())
-                val fields = obj.optJSONObject("fields") ?: return@use null
-                val plan = optStr(fields, "plan") ?: "free"
-                val status = optStr(fields, "subscription_status")
-                    ?: optStr(fields, "subscriptionStatus")
-                    ?: plan
-                val expiresAt = optStr(fields, "subscription_expires_at")
-                    ?: optStr(fields, "subscriptionExpiresAt")
-                val lifetime = optBool(fields, "pro_lifetime") || optBool(fields, "proLifetime")
-                val expiresMs = expiresAt?.let { parseIsoToMs(it, 0L) } ?: 0L
-                val daysLeft = if (expiresMs > System.currentTimeMillis()) {
-                    ((expiresMs - System.currentTimeMillis()) / 86_400_000L).toInt().coerceAtLeast(1)
-                } else 0
-                val isPro = lifetime || plan.equals("pro", ignoreCase = true) ||
-                    (status.equals("active", ignoreCase = true) && (expiresMs == 0L || expiresMs > System.currentTimeMillis()))
-
-                RemoteProfileData(
-                    displayName = optStr(fields, "display_name") ?: optStr(fields, "displayName"),
-                    theme = optStr(fields, "theme"),
-                    accent = optStr(fields, "accent"),
-                    lang = optStr(fields, "lang"),
-                    subscription = SubscriptionInfo(
-                        plan = if (isPro) "pro" else "free",
-                        isPro = isPro,
-                        status = if (isPro) "active" else status,
-                        daysLeft = if (lifetime) 9999 else daysLeft,
-                        expiresAt = expiresAt,
-                        lastKeyId = optStr(fields, "subscription_txn_id") ?: optStr(fields, "subscriptionTxnId"),
-                        durationDays = 30
-                    )
-                )
+        client.newCall(req).execute().use { res ->
+            val raw = res.body?.string().orEmpty()
+            if (res.code == 404) return@use null
+            if (!res.isSuccessful) {
+                throw IllegalStateException("Firestore profile HTTP ${res.code}: ${raw.take(140)}")
             }
-        }.getOrNull()
+            val obj = JSONObject(raw)
+            val fields = obj.optJSONObject("fields") ?: return@use null
+            val plan = optStr(fields, "plan") ?: "free"
+            val status = optStr(fields, "subscription_status")
+                ?: optStr(fields, "subscriptionStatus")
+                ?: plan
+            val expiresAt = optStr(fields, "subscription_expires_at")
+                ?: optStr(fields, "subscriptionExpiresAt")
+            val lifetime = optBool(fields, "pro_lifetime") || optBool(fields, "proLifetime")
+            val expiresMs = expiresAt?.let { parseIsoToMs(it, 0L) } ?: 0L
+            val daysLeft = if (expiresMs > System.currentTimeMillis()) {
+                ((expiresMs - System.currentTimeMillis()) / 86_400_000L).toInt().coerceAtLeast(1)
+            } else 0
+            val isPro = lifetime || plan.equals("pro", ignoreCase = true) ||
+                (status.equals("active", ignoreCase = true) && (expiresMs == 0L || expiresMs > System.currentTimeMillis()))
+
+            RemoteProfileData(
+                displayName = optStr(fields, "display_name") ?: optStr(fields, "displayName"),
+                theme = optStr(fields, "theme"),
+                accent = optStr(fields, "accent"),
+                lang = optStr(fields, "lang"),
+                subscription = SubscriptionInfo(
+                    plan = if (isPro) "pro" else "free",
+                    isPro = isPro,
+                    status = if (isPro) "active" else status,
+                    daysLeft = if (lifetime) 9999 else daysLeft,
+                    expiresAt = expiresAt,
+                    lastKeyId = optStr(fields, "subscription_txn_id") ?: optStr(fields, "subscriptionTxnId"),
+                    durationDays = 30
+                )
+            )
+        }
+    }
+
+    suspend fun ensureProfileExists(
+        session: AuthSession,
+        theme: String,
+        accent: String,
+        lang: String
+    ) = withContext(Dispatchers.IO) {
+        if (!canSync(session)) return@withContext
+        val existing = runCatching { fetchProfile(session) }.getOrNull()
+        if (existing != null) return@withContext
+
+        val safeUid = sanitizeDocId(session.uid)
+        val now = nowIso()
+        val resolvedName = session.displayName.take(120).ifBlank {
+            session.email.substringBefore("@").take(120).ifBlank { "User" }
+        }
+        val fields = JSONObject().apply {
+            put("id", strVal(session.uid))
+            put("email", strVal(session.email))
+            put("display_name", strVal(resolvedName))
+            put("displayName", strVal(resolvedName))
+            put("theme", strVal(theme))
+            put("accent", strVal(accent))
+            put("lang", strVal(lang))
+            put("model", strVal("instinct"))
+            put("agent", strVal("universal"))
+            put("plan", strVal("free"))
+            put("pro_lifetime", boolVal(false))
+            put("proLifetime", boolVal(false))
+            put("defaults_v2_migrated", boolVal(true))
+            put("created_at", strVal(now))
+            put("createdAt", strVal(now))
+            put("updated_at", strVal(now))
+            put("updatedAt", strVal(now))
+        }
+        val maskParams = listOf(
+            "id", "email", "display_name", "displayName", "theme", "accent", "lang",
+            "model", "agent", "plan", "pro_lifetime", "proLifetime", "defaults_v2_migrated",
+            "created_at", "createdAt", "updated_at", "updatedAt"
+        ).joinToString("&") { "updateMask.fieldPaths=$it" }
+        val req = Request.Builder()
+            .url("${docsBaseUrl()}/profiles/$safeUid?$maskParams")
+            .header("Authorization", "Bearer ${session.idToken}")
+            .patch(JSONObject().put("fields", fields).toString().toRequestBody(jsonMedia))
+            .build()
+        runCatching { client.newCall(req).execute().close() }
     }
 
     suspend fun saveProfilePrefs(
@@ -238,17 +287,24 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
     ) = withContext(Dispatchers.IO) {
         if (!canSync(session)) return@withContext
         val safeUid = sanitizeDocId(session.uid)
+        val now = nowIso()
+        val resolvedName = session.displayName.take(120).ifBlank {
+            session.email.substringBefore("@").take(120).ifBlank { "User" }
+        }
         val fields = JSONObject().apply {
             put("id", strVal(session.uid))
             put("email", strVal(session.email))
-            put("display_name", strVal(session.displayName.take(120)))
+            put("display_name", strVal(resolvedName))
+            put("displayName", strVal(resolvedName))
             put("theme", strVal(theme))
             put("accent", strVal(accent))
             put("lang", strVal(lang))
-            put("updated_at", strVal(nowIso()))
+            put("updated_at", strVal(now))
+            put("updatedAt", strVal(now))
         }
-        val maskParams = listOf("id", "email", "display_name", "theme", "accent", "lang", "updated_at")
-            .joinToString("&") { "updateMask.fieldPaths=$it" }
+        val maskParams = listOf(
+            "id", "email", "display_name", "displayName", "theme", "accent", "lang", "updated_at", "updatedAt"
+        ).joinToString("&") { "updateMask.fieldPaths=$it" }
         val req = Request.Builder()
             .url("${docsBaseUrl()}/profiles/$safeUid?$maskParams")
             .header("Authorization", "Bearer ${session.idToken}")
@@ -273,9 +329,12 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         val iso = msToIso(project.updatedAtMs)
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("name", strVal(project.name.take(100)))
             put("created_at", strVal(iso))
+            put("createdAt", strVal(iso))
             put("updated_at", strVal(iso))
+            put("updatedAt", strVal(iso))
         }
         patchDocument(session, "projects", project.id, fields)
     }
@@ -309,17 +368,24 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         val iso = msToIso(chat.updatedAtMs)
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("title", strVal(chat.title.take(200)))
             put("chat_type", strVal("chat"))
+            put("chatType", strVal("chat"))
             put("is_saved", boolVal(chat.isSaved))
+            put("isSaved", boolVal(chat.isSaved))
             val projId = chat.projectId
             if (!projId.isNullOrBlank()) {
                 put("project_id", strVal(projId))
+                put("projectId", strVal(projId))
             } else {
                 put("project_id", nullVal())
+                put("projectId", nullVal())
             }
             put("updated_at", strVal(iso))
+            put("updatedAt", strVal(iso))
             put("created_at", strVal(iso))
+            put("createdAt", strVal(iso))
         }
         patchDocument(session, "chats", chat.id, fields)
     }
@@ -371,7 +437,9 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         val iso = msToIso(msg.createdAtMs)
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("chat_id", strVal(msg.chatId))
+            put("chatId", strVal(msg.chatId))
             put("role", strVal(if (msg.role == "user") "user" else "assistant"))
             put("content", strVal(msg.content.take(900_000)))
             if (msg.reasoning.isNotBlank()) {
@@ -396,7 +464,9 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
             }
             put("position", intVal(position.toLong()))
             put("created_at", strVal(iso))
+            put("createdAt", strVal(iso))
             put("updated_at", strVal(iso))
+            put("updatedAt", strVal(iso))
         }
         patchDocument(session, "chat_messages", msg.id, fields)
     }
@@ -419,12 +489,16 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
     suspend fun syncMemory(session: AuthSession, entry: MemoryEntryItem) = withContext(Dispatchers.IO) {
         if (!canSync(session)) return@withContext
         val iso = entry.createdAt.ifBlank { nowIso() }
+        val now = nowIso()
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("content", strVal(entry.content.take(4000)))
             put("kind", strVal(entry.kind.take(50).ifBlank { "other" }))
+            put("created_at", strVal(iso))
             put("createdAt", strVal(iso))
-            put("updatedAt", strVal(nowIso()))
+            put("updated_at", strVal(now))
+            put("updatedAt", strVal(now))
         }
         patchDocument(session, "memories", entry.id, fields)
     }
@@ -464,12 +538,15 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         val iso = item.updatedAt.ifBlank { nowIso() }
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("name", strVal(item.name.take(260)))
             put("type", strVal(item.type.take(50).ifBlank { "doc" }))
             put("content", strVal(bodyText))
             put("source", strVal(item.source.take(40).ifBlank { "library" }))
             put("taskTitle", strVal(item.chatTitle.take(200)))
+            put("created_at", strVal(iso))
             put("createdAt", strVal(iso))
+            put("updated_at", strVal(iso))
             put("updatedAt", strVal(iso))
         }
         patchDocument(session, "library_files", item.id, fields)
@@ -517,10 +594,13 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
         }
         val fields = JSONObject().apply {
             put("user_id", strVal(session.uid))
+            put("userId", strVal(session.uid))
             put("title", strVal(project.title.take(200)))
             put("activeFile", strVal(project.activeFile.take(260)))
             put("files", JSONObject().put("mapValue", JSONObject().put("fields", fileFields)))
+            put("created_at", strVal(iso))
             put("createdAt", strVal(iso))
+            put("updated_at", strVal(iso))
             put("updatedAt", strVal(iso))
         }
         patchDocument(session, "engine_projects", project.id, fields)

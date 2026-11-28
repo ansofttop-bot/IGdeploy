@@ -52,6 +52,14 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Verify Firebase Config Present
+        run: |
+          if [ ! -f firebase-applet-config.json ]; then
+            echo "ERROR: firebase-applet-config.json is missing!" >&2
+            exit 1
+          fi
+          node -e 'const c=require("./firebase-applet-config.json"); if(!c.apiKey||!c.projectId||!c.firestoreDatabaseId){process.exit(1);} console.log("Firebase config verified:", c.projectId, c.firestoreDatabaseId);'
+
       - name: Run Unit Tests & Compile Native APK
         env:
           INPUT_API_URL: ${{ github.event.inputs.api_base_url }}

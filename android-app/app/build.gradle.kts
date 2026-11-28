@@ -38,6 +38,12 @@ val defaultAuthBridgeUrl = (providers.gradleProperty("IGSEEK_AUTH_BRIDGE_URL").o
     .replace("\"", "")
     .trimEnd('/')
 
+if (firebaseWebApiKey.isBlank() || firebaseProjectId.isBlank()) {
+    throw GradleException(
+        "Missing Firebase config: expected firebase-applet-config.json at ${firebaseConfigFile.absolutePath} with apiKey and projectId."
+    )
+}
+
 android {
     namespace = "app.igseek.mobile"
     compileSdk = 35
@@ -46,8 +52,8 @@ android {
         applicationId = "app.igseek.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 204
-        versionName = "2.2.0"
+        versionCode = 205
+        versionName = "2.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
