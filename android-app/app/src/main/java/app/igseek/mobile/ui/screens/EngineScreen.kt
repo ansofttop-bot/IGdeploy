@@ -24,19 +24,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -547,55 +545,71 @@ fun EngineScreen(
                     }
                 }
 
-                // Quick Follow-Up Refinement Bar
+                // Sleek Floating Follow-Up Refinement Capsule
+                var isRefineFocused by remember { mutableStateOf(false) }
+                val canRefine = refinePrompt.isNotBlank() && !state.isEngineGenerating
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 8.dp),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(24.dp),
                     color = palette.composerBg,
-                    border = BorderStroke(1.dp, palette.composerBorder)
+                    shadowElevation = if (palette.isDark) 0.dp else 3.dp,
+                    border = BorderStroke(
+                        width = if (isRefineFocused) 1.5.dp else 1.dp,
+                        color = if (isRefineFocused || refinePrompt.isNotBlank()) palette.brandBorder else palette.composerBorder
+                    )
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(start = 16.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        Icon(
+                            imageVector = LucideIcons.Sparkles,
+                            contentDescription = null,
+                            tint = if (isRefineFocused || refinePrompt.isNotBlank()) palette.brand else palette.textMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Box(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
                             if (refinePrompt.isEmpty()) {
                                 Text(
-                                    text = if (isEn) "Refine this project…" else "Доработать проект…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = palette.textMuted
+                                    text = if (isEn) "Ask Engine to refine or add features…" else "Попросите Engine улучшить проект…",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             BasicTextField(
                                 value = refinePrompt,
                                 onValueChange = { refinePrompt = it },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodySmall.copy(color = palette.textPrimary),
+                                maxLines = 3,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = palette.textPrimary),
                                 cursorBrush = SolidColor(palette.brand),
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onFocusChanged { isRefineFocused = it.isFocused }
                             )
                         }
                         Surface(
                             modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(11.dp))
-                                .clickable(enabled = refinePrompt.isNotBlank() && !state.isEngineGenerating) {
-                                    val combined = "Доработай проект «${activeProject.title}» (${activeProject.prompt}): ${refinePrompt.trim()}"
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .clickable(enabled = canRefine) {
+                                    val combined = "Refine project «${activeProject.title}» (${activeProject.prompt}): ${refinePrompt.trim()}"
                                     refinePrompt = ""
                                     viewModel.generateEngineProject(combined)
                                 },
-                            shape = RoundedCornerShape(11.dp),
-                            color = if (refinePrompt.isNotBlank()) palette.brand else palette.chipBg
+                            shape = CircleShape,
+                            color = if (canRefine || state.isEngineGenerating) palette.brand else palette.chipBg
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 if (state.isEngineGenerating) {
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(14.dp),
+                                        modifier = Modifier.size(15.dp),
                                         strokeWidth = 2.dp,
                                         color = palette.brandOn
                                     )
@@ -603,8 +617,8 @@ fun EngineScreen(
                                     Icon(
                                         imageVector = LucideIcons.ArrowUp,
                                         contentDescription = "Refine",
-                                        tint = if (refinePrompt.isNotBlank()) palette.brandOn else palette.textMuted,
-                                        modifier = Modifier.size(16.dp)
+                                        tint = if (canRefine) palette.brandOn else palette.textMuted,
+                                        modifier = Modifier.size(17.dp)
                                     )
                                 }
                             }
@@ -620,112 +634,159 @@ fun EngineScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 item(key = "engine_composer") {
-                    IGseekGlassCard(
+                    var isEngineFocused by remember { mutableStateOf(false) }
+                    val canBuild = prompt.isNotBlank() && !state.isEngineGenerating
+
+                    Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(22.dp),
-                        contentPadding = 16.dp
+                        shape = RoundedCornerShape(26.dp),
+                        color = palette.composerBg,
+                        shadowElevation = if (palette.isDark) 0.dp else 4.dp,
+                        border = BorderStroke(
+                            width = if (isEngineFocused) 1.5.dp else 1.dp,
+                            color = if (isEngineFocused || prompt.isNotBlank()) palette.brandBorder else palette.composerBorder
+                        )
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp)
+                        Column(
+                            modifier = Modifier.padding(start = 18.dp, end = 12.dp, top = 16.dp, bottom = 11.dp)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(palette.brandSoft),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .padding(end = 6.dp, bottom = 14.dp)
                             ) {
-                                Icon(
-                                    imageVector = LucideIcons.Code2,
-                                    contentDescription = null,
-                                    tint = palette.brand,
-                                    modifier = Modifier.size(17.dp)
+                                if (prompt.isEmpty()) {
+                                    Text(
+                                        text = if (isEn) "Describe the app, landing page, tool, or game to build…"
+                                        else "Опишите сайт, калькулятор, дашборд или мини-игру…",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = palette.textMuted
+                                    )
+                                }
+                                BasicTextField(
+                                    value = prompt,
+                                    onValueChange = { prompt = it },
+                                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = palette.textPrimary),
+                                    cursorBrush = SolidColor(palette.brand),
+                                    minLines = 2,
+                                    maxLines = 6,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onFocusChanged { isEngineFocused = it.isFocused }
                                 )
                             }
-                            Column {
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = palette.brandSoft,
+                                        border = BorderStroke(1.dp, palette.brandBorder)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = LucideIcons.Code2,
+                                                contentDescription = null,
+                                                tint = palette.brand,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = "Live Studio",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.brand
+                                            )
+                                        }
+                                    }
+
+                                    if (prompt.isNotBlank() && !state.isEngineGenerating) {
+                                        Surface(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .clip(CircleShape)
+                                                .clickable { prompt = "" },
+                                            shape = CircleShape,
+                                            color = palette.chipBg,
+                                            border = BorderStroke(1.dp, palette.chipBorder)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = LucideIcons.X,
+                                                    contentDescription = if (isEn) "Clear" else "Очистить",
+                                                    tint = palette.textMuted,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .height(38.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable(enabled = canBuild) {
+                                            showCreateMode = false
+                                            studioMode = 0
+                                            viewModel.generateEngineProject(prompt)
+                                        },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (canBuild || state.isEngineGenerating) palette.brand else palette.chipBg
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (state.isEngineGenerating) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(14.dp),
+                                                strokeWidth = 2.dp,
+                                                color = palette.brandOn
+                                            )
+                                            Text(
+                                                text = if (isEn) "Building…" else "Сборка…",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.brandOn
+                                            )
+                                        } else {
+                                            Text(
+                                                text = if (isEn) "Build" else "Создать",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (canBuild) palette.brandOn else palette.textMuted
+                                            )
+                                            Icon(
+                                                imageVector = LucideIcons.ArrowUp,
+                                                contentDescription = null,
+                                                tint = if (canBuild) palette.brandOn else palette.textMuted,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!state.engineError.isNullOrBlank()) {
+                                Spacer(Modifier.height(10.dp))
                                 Text(
-                                    text = if (isEn) "Build a mini-app" else "Создать веб-проект",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = palette.textPrimary
-                                )
-                                Text(
-                                    text = if (isEn) "Generates HTML, CSS & JS with live preview"
-                                    else "Собирает HTML, CSS и JS с мгновенным превью",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = palette.textMuted
+                                    text = state.engineError,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.danger
                                 )
                             }
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-
-                        OutlinedTextField(
-                            value = prompt,
-                            onValueChange = { prompt = it },
-                            placeholder = {
-                                Text(
-                                    text = if (isEn) "Describe the site, tool, dashboard, or game…"
-                                    else "Опишите сайт, калькулятор, дашборд или мини-игру…",
-                                    color = palette.textMuted,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            },
-                            minLines = 3,
-                            maxLines = 6,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = palette.brand,
-                                unfocusedBorderColor = palette.glassBorder,
-                                focusedContainerColor = palette.bg.copy(alpha = 0.45f),
-                                unfocusedContainerColor = palette.bg.copy(alpha = 0.35f),
-                                focusedTextColor = palette.textPrimary,
-                                unfocusedTextColor = palette.textPrimary,
-                                cursorColor = palette.brand
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                showCreateMode = false
-                                studioMode = 0
-                                viewModel.generateEngineProject(prompt)
-                            },
-                            enabled = prompt.isNotBlank() && !state.isEngineGenerating,
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.brand,
-                                contentColor = palette.brandOn
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            if (state.isEngineGenerating) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(17.dp),
-                                    strokeWidth = 2.dp,
-                                    color = palette.brandOn
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (isEn) "Building project…" else "Собираем проект…", fontWeight = FontWeight.SemiBold)
-                            } else {
-                                Icon(LucideIcons.Sparkles, contentDescription = null, modifier = Modifier.size(17.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (isEn) "Generate & Preview" else "Собрать и открыть превью", fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-
-                        if (!state.engineError.isNullOrBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                text = state.engineError,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.danger
-                            )
                         }
                     }
                 }

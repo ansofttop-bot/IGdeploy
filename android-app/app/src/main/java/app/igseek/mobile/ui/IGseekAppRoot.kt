@@ -92,7 +92,8 @@ import kotlinx.coroutines.launch
 fun IGseekAppRoot(
     state: IGseekUiState,
     viewModel: IGseekViewModel,
-    onLaunchGoogleSignIn: () -> Unit
+    onLaunchGoogleSignIn: () -> Unit,
+    onRequestNotificationPermission: () -> Unit = {}
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val palette = LocalIGseekPalette.current
@@ -205,7 +206,8 @@ fun IGseekAppRoot(
                         IGseekTab.SETTINGS -> SettingsScreen(
                             state = state,
                             viewModel = viewModel,
-                            onOpenDrawer = openDrawer
+                            onOpenDrawer = openDrawer,
+                            onRequestNotificationPermission = onRequestNotificationPermission
                         )
                     }
                 }
@@ -338,7 +340,7 @@ private fun IGseekSidebarDrawer(
                         IGseekTab.ENGINE -> state.engineProjects.size.takeIf { it > 0 }?.toString()
                         IGseekTab.SAVED -> (state.chats.count { it.isSaved } + state.bookmarkedMessages.size)
                             .takeIf { it > 0 }?.toString()
-                        IGseekTab.WAVE -> if (isEn) "Voice" else "Голос"
+                        IGseekTab.WAVE -> "SOON"
                         else -> null
                     }
                     SidebarNavRow(

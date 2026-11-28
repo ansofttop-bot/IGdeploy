@@ -226,15 +226,25 @@ data class SubscriptionInfo(
     val durationDays: Int = 30
 )
 
+data class PushNotificationEvent(
+    val id: String,
+    val title: String,
+    val body: String,
+    val source: String = "general",
+    val delaySeconds: Int = 0,
+    val scheduledAt: String? = null
+)
+
 data class MobileLayoutPrefs(
-    val darkTheme: Boolean = true,
+    val darkTheme: Boolean = false,
     val accent: AccentPresetId = AccentPresetId.DEFAULT,
-    val language: String = "ru",
+    val language: String = "en",
     val compactDensity: Boolean = false,
     val showQuickPrompts: Boolean = true,
     val showBottomBar: Boolean = true,
     val biometricLockEnabled: Boolean = false,
     val hapticsEnabled: Boolean = true,
+    val notificationsEnabled: Boolean = true,
     val tabOrder: List<IGseekTab> = listOf(
         IGseekTab.CHAT,
         IGseekTab.FLOW,

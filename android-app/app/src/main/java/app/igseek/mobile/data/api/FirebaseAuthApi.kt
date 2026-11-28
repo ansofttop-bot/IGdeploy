@@ -18,7 +18,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     private val apiKey: String = BuildConfig.FIREBASE_WEB_API_KEY
 
     suspend fun signInWithEmail(email: String, password: String): AuthSession = withContext(Dispatchers.IO) {
-        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        require(apiKey.isNotBlank()) { "IGseek auth configuration is missing" }
         val body = JSONObject().apply {
             put("email", email)
             put("password", password)
@@ -43,7 +43,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     }
 
     suspend fun signUpWithEmail(email: String, password: String, displayName: String): AuthSession = withContext(Dispatchers.IO) {
-        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        require(apiKey.isNotBlank()) { "IGseek auth configuration is missing" }
         val body = JSONObject().apply {
             put("email", email)
             put("password", password)
@@ -111,7 +111,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     }
 
     suspend fun signInWithGoogleCallbackUri(requestUri: String, sessionId: String): AuthSession = withContext(Dispatchers.IO) {
-        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        require(apiKey.isNotBlank()) { "IGseek auth configuration is missing" }
         val body = JSONObject().apply {
             put("requestUri", requestUri)
             put("sessionId", sessionId)
@@ -147,7 +147,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
     }
 
     private fun signInWithGooglePostBody(postBody: String): AuthSession {
-        require(apiKey.isNotBlank()) { "Firebase API key не настроен в сборке" }
+        require(apiKey.isNotBlank()) { "IGseek auth configuration is missing" }
         val authDomain = BuildConfig.FIREBASE_AUTH_DOMAIN.ifBlank { "localhost" }
         val body = JSONObject().apply {
             put("postBody", postBody)
@@ -215,7 +215,7 @@ class FirebaseAuthApi(private val client: OkHttpClient) {
         code.contains("WEAK_PASSWORD") -> "Пароль должен содержать минимум 6 символов"
         code.contains("USER_DISABLED") -> "Этот аккаунт временно отключён"
         code.contains("TOO_MANY_ATTEMPTS") -> "Слишком много попыток, попробуйте чуть позже"
-        isOperationNotAllowed(code) -> "Вход и регистрация по почте ещё не включены в Firebase Console (Authentication → Sign-in method → Email/Password). Пока используйте «Войти через Google» — с ним сразу работает облачная синхронизация."
-        else -> code
+        isOperationNotAllowed(code) -> "Email sign-in is currently disabled in IGseek. Please sign in with Google for instant cloud sync."
+        else -> IGseekApiClient.sanitizeErrorBrand(code, "IGseek sign-in failed")
     }
 }

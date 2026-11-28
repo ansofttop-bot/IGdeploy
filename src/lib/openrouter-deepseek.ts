@@ -1,4 +1,5 @@
 import type { UiModel } from "./deepseek-models";
+import { sanitizeErrorForUser } from "./error-sanitizer";
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -282,7 +283,7 @@ async function fetchWithHeaderTimeout(
     return await fetch(url, { ...init, signal: ac.signal });
   } catch (err) {
     if (timedOut) {
-      throw new Error(`OpenRouter не ответил за ${Math.round(headerTimeoutMs / 1000)} сек (таймаут). Повторите запрос.`);
+      throw new Error(`IGseek AI did not respond within ${Math.round(headerTimeoutMs / 1000)}s (timeout). Please try again.`);
     }
     throw err;
   } finally {
@@ -311,15 +312,15 @@ function formatOpenRouterError(status: number, rawBody: string): string {
     // keep rawBody
   }
   if (status === 401 || status === 403) {
-    return "Недействительный OPENROUTER_API_KEY. Проверьте ключ OpenRouter в секретах сервера.";
+    return "IGseek AI authentication failed. Please try again later.";
   }
   if (status === 402 || /insufficient|credits|balance/i.test(msg)) {
-    return "Недостаточно средств на балансе OpenRouter (HTTP 402). Пополните счёт OpenRouter.";
+    return "IGseek AI is temporarily overloaded. Please try again shortly.";
   }
   if (status === 429 || /rate_limit|Too Many Requests/i.test(msg)) {
-    return "Временный лимит запросов OpenRouter (HTTP 429). Повторите через пару секунд.";
+    return "IGseek AI temporary rate limit reached. Please retry in a few seconds.";
   }
-  return (msg || `OpenRouter HTTP ${status}`).slice(0, 260);
+  return sanitizeErrorForUser(msg || `IGseek AI error (HTTP ${status})`, `IGseek AI error (HTTP ${status})`);
 }
 
 /**
@@ -338,7 +339,7 @@ export async function callOpenRouterDeepSeekStream(params: {
 }): Promise<{ response: Response; modelUsed: string }> {
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY не настроен на сервере.");
+    throw new Error("IGseek AI service is temporarily unavailable.");
   }
   if (params.signal?.aborted) throw createAbortError();
 
@@ -551,7 +552,7 @@ export async function callOpenRouterDeepSeekStream(params: {
             new Promise<never>((_resolve, reject) => {
               stallTimer = setTimeout(() => {
                 void reader.cancel().catch(() => {});
-                reject(new Error("OpenRouter stream stalled (18s)"));
+                reject(new Error("IGseek AI stream stalled. Please try again."));
               }, STALL_TIMEOUT_MS);
             }),
           ]).finally(() => {
@@ -645,7 +646,10 @@ export async function callOpenRouterDeepSeekStream(params: {
           markOpenRouterModelCooldown(usedModel, 45_000);
           emit({
             error: {
-              message: err instanceof Error ? err.message : "OpenRouter stream interrupted",
+              message: sanitizeErrorForUser(
+                err instanceof Error ? err.message : "",
+                "IGseek AI stream interrupted. Please try again.",
+              ),
             },
           });
           finish();

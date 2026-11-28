@@ -7,6 +7,7 @@ import {
   listAllMemories,
   updateMemory,
 } from "../../lib/memory-server";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 
 function bearer(request: Request) {
   const h = request.headers.get("authorization") ?? "";
@@ -49,7 +50,7 @@ const DeleteSchema = z.object({ id: z.string().min(1).max(128) });
 export async function handleMemoryRequest(request: Request): Promise<Response> {
   const authed = await auth(request);
   if (!authed) {
-    return jsonResponse({ error: "Unauthorized: valid Firebase sign-in required" }, 401);
+    return jsonResponse({ error: "Unauthorized: valid IGseek sign-in required" }, 401);
   }
 
   if (request.method === "GET") {
@@ -59,7 +60,7 @@ export async function handleMemoryRequest(request: Request): Promise<Response> {
     } catch (err: any) {
       const status = err?.status === 401 || err?.status === 403 ? err.status : 500;
       console.error("Memory GET error", err);
-      return jsonResponse({ error: err?.message || "Failed to load memories" }, status);
+      return jsonResponse({ error: sanitizeErrorForUser(err?.message, "Failed to load IGseek memories") }, status);
     }
   }
 
@@ -98,14 +99,14 @@ export async function handleMemoryRequest(request: Request): Promise<Response> {
     } catch (err: any) {
       const status = err?.status === 401 || err?.status === 403 ? err.status : 500;
       console.error("Firestore memory save error", err);
-      return jsonResponse({ error: err?.message || "Failed to save memory" }, status);
+      return jsonResponse({ error: sanitizeErrorForUser(err?.message, "Failed to save IGseek memory") }, status);
     }
 
     try {
       const items = await listAllMemories(authed.client, authed.id, authed.token);
       return jsonResponse({ items });
     } catch (err: any) {
-      return jsonResponse({ error: err?.message || "Saved but failed to reload" }, 500);
+      return jsonResponse({ error: sanitizeErrorForUser(err?.message, "Saved but failed to reload IGseek memories") }, 500);
     }
   }
 
@@ -121,7 +122,7 @@ export async function handleMemoryRequest(request: Request): Promise<Response> {
     } catch (err: any) {
       const status = err?.status === 401 || err?.status === 403 ? err.status : 500;
       console.error("Firestore memory delete error", err);
-      return jsonResponse({ error: err?.message || "Failed to delete memory" }, status);
+      return jsonResponse({ error: sanitizeErrorForUser(err?.message, "Failed to delete IGseek memory") }, status);
     }
     return jsonResponse({ ok: true });
   }

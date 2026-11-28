@@ -9,7 +9,17 @@ import android.speech.RecognizerIntent
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,19 +60,29 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,8 +99,15 @@ import app.igseek.mobile.ui.components.IGseekMarkdownText
 import app.igseek.mobile.ui.components.LucideIcons
 import app.igseek.mobile.ui.state.IGseekUiState
 import app.igseek.mobile.ui.state.IGseekViewModel
+import app.igseek.mobile.ui.state.PendingImageState
 import app.igseek.mobile.ui.theme.LocalIGseekPalette
+import kotlinx.coroutines.delay
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -283,6 +310,8 @@ fun ChatScreen(
                     ChatMessageRow(
                         msg = msg,
                         isLastAssistant = msg.id == lastAssistantId && !state.isStreaming,
+                        pendingImage = state.pendingImage?.takeIf { it.messageId == msg.id },
+                        isEn = isEn,
                         onCopy = {
                             clipboard.setText(AnnotatedString(msg.content))
                             viewModel.showToast(if (isEn) "Copied" else "Скопировано")
@@ -294,7 +323,7 @@ fun ChatScreen(
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_TEXT, msg.content)
                             }
-                            runCatching { context.startActivity(Intent.createChooser(sendIntent, "Поделиться")) }
+                            runCatching { context.startActivity(Intent.createChooser(sendIntent, if (isEn) "Share" else "Поделиться")) }
                         },
                         onSaveImage = { img -> viewModel.saveGeneratedImageToLibrary(img) },
                         onOpenUrl = { url ->
@@ -564,6 +593,8 @@ private fun ChatWelcomeHero(
 private fun ChatMessageRow(
     msg: ChatMessageItem,
     isLastAssistant: Boolean,
+    pendingImage: PendingImageState?,
+    isEn: Boolean,
     onCopy: () -> Unit,
     onBookmark: () -> Unit,
     onRegenerate: () -> Unit,
@@ -684,31 +715,61 @@ private fun ChatMessageRow(
                     markdown = msg.content,
                     textColor = if (msg.isError) MaterialTheme.colorScheme.error else palette.textPrimary
                 )
-            } else {
+            } else if (pendingImage == null && msg.images.isEmpty()) {
                 Text(
-                    text = "Думаю…",
+                    text = if (isEn) "Thinking…" else "Думаю…",
                     style = MaterialTheme.typography.bodyMedium,
                     color = palette.textMuted
+                )
+            }
+
+            if (pendingImage != null) {
+                PhotoGeneratingCanvasCard(
+                    title = pendingImage.title,
+                    prompt = pendingImage.prompt,
+                    isEn = isEn
                 )
             }
 
             msg.images.forEach { img ->
                 val bmp = remember(img.dataUrl) { decodeDataUrlBitmap(img.dataUrl) }
                 if (bmp != null) {
+                    var imageVisible by remember(img.id) { mutableStateOf(false) }
+                    LaunchedEffect(img.id) { imageVisible = true }
+                    val revealAlpha by animateFloatAsState(
+                        targetValue = if (imageVisible) 1f else 0.15f,
+                        animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+                        label = "photoRevealAlpha"
+                    )
+                    val revealScale by animateFloatAsState(
+                        targetValue = if (imageVisible) 1f else 1.045f,
+                        animationSpec = tween(durationMillis = 620, easing = FastOutSlowInEasing),
+                        label = "photoRevealScale"
+                    )
                     IGseekGlassCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(18.dp),
                         contentPadding = 8.dp
                     ) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = img.title,
-                            contentScale = ContentScale.Crop,
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(260.dp)
                                 .clip(RoundedCornerShape(13.dp))
-                        )
+                        ) {
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = img.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        alpha = revealAlpha
+                                        scaleX = revealScale
+                                        scaleY = revealScale
+                                    }
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -725,7 +786,7 @@ private fun ChatMessageRow(
                             )
                             Spacer(Modifier.width(8.dp))
                             IGseekGlassChip(
-                                label = "В Library",
+                                label = if (isEn) "Save to Library" else "В Library",
                                 selected = false,
                                 onClick = { onSaveImage(img) }
                             )
@@ -1131,6 +1192,366 @@ private fun ActiveModeBadge(
                     .size(13.dp)
                     .clickable(onClick = onClear)
             )
+        }
+    }
+}
+
+@Composable
+private fun PhotoGeneratingCanvasCard(
+    title: String,
+    prompt: String,
+    isEn: Boolean
+) {
+    val palette = LocalIGseekPalette.current
+    val isDark = (palette.glassBg.red + palette.glassBg.green + palette.glassBg.blue) / 3f < 0.5f
+
+    var elapsedSec by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        val started = System.currentTimeMillis()
+        while (true) {
+            elapsedSec = (System.currentTimeMillis() - started) / 1000f
+            delay(100L)
+        }
+    }
+
+    val stageIndex = when {
+        elapsedSec < 2.6f -> 0
+        elapsedSec < 6.2f -> 1
+        elapsedSec < 11.5f -> 2
+        else -> 3
+    }
+    val stageLabel = if (isEn) {
+        when (stageIndex) {
+            0 -> "Composing scene"
+            1 -> "Shaping light & color"
+            2 -> "Refining fine details"
+            else -> "Finalizing photo"
+        }
+    } else {
+        when (stageIndex) {
+            0 -> "Выстраиваем композицию"
+            1 -> "Прорабатываем свет и цвет"
+            2 -> "Детализируем изображение"
+            else -> "Завершаем проявку"
+        }
+    }
+    val progress = (0.10 + 0.84 * (1.0 - exp(-elapsedSec / 7.5))).toFloat().coerceAtMost(0.94f)
+
+    val transition = rememberInfiniteTransition(label = "igseekPhotoStudio")
+    val driftPhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 7600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "driftPhase"
+    )
+    val scanY by transition.animateFloat(
+        initialValue = -0.22f,
+        targetValue = 1.22f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3100, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "scanY"
+    )
+    val apertureAngle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 9000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "apertureAngle"
+    )
+    val breatheScale by transition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "breatheScale"
+    )
+
+    val canvasBg = if (isDark) Color(0xFF0C0C10) else Color(0xFFF3F3F6)
+    val auraA = if (isDark) Color(0xFFF43F5E).copy(alpha = 0.24f) else Color(0xFFF59E0B).copy(alpha = 0.20f)
+    val auraB = if (isDark) Color(0xFFF59E0B).copy(alpha = 0.20f) else Color(0xFF38BDF8).copy(alpha = 0.20f)
+    val auraC = if (isDark) palette.brand.copy(alpha = 0.22f) else Color(0xFF71717A).copy(alpha = 0.16f)
+    val gridColor = if (isDark) Color.White.copy(alpha = 0.045f) else Color(0xFF18181B).copy(alpha = 0.045f)
+    val bracketColor = if (isDark) Color.White.copy(alpha = 0.32f) else Color(0xFF71717A).copy(alpha = 0.55f)
+    val scanLineColor = if (isDark) Color.White.copy(alpha = 0.42f) else Color(0xFF18181B).copy(alpha = 0.28f)
+    val scanTrailColor = if (isDark) Color.White.copy(alpha = 0.10f) else Color(0xFF18181B).copy(alpha = 0.06f)
+    val ringOuterColor = if (isDark) Color.White.copy(alpha = 0.26f) else Color(0xFF18181B).copy(alpha = 0.22f)
+    val brandAccent = palette.brand
+
+    IGseekGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = 0.dp
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Studio Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(11.dp),
+                    color = palette.chipBg,
+                    border = BorderStroke(1.dp, palette.glassBorder),
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = LucideIcons.Image,
+                            contentDescription = null,
+                            tint = palette.brand,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title.ifBlank { if (isEn) "IGseek Image" else "Изображение IGseek" },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "IGseek Studio · ${String.format(Locale.US, "%.1fs", elapsedSec)}",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = palette.textMuted,
+                        maxLines = 1
+                    )
+                }
+                Text(
+                    text = "${(progress * 100f).roundToInt()}%",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.textSecondary
+                )
+            }
+
+            HorizontalDivider(color = palette.divider)
+
+            // Developing Canvas
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .height(260.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(canvasBg)
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+
+                    // 1. Living organic pigment washes
+                    val c1 = Offset(
+                        x = w * (0.28f + 0.18f * cos(driftPhase)),
+                        y = h * (0.30f + 0.14f * sin(driftPhase))
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(auraA, Color.Transparent), center = c1, radius = w * 0.55f),
+                        radius = w * 0.55f,
+                        center = c1
+                    )
+
+                    val c2 = Offset(
+                        x = w * (0.74f + 0.16f * sin(driftPhase * 0.85f)),
+                        y = h * (0.68f + 0.14f * cos(driftPhase * 0.85f))
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(auraB, Color.Transparent), center = c2, radius = w * 0.58f),
+                        radius = w * 0.58f,
+                        center = c2
+                    )
+
+                    val c3 = Offset(
+                        x = w * (0.50f + 0.14f * cos(driftPhase * 1.25f + 1.4f)),
+                        y = h * (0.48f + 0.18f * sin(driftPhase * 1.25f + 1.4f))
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(auraC, Color.Transparent), center = c3, radius = w * 0.45f),
+                        radius = w * 0.45f,
+                        center = c3
+                    )
+
+                    // 2. Architectural composition grid
+                    val step = 28.dp.toPx()
+                    var gx = step
+                    while (gx < w) {
+                        drawLine(gridColor, Offset(gx, 0f), Offset(gx, h), strokeWidth = 1f)
+                        gx += step
+                    }
+                    var gy = step
+                    while (gy < h) {
+                        drawLine(gridColor, Offset(0f, gy), Offset(w, gy), strokeWidth = 1f)
+                        gy += step
+                    }
+
+                    // 3. Sweeping optical developing light band
+                    val bandTop = h * scanY
+                    val bandHeight = h * 0.34f
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(scanTrailColor, Color.Transparent),
+                            startY = bandTop,
+                            endY = bandTop + bandHeight
+                        ),
+                        topLeft = Offset(0f, bandTop),
+                        size = Size(w, bandHeight)
+                    )
+                    drawLine(
+                        brush = Brush.horizontalGradient(
+                            listOf(Color.Transparent, scanLineColor, Color.Transparent)
+                        ),
+                        start = Offset(0f, bandTop),
+                        end = Offset(w, bandTop),
+                        strokeWidth = 1.5.dp.toPx()
+                    )
+
+                    // 4. Optical viewfinder corner registration brackets
+                    val pad = 14.dp.toPx()
+                    val bLen = 14.dp.toPx()
+                    val bStroke = 1.5.dp.toPx()
+                    val bottomPad = 48.dp.toPx()
+                    // Top-left
+                    drawLine(bracketColor, Offset(pad, pad), Offset(pad + bLen, pad), bStroke, StrokeCap.Round)
+                    drawLine(bracketColor, Offset(pad, pad), Offset(pad, pad + bLen), bStroke, StrokeCap.Round)
+                    // Top-right
+                    drawLine(bracketColor, Offset(w - pad, pad), Offset(w - pad - bLen, pad), bStroke, StrokeCap.Round)
+                    drawLine(bracketColor, Offset(w - pad, pad), Offset(w - pad, pad + bLen), bStroke, StrokeCap.Round)
+                    // Bottom-left
+                    drawLine(bracketColor, Offset(pad, h - bottomPad), Offset(pad + bLen, h - bottomPad), bStroke, StrokeCap.Round)
+                    drawLine(bracketColor, Offset(pad, h - bottomPad), Offset(pad, h - bottomPad - bLen), bStroke, StrokeCap.Round)
+                    // Bottom-right
+                    drawLine(bracketColor, Offset(w - pad, h - bottomPad), Offset(w - pad - bLen, h - bottomPad), bStroke, StrokeCap.Round)
+                    drawLine(bracketColor, Offset(w - pad, h - bottomPad), Offset(w - pad, h - bottomPad - bLen), bStroke, StrokeCap.Round)
+
+                    // 5. Central rotating aperture focus rings
+                    val center = Offset(w / 2f, h * 0.44f)
+                    val outerR = 35.dp.toPx()
+                    val innerR = 27.dp.toPx()
+                    drawCircle(
+                        color = ringOuterColor,
+                        radius = outerR,
+                        center = center,
+                        style = Stroke(
+                            width = 1.25.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), apertureAngle * 0.6f)
+                        )
+                    )
+                    drawArc(
+                        color = brandAccent.copy(alpha = 0.65f),
+                        startAngle = -apertureAngle,
+                        sweepAngle = 72f,
+                        useCenter = false,
+                        topLeft = Offset(center.x - innerR, center.y - innerR),
+                        size = Size(innerR * 2f, innerR * 2f),
+                        style = Stroke(width = 1.75.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                    drawArc(
+                        color = brandAccent.copy(alpha = 0.35f),
+                        startAngle = -apertureAngle + 180f,
+                        sweepAngle = 54f,
+                        useCenter = false,
+                        topLeft = Offset(center.x - innerR, center.y - innerR),
+                        size = Size(innerR * 2f, innerR * 2f),
+                        style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+
+                // Center breathing optical lens housing
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = 32.dp)
+                        .size(44.dp)
+                        .graphicsLayer {
+                            scaleX = breatheScale
+                            scaleY = breatheScale
+                        },
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isDark) Color(0xFF18181E).copy(alpha = 0.90f) else Color.White.copy(alpha = 0.92f),
+                    border = BorderStroke(1.dp, palette.glassBorder)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = LucideIcons.Image,
+                            contentDescription = null,
+                            tint = palette.brand,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // Bottom developing stage caption + prompt preview
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color.Transparent,
+                                    canvasBg.copy(alpha = 0.84f),
+                                    canvasBg.copy(alpha = 0.96f)
+                                )
+                            )
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    AnimatedContent(
+                        targetState = stageLabel,
+                        label = "stageLabelTransition"
+                    ) { currentLabel ->
+                        Text(
+                            text = "$currentLabel…",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    val trimmedPrompt = prompt.trim()
+                    if (trimmedPrompt.isNotBlank() && !trimmedPrompt.equals(title.trim(), ignoreCase = true)) {
+                        Text(
+                            text = trimmedPrompt,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                // Bottom hairline asymptotic progress ribbon
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(2.5.dp)
+                        .background(if (isDark) Color.White.copy(alpha = 0.08f) else Color(0xFF18181B).copy(alpha = 0.08f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .height(2.5.dp)
+                            .background(palette.brand)
+                    )
+                }
+            }
         }
     }
 }

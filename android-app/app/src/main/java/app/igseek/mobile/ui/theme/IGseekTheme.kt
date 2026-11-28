@@ -48,7 +48,7 @@ data class IGseekPalette(
 )
 
 val LocalIGseekPalette = staticCompositionLocalOf {
-    buildIGseekPalette(darkTheme = true, accent = AccentPresetId.DEFAULT)
+    buildIGseekPalette(darkTheme = false, accent = AccentPresetId.DEFAULT)
 }
 
 /**

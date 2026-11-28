@@ -13,6 +13,7 @@ import app.igseek.mobile.data.models.FlowStepItem
 import app.igseek.mobile.data.models.GeneratedImageItem
 import app.igseek.mobile.data.models.LibraryFileItem
 import app.igseek.mobile.data.models.MemoryEntryItem
+import app.igseek.mobile.data.models.PushNotificationEvent
 import app.igseek.mobile.data.models.SubscriptionInfo
 import app.igseek.mobile.data.models.WebSourceItem
 import kotlinx.coroutines.CancellationException
@@ -47,6 +48,36 @@ class IGseekApiClient(
     private val client: OkHttpClient,
     private val baseUrlProvider: () -> String
 ) {
+    companion object {
+        private val API_KEY_REGEX = Regex(
+            "\\b(?:OPENROUTER|GROQ|DEEPSEEK|APIMIRA|OPENAI|ANTHROPIC|GEMINI|GOOGLE_AI|FIREBASE|SUPABASE)_API_KEY\\b",
+            RegexOption.IGNORE_CASE
+        )
+        private val VENDOR_MODEL_REGEX = Regex(
+            "\\b(?:google|deepseek|openai|anthropic|qwen|meta-llama|mistralai|x-ai|cohere|perplexity)/[a-z0-9._:-]+\\b",
+            RegexOption.IGNORE_CASE
+        )
+        private val THIRD_PARTY_BRAND_REGEX = Regex(
+            "\\b(?:OpenRouter|DeepSeek|Groq|OpenAI|ChatGPT|Pollinations(?:\\.ai)?|APIMIRA|ApiMira|Anthropic|Claude|Gemini|Google\\s+AI|Whisper|ElevenLabs|Perplexity|Replicate|Together(?:\\.ai)?|Tavily|GPT\\s*Image\\s*2|GPT-\\d+[a-z0-9-]*|Flux|DALL-?E(?:\\s*\\d)?|Midjourney|Stability\\s*AI|Mistral|Cohere|Hugging\\s*Face|Firebase(?:\\s+Console)?|Firestore|Supabase)\\b",
+            RegexOption.IGNORE_CASE
+        )
+        private val DUP_IGSEEK_REGEX = Regex("\\bIGseek\\s+IGseek\\b", RegexOption.IGNORE_CASE)
+        private val PAREN_IGSEEK_REGEX = Regex("\\(\\s*IGseek\\s*\\)", RegexOption.IGNORE_CASE)
+        private val MULTI_SPACE_REGEX = Regex("\\s{2,}")
+
+        fun sanitizeErrorBrand(raw: String?, fallback: String = "IGseek AI request failed. Please try again."): String {
+            var cleaned = raw?.trim().orEmpty()
+            if (cleaned.isBlank()) return fallback
+            cleaned = API_KEY_REGEX.replace(cleaned, "IGseek API key")
+            cleaned = VENDOR_MODEL_REGEX.replace(cleaned, "IGseek AI")
+            cleaned = THIRD_PARTY_BRAND_REGEX.replace(cleaned, "IGseek")
+            cleaned = DUP_IGSEEK_REGEX.replace(cleaned, "IGseek")
+            cleaned = PAREN_IGSEEK_REGEX.replace(cleaned, "")
+            cleaned = MULTI_SPACE_REGEX.replace(cleaned, " ").trim()
+            return cleaned.ifBlank { fallback }.take(260)
+        }
+    }
+
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val nonRedirectClient: OkHttpClient by lazy {
         client.newBuilder()
@@ -82,7 +113,7 @@ class IGseekApiClient(
 
     // ==================== DIRECT WEB SEARCH GROUNDING ====================
 
-    suspend fun searchWebDirect(query: String, lang: String = "ru"): List<WebSourceItem> = withContext(Dispatchers.IO) {
+    suspend fun searchWebDirect(query: String, lang: String = "en"): List<WebSourceItem> = withContext(Dispatchers.IO) {
         val clean = query.trim().take(180)
         if (clean.isBlank()) return@withContext emptyList()
         val encoded = URLEncoder.encode(clean, StandardCharsets.UTF_8.name())
@@ -151,52 +182,7 @@ class IGseekApiClient(
         results.distinctBy { it.url }.take(5)
     }
 
-    // ==================== POLLINATIONS IMAGE GENERATION (ALL PLANS) ====================
-
-    suspend fun generateImageDirect(prompt: String): GeneratedImageItem = withContext(Dispatchers.IO) {
-        val cleanPrompt = prompt.trim().ifBlank { "modern futuristic red fox minimal dark aesthetic artwork" }
-        val encoded = URLEncoder.encode(cleanPrompt, StandardCharsets.UTF_8.name()).replace("+", "%20")
-        val seed = (System.currentTimeMillis() % 999_999L).toInt()
-        var lastError: Throwable? = null
-
-        for (modelName in listOf("flux", "turbo")) {
-            val url = "https://image.pollinations.ai/prompt/$encoded?width=1024&height=1024&nologo=true&seed=$seed&model=$modelName"
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", "IGseekAndroid/2.0")
-                .header("Accept", "image/png,image/jpeg,image/webp,image/*")
-                .header("Connection", "close")
-                .get()
-                .build()
-
-            val result = runCatching {
-                client.newCall(req).execute().use { res ->
-                    if (!res.isSuccessful) {
-                        throw IllegalStateException("Pollinations ($modelName) HTTP ${res.code}")
-                    }
-                    val bytes = res.body?.bytes() ?: throw IllegalStateException("Пустой ответ от Pollinations")
-                    if (bytes.size < 512) {
-                        throw IllegalStateException("Pollinations вернул некорректное изображение")
-                    }
-                    val mime = res.header("Content-Type")?.substringBefore(';')?.ifBlank { "image/jpeg" } ?: "image/jpeg"
-                    val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    GeneratedImageItem(
-                        id = "img_${UUID.randomUUID().toString().take(10)}",
-                        title = cleanPrompt.take(70),
-                        dataUrl = "data:$mime;base64,$b64"
-                    )
-                }
-            }
-            result.onSuccess { return@withContext it }
-            lastError = result.exceptionOrNull()
-        }
-
-        throw IllegalStateException(
-            lastError?.message ?: "Не удалось сгенерировать изображение через Pollinations"
-        )
-    }
-
-    // ==================== STREAMING CHAT (SERVER OPENROUTER DEEPSEEK < V4.0 + POLLINATIONS) ====================
+    // ==================== STREAMING CHAT (OPENROUTER TEXT & TIERED IMAGE GENERATION) ====================
 
     suspend fun streamChat(
         session: AuthSession?,
@@ -213,33 +199,15 @@ class IGseekApiClient(
         onDelta: (String) -> Unit,
         onReasoning: (String) -> Unit,
         onImage: (GeneratedImageItem) -> Unit,
-        onSources: (List<WebSourceItem>) -> Unit
+        onSources: (List<WebSourceItem>) -> Unit,
+        onNotification: (PushNotificationEvent) -> Unit = {},
+        onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
+        onImageError: () -> Unit = {}
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val lastUserText = history.lastOrNull { it.role == "user" }?.content.orEmpty().trim()
-
-        // Pollinations handles image generation directly when Image Mode or /img /imagine is used (all plans: Free & Pro)
-        if (imageMode || lastUserText.startsWith("/img ", ignoreCase = true) || lastUserText.startsWith("/imagine ", ignoreCase = true)) {
-            val prompt = lastUserText
-                .removePrefix("/img ")
-                .removePrefix("/imagine ")
-                .trim()
-                .ifBlank { lastUserText }
-            onDelta(if (language == "en") "Generating image with Pollinations…" else "Генерирую изображение через Pollinations…")
-            val img = generateImageDirect(prompt)
-            onImage(img)
-            val caption = if (language == "en") {
-                "Done! Generated image with Pollinations for: **$prompt**"
-            } else {
-                "Готово! Сгенерировал изображение через Pollinations по запросу: **$prompt**"
-            }
-            onDelta(caption)
-            return@withContext StreamChatResult(
-                content = caption,
-                reasoning = "",
-                images = listOf(img),
-                webSources = emptyList()
-            )
-        }
+        val effectiveImageMode = imageMode ||
+            lastUserText.startsWith("/img ", ignoreCase = true) ||
+            lastUserText.startsWith("/imagine ", ignoreCase = true)
 
         val gateway = resolveGatewayUrl()
         val result = streamChatViaGateway(
@@ -250,14 +218,18 @@ class IGseekApiClient(
             agent = agent,
             webSearch = webSearch,
             reasoning = reasoning,
+            imageMode = effectiveImageMode,
             attachments = attachments,
             idempotencyKey = idempotencyKey,
             onDelta = onDelta,
             onReasoning = onReasoning,
-            onImage = onImage
+            onImage = onImage,
+            onNotification = onNotification,
+            onImageStart = onImageStart,
+            onImageError = onImageError
         )
 
-        if (webSearch && result.webSources.isEmpty() && lastUserText.isNotBlank()) {
+        if (!effectiveImageMode && webSearch && result.webSources.isEmpty() && lastUserText.isNotBlank()) {
             val sources = runCatching { searchWebDirect(lastUserText, language) }.getOrDefault(emptyList())
             if (sources.isNotEmpty()) {
                 onSources(sources)
@@ -279,11 +251,15 @@ class IGseekApiClient(
         agent: AgentRoleId,
         webSearch: Boolean,
         reasoning: Boolean,
+        imageMode: Boolean = false,
         attachments: List<ChatAttachment>,
         idempotencyKey: String,
         onDelta: (String) -> Unit,
         onReasoning: (String) -> Unit,
-        onImage: (GeneratedImageItem) -> Unit
+        onImage: (GeneratedImageItem) -> Unit,
+        onNotification: (PushNotificationEvent) -> Unit = {},
+        onImageStart: (title: String, prompt: String) -> Unit = { _, _ -> },
+        onImageError: () -> Unit = {}
     ): StreamChatResult {
         val messagesJson = JSONArray()
         history.takeLast(14).forEach { msg ->
@@ -309,6 +285,7 @@ class IGseekApiClient(
             put("agent", agent.apiId)
             put("webSearch", webSearch)
             put("reasoning", reasoning)
+            if (imageMode) put("imageMode", true)
             if (filesJson.length() > 0) put("userAttachments", filesJson)
         }
 
@@ -334,22 +311,22 @@ class IGseekApiClient(
                 val finalUrl = res.request.url.toString()
                 if (finalUrl.contains("cookie_check", ignoreCase = true) || finalUrl.contains("accounts.google", ignoreCase = true)) {
                     throw IllegalStateException(
-                        "Адрес $gateway защищён окном браузера. Укажите публичный URL вашего сервера IGseek (например Vercel/Northflank) в Настройки → Сервер IGseek API."
+                        "Unable to reach IGseek API directly. Please check your internet connection and try again."
                     )
                 }
 
                 if (!res.isSuccessful) {
                     val errText = runCatching { res.body?.string().orEmpty() }.getOrDefault("")
-                    val errMsg = runCatching { JSONObject(errText).optString("error") }.getOrNull()
+                    val rawErr = runCatching { JSONObject(errText).optString("error") }.getOrNull()
                         ?.takeIf { it.isNotBlank() }
-                        ?: "Сервер IGseek ($gateway) вернул HTTP ${res.code}"
+                    val errMsg = sanitizeErrorBrand(rawErr, "IGseek server returned HTTP ${res.code}")
                     throw IllegalStateException(errMsg)
                 }
 
                 val contentType = res.header("Content-Type").orEmpty()
                 if (contentType.contains("text/html", ignoreCase = true)) {
                     throw IllegalStateException(
-                        "Сервер $gateway вернул HTML вместо потока DeepSeek. Укажите корректный URL бэкенда в Настройки → Сервер IGseek API."
+                        "IGseek API returned an unexpected HTML response. Please try again shortly."
                     )
                 }
 
@@ -392,6 +369,15 @@ class IGseekApiClient(
                                     onReasoning(reasoningBuf.toString())
                                 }
                             }
+                            "image_start" -> {
+                                val obj = decoded as? JSONObject
+                                val title = obj?.optString("title").orEmpty().trim().ifBlank { "IGseek Image" }
+                                val prompt = obj?.optString("prompt").orEmpty().trim()
+                                onImageStart(title, prompt)
+                            }
+                            "image_error" -> {
+                                onImageError()
+                            }
                             "image" -> {
                                 val obj = decoded as? JSONObject
                                 val dataUrl = obj?.optString("dataUrl").orEmpty()
@@ -403,6 +389,25 @@ class IGseekApiClient(
                                     )
                                     images.add(img)
                                     onImage(img)
+                                }
+                            }
+                            "notification_event" -> {
+                                val obj = decoded as? JSONObject
+                                if (obj != null) {
+                                    val title = obj.optString("title").trim()
+                                    val bodyText = obj.optString("body").trim()
+                                    if (title.isNotBlank() || bodyText.isNotBlank()) {
+                                        onNotification(
+                                            PushNotificationEvent(
+                                                id = obj.optString("id").ifBlank { "notif_${UUID.randomUUID().toString().take(8)}" },
+                                                title = title.ifBlank { "IGseek AI" },
+                                                body = bodyText,
+                                                source = obj.optString("source").ifBlank { "general" },
+                                                delaySeconds = obj.optInt("delaySeconds", 0),
+                                                scheduledAt = obj.optString("scheduledAt").takeIf { it.isNotBlank() && it != "null" }
+                                            )
+                                        )
+                                    }
                                 }
                             }
                             "error" -> {
@@ -462,14 +467,14 @@ class IGseekApiClient(
         }
 
         if (serverError != null && contentBuf.isEmpty() && images.isEmpty()) {
-            throw IllegalStateException(serverError)
+            throw IllegalStateException(sanitizeErrorBrand(serverError))
         }
         return StreamChatResult(contentBuf.toString(), reasoningBuf.toString(), images, emptyList())
     }
 
     // ==================== AUTONOMOUS FLOW VIA BACKEND DEEPSEEK ====================
 
-    suspend fun planFlow(session: AuthSession?, goal: String, language: String = "ru"): FlowPlanResult = withContext(Dispatchers.IO) {
+    suspend fun planFlow(session: AuthSession?, goal: String, language: String = "en"): FlowPlanResult = withContext(Dispatchers.IO) {
         val gateway = resolveGatewayUrl()
         val payload = JSONObject().apply {
             put("action", "plan")
@@ -535,7 +540,7 @@ class IGseekApiClient(
         goal: String,
         step: FlowStepItem,
         previousOutputs: List<Pair<String, String>>,
-        language: String = "ru"
+        language: String = "en"
     ): String = withContext(Dispatchers.IO) {
         val gateway = resolveGatewayUrl()
         val prevJson = JSONArray()
@@ -572,21 +577,21 @@ class IGseekApiClient(
         nonRedirectClient.newCall(reqBuilder.build()).execute().use { res ->
             val raw = res.body?.string().orEmpty()
             if (!res.isSuccessful) {
-                val errMsg = runCatching { JSONObject(raw).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
-                    ?: "Ошибка Flow (${res.code})"
+                val rawErr = runCatching { JSONObject(raw).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+                val errMsg = sanitizeErrorBrand(rawErr, "IGseek Flow error (${res.code})")
                 throw IllegalStateException(errMsg)
             }
             val obj = JSONObject(raw)
             val stepRes = obj.optJSONObject("stepResult")
             stepRes?.optString("output")?.takeIf { it.isNotBlank() }
-                ?: stepRes?.optString("error")?.takeIf { it.isNotBlank() }
-                ?: "Шаг выполнен."
+                ?: stepRes?.optString("error")?.takeIf { it.isNotBlank() }?.let { sanitizeErrorBrand(it) }
+                ?: if (language == "en") "Step completed." else "Шаг выполнен."
         }
     }
 
     // ==================== ENGINE CODE BUILDER VIA BACKEND DEEPSEEK ====================
 
-    suspend fun generateEngineProject(prompt: String, language: String = "ru"): EngineProjectItem = withContext(Dispatchers.IO) {
+    suspend fun generateEngineProject(prompt: String, language: String = "en"): EngineProjectItem = withContext(Dispatchers.IO) {
         val sysPrompt = """
             You are IGseek Engine — an elite full-stack code generator.
             Generate a clean, complete multi-file starter project for the user's prompt.
@@ -694,8 +699,8 @@ class IGseekApiClient(
             val raw = res.body?.string().orEmpty()
             val obj = runCatching { JSONObject(raw) }.getOrNull()
             if (!res.isSuccessful) {
-                val errMsg = obj?.optString("error")?.ifBlank { null }
-                    ?: "Не удалось активировать ключ (${res.code})"
+                val rawErr = obj?.optString("error")?.ifBlank { null }
+                val errMsg = sanitizeErrorBrand(rawErr, "Failed to activate IGseek key (${res.code})")
                 throw IllegalStateException(errMsg)
             }
             val subObj = obj?.optJSONObject("subscription")

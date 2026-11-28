@@ -24,8 +24,10 @@ import app.igseek.mobile.data.models.MemoryEntryItem
 import app.igseek.mobile.data.models.MobileLayoutPrefs
 import app.igseek.mobile.data.models.OutboxQueuedMessage
 import app.igseek.mobile.data.models.ProjectFolder
+import app.igseek.mobile.data.models.PushNotificationEvent
 import app.igseek.mobile.data.models.SharedIncomingPayload
 import app.igseek.mobile.data.models.SubscriptionInfo
+import app.igseek.mobile.notifications.IGseekNotificationManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,6 +68,7 @@ data class IGseekUiState(
     val reasoningEnabled: Boolean = false,
     val imageModeEnabled: Boolean = false,
     val isStreaming: Boolean = false,
+    val pendingImage: PendingImageState? = null,
     val outboxCount: Int = 0,
     val flowTask: FlowTaskState = FlowTaskState(),
     val libraryFiles: List<LibraryFileItem> = emptyList(),
@@ -80,6 +83,12 @@ data class IGseekUiState(
     val isRedeemingKey: Boolean = false,
     val keyRedeemError: String? = null,
     val toastMessage: String? = null
+)
+
+data class PendingImageState(
+    val messageId: String,
+    val title: String,
+    val prompt: String
 )
 
 class IGseekViewModel(application: Application) : AndroidViewModel(application) {
@@ -107,7 +116,14 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun nowIso(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
 
+    private fun defaultChatTitle(lang: String = _state.value.layoutPrefs.language): String =
+        if (lang == "en") "New chat" else "Новый чат"
+
+    private fun isPlaceholderChatTitle(title: String): Boolean =
+        title == "New chat" || title == "Новый чат"
+
     private fun bootstrap() {
+        IGseekNotificationManager.ensureChannels(app)
         val layout = store.loadLayoutPrefs()
         val session = store.loadSession()
         val projects = store.listProjects()
@@ -115,7 +131,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         if (chats.isEmpty()) {
             val initial = ChatThread(
                 id = newSafeId("chat"),
-                title = "Новый чат",
+                title = defaultChatTitle(layout.language),
                 updatedAtMs = System.currentTimeMillis()
             )
             store.upsertChat(initial)
@@ -197,7 +213,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         } else if (prevUid.isNullOrBlank()) {
             // Wipe any anonymous pre-login placeholder rows before pulling real cloud account data
             val localChats = store.listChats()
-            val hasOnlyEmptyPlaceholder = localChats.all { it.title == "Новый чат" && store.listMessages(it.id).isEmpty() }
+            val hasOnlyEmptyPlaceholder = localChats.all { isPlaceholderChatTitle(it.title) && store.listMessages(it.id).isEmpty() }
             if (hasOnlyEmptyPlaceholder) {
                 store.clearAllUserData()
             }
@@ -526,7 +542,11 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         val authDomain = BuildConfig.FIREBASE_AUTH_DOMAIN.trim()
             .ifBlank { "${BuildConfig.FIREBASE_PROJECT_ID.trim()}.firebaseapp.com" }
         if (apiKey.isBlank() || appId.isBlank() || authDomain.isBlank()) {
-            onGoogleAuthError("Firebase конфигурация не найдена в сборке")
+            val isEn = _state.value.layoutPrefs.language == "en"
+            onGoogleAuthError(
+                if (isEn) "IGseek sign-in configuration is missing"
+                else "Конфигурация входа IGseek не найдена в сборке"
+            )
             return null
         }
 
@@ -743,11 +763,37 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun updateServerBaseUrl(url: String) {
-        val clean = url.trim().trimEnd('/')
-        store.setServerBaseUrl(clean)
-        _state.update { it.copy(serverBaseUrl = clean) }
-        showToast(if (clean.isBlank()) "Включён прямой режим API" else "Шлюз API сохранён")
+    fun updateServerBaseUrl(@Suppress("UNUSED_PARAMETER") url: String) {
+        // Server endpoint is locked to official IGseek backend to preserve subscription integrity.
+        val official = store.getServerBaseUrl()
+        _state.update { it.copy(serverBaseUrl = official) }
+    }
+
+    fun handleAiPushNotification(event: PushNotificationEvent) {
+        val layout = _state.value.layoutPrefs
+        if (!layout.notificationsEnabled) return
+        val delivered = IGseekNotificationManager.triggerOrSchedule(app, event)
+        if (!delivered && event.delaySeconds <= 0 && event.scheduledAt.isNullOrBlank()) {
+            showToast("${event.title}: ${event.body}".take(110))
+        }
+    }
+
+    fun sendTestNotification() {
+        val isEn = _state.value.layoutPrefs.language == "en"
+        val delivered = IGseekNotificationManager.showNotification(
+            context = app,
+            title = if (isEn) "IGseek AI Push Ready" else "IGseek AI: уведомления работают",
+            body = if (isEn) "AI can now notify you about Google Tasks, Calendar, Gmail, and reminders."
+            else "ИИ теперь может присылать уведомления по Google Tasks, Calendar, Gmail и напоминаниям.",
+            source = "general"
+        )
+        showToast(
+            if (delivered) {
+                if (isEn) "Test push notification sent" else "Тестовое push-уведомление отправлено"
+            } else {
+                if (isEn) "Allow notification permission in Android settings" else "Разрешите уведомления в настройках Android"
+            }
+        )
     }
 
     fun showToast(message: String) {
@@ -860,7 +906,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         val projectId = _state.value.activeProjectId
         val chat = ChatThread(
             id = newSafeId("chat"),
-            title = "Новый чат",
+            title = defaultChatTitle(),
             updatedAtMs = System.currentTimeMillis(),
             projectId = projectId
         )
@@ -932,7 +978,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         store.deleteChat(chatId)
         var chats = store.listChats()
         if (chats.isEmpty()) {
-            val fresh = ChatThread(newSafeId("chat"), "Новый чат", System.currentTimeMillis())
+            val fresh = ChatThread(newSafeId("chat"), defaultChatTitle(), System.currentTimeMillis())
             store.upsertChat(fresh)
             chats = listOf(fresh)
         }
@@ -1000,8 +1046,8 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
         store.upsertMessage(userMsg)
 
         val currentChat = st.chats.firstOrNull { it.id == chatId }
-        val newTitle = if (currentChat == null || currentChat.title == "Новый чат") {
-            userMsg.content.replace("\n", " ").take(44).ifBlank { "Новый чат" }
+        val newTitle = if (currentChat == null || isPlaceholderChatTitle(currentChat.title)) {
+            userMsg.content.replace("\n", " ").take(44).ifBlank { defaultChatTitle() }
         } else currentChat.title
         val updatedChat = ChatThread(
             id = chatId,
@@ -1082,6 +1128,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 isStreaming = false,
                 imageModeEnabled = false,
+                pendingImage = null,
                 messages = if (activeId.isNotBlank()) store.listMessages(activeId) else it.messages
             )
         }
@@ -1112,9 +1159,27 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
             )
             activeStreamingMessage = assistantMsg
             store.upsertMessage(assistantMsg)
+            val lastUserPrompt = history.lastOrNull { it.role == "user" }?.content.orEmpty().trim()
+            val isDirectImagePrompt = imageMode ||
+                lastUserPrompt.startsWith("/img ", ignoreCase = true) ||
+                lastUserPrompt.startsWith("/imagine ", ignoreCase = true)
+            val cleanedPrompt = lastUserPrompt
+                .replace(Regex("^/(?:img|imagine)\\s+", RegexOption.IGNORE_CASE), "")
+                .trim()
+            val initialPendingImage = if (isDirectImagePrompt) {
+                PendingImageState(
+                    messageId = assistantId,
+                    title = cleanedPrompt.take(48).ifBlank { "IGseek Image" },
+                    prompt = cleanedPrompt
+                )
+            } else {
+                null
+            }
+
             _state.update {
                 it.copy(
                     isStreaming = true,
+                    pendingImage = initialPendingImage,
                     messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
                 )
             }
@@ -1146,21 +1211,39 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
                     },
+                    onImageStart = { imgTitle, imgPrompt ->
+                        _state.update {
+                            it.copy(
+                                pendingImage = PendingImageState(
+                                    messageId = assistantId,
+                                    title = imgTitle,
+                                    prompt = imgPrompt
+                                )
+                            )
+                        }
+                    },
+                    onImageError = {
+                        _state.update { it.copy(pendingImage = null) }
+                    },
                     onImage = { img ->
                         assistantMsg = assistantMsg.copy(images = assistantMsg.images + img)
                         activeStreamingMessage = assistantMsg
+                        _state.update { it.copy(pendingImage = null) }
                         updateStreamingMessageInUi(assistantMsg)
                     },
                     onSources = { sources ->
                         assistantMsg = assistantMsg.copy(webSources = sources)
                         activeStreamingMessage = assistantMsg
                         updateStreamingMessageInUi(assistantMsg)
+                    },
+                    onNotification = { notifEvent ->
+                        handleAiPushNotification(notifEvent)
                     }
                 )
             }.onSuccess { result ->
                 activeStreamingMessage = null
                 assistantMsg = assistantMsg.copy(
-                    content = result.content.ifBlank { assistantMsg.content.ifBlank { "Готово." } },
+                    content = result.content.ifBlank { assistantMsg.content.ifBlank { if (language == "en") "Done." else "Готово." } },
                     reasoning = result.reasoning.ifBlank { assistantMsg.reasoning },
                     images = result.images.ifEmpty { assistantMsg.images },
                     webSources = result.webSources.ifEmpty { assistantMsg.webSources },
@@ -1175,6 +1258,7 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         isStreaming = false,
                         imageModeEnabled = false,
+                        pendingImage = null,
                         messages = if (it.activeChatId == chatId) finalMsgs else it.messages
                     )
                 }
@@ -1196,19 +1280,27 @@ class IGseekViewModel(application: Application) : AndroidViewModel(application) 
                         it.copy(
                             isStreaming = false,
                             imageModeEnabled = false,
+                            pendingImage = null,
                             messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
                         )
                     }
                     return@onFailure
                 }
+                val isEn = _state.value.layoutPrefs.language == "en"
+                val safeErr = IGseekApiClient.sanitizeErrorBrand(
+                    err.message,
+                    if (isEn) "Please check your internet connection and try again." else "Проверьте подключение к интернету и повторите."
+                )
                 assistantMsg = assistantMsg.copy(
-                    content = "Ошибка запроса: ${err.message ?: "проверьте подключение к интернету"}",
+                    content = if (isEn) "IGseek request error: $safeErr" else "Ошибка запроса IGseek: $safeErr",
                     isError = true
                 )
                 store.upsertMessage(assistantMsg)
                 _state.update {
                     it.copy(
                         isStreaming = false,
+                        imageModeEnabled = false,
+                        pendingImage = null,
                         messages = if (it.activeChatId == chatId) store.listMessages(chatId) else it.messages
                     )
                 }

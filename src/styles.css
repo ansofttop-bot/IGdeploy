@@ -610,3 +610,106 @@
     max-height: 5.5rem;
   }
 }
+
+/* ==================== IGseek Photo Developing Studio Animations ==================== */
+@keyframes igseek-photo-drift-a {
+  0% {
+    transform: translate3d(-18%, -12%, 0) scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translate3d(20%, 14%, 0) scale(1.18);
+    opacity: 0.78;
+  }
+  100% {
+    transform: translate3d(-18%, -12%, 0) scale(1);
+    opacity: 0.55;
+  }
+}
+
+@keyframes igseek-photo-drift-b {
+  0% {
+    transform: translate3d(22%, 16%, 0) scale(1.12);
+    opacity: 0.48;
+  }
+  50% {
+    transform: translate3d(-18%, -14%, 0) scale(0.95);
+    opacity: 0.72;
+  }
+  100% {
+    transform: translate3d(22%, 16%, 0) scale(1.12);
+    opacity: 0.48;
+  }
+}
+
+@keyframes igseek-photo-drift-c {
+  0% {
+    transform: translate3d(-8%, 22%, 0) scale(0.92);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translate3d(14%, -18%, 0) scale(1.14);
+    opacity: 0.65;
+  }
+  100% {
+    transform: translate3d(-8%, 22%, 0) scale(0.92);
+    opacity: 0.4;
+  }
+}
+
+@keyframes igseek-photo-scan {
+  0% {
+    transform: translate3d(0, -110%, 0);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(0, 320%, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes igseek-photo-aperture {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes igseek-photo-reveal {
+  0% {
+    opacity: 0.18;
+    transform: scale(1.035);
+    filter: blur(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0px);
+  }
+}
+
+.igseek-photo-grid {
+  background-image:
+    linear-gradient(to right, rgba(24, 24, 27, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(24, 24, 27, 0.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.dark .igseek-photo-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+}
+
+.igseek-photo-reveal {
+  animation: igseek-photo-reveal 650ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+

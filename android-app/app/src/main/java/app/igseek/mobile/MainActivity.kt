@@ -1,6 +1,8 @@
 package app.igseek.mobile
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +10,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -42,6 +45,7 @@ import app.igseek.mobile.ui.components.IGseekCanvas
 import app.igseek.mobile.ui.components.IGseekFoxLogo
 import app.igseek.mobile.ui.state.IGseekViewModel
 import app.igseek.mobile.ui.theme.IGseekTheme
+import app.igseek.mobile.notifications.IGseekNotificationManager
 import app.igseek.mobile.widget.IGseekQuickWidget
 import org.json.JSONObject
 
@@ -50,6 +54,29 @@ class MainActivity : FragmentActivity() {
     private val viewModel: IGseekViewModel by viewModels()
     private var isUnlocked by mutableStateOf(true)
     private var awaitingCustomTabAuth: Boolean = false
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val isEn = viewModel.state.value.layoutPrefs.language == "en"
+        if (granted) {
+            IGseekNotificationManager.ensureChannels(this)
+            viewModel.showToast(if (isEn) "Push notifications enabled" else "Push-уведомления включены")
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        IGseekNotificationManager.ensureChannels(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     override fun onResume() {
         super.onResume()
@@ -68,6 +95,11 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIncomingIntent(intent)
+
+        IGseekNotificationManager.ensureChannels(this)
+        if (viewModel.state.value.layoutPrefs.notificationsEnabled) {
+            requestNotificationPermissionIfNeeded()
+        }
 
         if (viewModel.state.value.layoutPrefs.biometricLockEnabled && canUseBiometrics()) {
             isUnlocked = false
@@ -118,7 +150,8 @@ class MainActivity : FragmentActivity() {
                     IGseekAppRoot(
                         state = state,
                         viewModel = viewModel,
-                        onLaunchGoogleSignIn = { launchGoogleSignIn() }
+                        onLaunchGoogleSignIn = { launchGoogleSignIn() },
+                        onRequestNotificationPermission = { requestNotificationPermissionIfNeeded() }
                     )
                 }
             }

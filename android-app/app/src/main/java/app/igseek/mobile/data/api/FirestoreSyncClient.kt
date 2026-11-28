@@ -125,7 +125,7 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
                 client.newCall(req).execute().use { res ->
                     val raw = res.body?.string().orEmpty()
                     if (!res.isSuccessful) {
-                        lastError = IllegalStateException("Firestore $collectionId HTTP ${res.code}: ${raw.take(160)}")
+                        lastError = IllegalStateException("IGseek cloud sync error (${res.code})")
                         return@use
                     }
                     anySucceeded = true
@@ -196,7 +196,7 @@ class FirestoreSyncClient(private val client: OkHttpClient) {
             val raw = res.body?.string().orEmpty()
             if (res.code == 404) return@use null
             if (!res.isSuccessful) {
-                throw IllegalStateException("Firestore profile HTTP ${res.code}: ${raw.take(140)}")
+                throw IllegalStateException("IGseek cloud profile sync error (${res.code})")
             }
             val obj = JSONObject(raw)
             val fields = obj.optJSONObject("fields") ?: return@use null

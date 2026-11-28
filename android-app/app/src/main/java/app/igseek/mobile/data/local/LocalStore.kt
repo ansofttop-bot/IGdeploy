@@ -136,23 +136,15 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
         }
     }
 
-    // ==================== OPTIONAL GATEWAY & SESSION ====================
+    // ==================== OFFICIAL BACKEND GATEWAY & SESSION ====================
 
     fun getServerBaseUrl(): String {
-        val saved = prefs.getString("server_base_url", null)?.trim()?.trimEnd('/').orEmpty()
-        val isStale = saved.isBlank() ||
-            saved.contains("ais-pre-", ignoreCase = true) ||
-            saved.contains("ais-dev-", ignoreCase = true) ||
-            saved.contains("igeek-chat.lovable.app", ignoreCase = true)
-        return if (isStale) {
-            BuildConfig.DEFAULT_API_BASE_URL.trim().trimEnd('/')
-        } else {
-            saved
-        }
+        return BuildConfig.DEFAULT_API_BASE_URL.trim().trimEnd('/')
     }
 
-    fun setServerBaseUrl(url: String) {
-        prefs.edit().putString("server_base_url", url.trim().trimEnd('/')).apply()
+    fun setServerBaseUrl(@Suppress("UNUSED_PARAMETER") url: String) {
+        // Server endpoint is locked to the official IGseek backend to protect subscription tiers.
+        prefs.edit().remove("server_base_url").apply()
     }
 
     fun saveSession(session: AuthSession) {
@@ -249,6 +241,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             put("showBottomBar", layout.showBottomBar)
             put("biometricLockEnabled", layout.biometricLockEnabled)
             put("hapticsEnabled", layout.hapticsEnabled)
+            put("notificationsEnabled", layout.notificationsEnabled)
             put("tabOrder", tabs)
         }
         prefs.edit().putString("layout_prefs", obj.toString()).apply()
@@ -271,14 +264,15 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "igseek_mobile.db
             val defaultBar = listOf(IGseekTab.CHAT, IGseekTab.FLOW, IGseekTab.LIBRARY, IGseekTab.ENGINE)
             val effectiveTabs = if (parsedTabs.size >= 2) parsedTabs.take(5) else defaultBar
             MobileLayoutPrefs(
-                darkTheme = o.optBoolean("darkTheme", true),
+                darkTheme = o.optBoolean("darkTheme", false),
                 accent = AccentPresetId.fromId(o.optString("accent")),
-                language = o.optString("language", "ru").ifBlank { "ru" },
+                language = o.optString("language", "en").ifBlank { "en" },
                 compactDensity = o.optBoolean("compactDensity", false),
                 showQuickPrompts = o.optBoolean("showQuickPrompts", true),
                 showBottomBar = o.optBoolean("showBottomBar", true),
                 biometricLockEnabled = o.optBoolean("biometricLockEnabled", false),
                 hapticsEnabled = o.optBoolean("hapticsEnabled", true),
+                notificationsEnabled = o.optBoolean("notificationsEnabled", true),
                 tabOrder = effectiveTabs
             )
         }.getOrDefault(MobileLayoutPrefs())

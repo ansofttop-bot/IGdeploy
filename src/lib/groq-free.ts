@@ -8,6 +8,7 @@ import {
   shouldTryDirectDeepSeek,
 } from "./deepseek-models";
 import { callOpenRouterDeepSeekText, isOpenRouterConfigured } from "./openrouter-deepseek";
+import { sanitizeErrorForUser } from "./error-sanitizer";
 
 export const GROQ_FREE_MODEL = "openai/gpt-oss-120b";
 export const GROQ_FREE_VISION_MODEL = "qwen/qwen3.8-27b";
@@ -252,7 +253,7 @@ async function fetchWithHeaderTimeout(
     });
   } catch (err) {
     if (timedOut) {
-      throw new Error(`Groq не ответил за ${Math.round(headerTimeoutMs / 1000)} сек (таймаут соединения). Повторите запрос.`);
+      throw new Error(`IGseek AI did not respond within ${Math.round(headerTimeoutMs / 1000)}s (connection timeout). Please try again.`);
     }
     throw err;
   } finally {
@@ -299,7 +300,7 @@ function formatGroqError(status: number, rawBody: string): string {
     // keep rawBody
   }
   if (status === 401 || status === 403 || /invalid_api_key|Invalid API Key/i.test(msg)) {
-    return "Недействительный GROQ_API_KEY. Проверьте ключ в настройках секретов сервера.";
+    return "IGseek AI authentication failed. Please try again later.";
   }
   if (status === 429 || /rate_limit|quota|Too Many Requests/i.test(msg)) {
     const waitMatch = msg.match(/try again in\s+([\d.]+)\s*(ms|s)/i);
@@ -307,11 +308,11 @@ function formatGroqError(status: number, rawBody: string): string {
       const sec = waitMatch[2].toLowerCase() === "ms"
         ? Math.max(1, Math.ceil(Number(waitMatch[1]) / 1000))
         : Math.max(1, Math.ceil(Number(waitMatch[1])));
-      return `Достигнут минутный лимит токенов Groq (HTTP 429). Повторите через ${sec} сек.`;
+      return `IGseek AI temporary rate limit reached. Please retry in ${sec}s.`;
     }
-    return "Достигнут временный минутный лимит запросов Groq (HTTP 429). Подождите пару секунд и повторите запрос.";
+    return "IGseek AI temporary rate limit reached. Please wait a few seconds and try again.";
   }
-  return (msg || `Groq HTTP ${status}`).slice(0, 260);
+  return sanitizeErrorForUser(msg || `IGseek AI error (HTTP ${status})`, `IGseek AI error (HTTP ${status})`);
 }
 
 function buildGroqPayload(params: {
@@ -372,7 +373,7 @@ export async function callGroqFreeChatStream(params: {
 }): Promise<Response> {
   const apiKey = getGroqApiKey();
   if (!apiKey) {
-    throw new Error("GROQ_API_KEY не настроен на сервере для бесплатного плана.");
+    throw new Error("IGseek AI service is temporarily unavailable.");
   }
   if (params.signal?.aborted) {
     throw createAbortError();
@@ -606,7 +607,7 @@ export async function callGroqFreeChatStream(params: {
             new Promise<never>((_resolve, reject) => {
               stallTimer = setTimeout(() => {
                 void reader.cancel().catch(() => {});
-                reject(new Error("Groq stream stalled (no data for 18s)"));
+                reject(new Error("IGseek AI stream stalled. Please try again."));
               }, GROQ_CHUNK_STALL_TIMEOUT_MS);
             }),
           ]).finally(() => {

@@ -1,6 +1,5 @@
 package app.igseek.mobile.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,17 +27,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,16 +56,14 @@ import app.igseek.mobile.ui.theme.accentSwatchColor
 fun SettingsScreen(
     state: IGseekUiState,
     viewModel: IGseekViewModel,
-    onOpenDrawer: () -> Unit
+    onOpenDrawer: () -> Unit,
+    onRequestNotificationPermission: () -> Unit = {}
 ) {
     val palette = LocalIGseekPalette.current
     val layout = state.layoutPrefs
     val isEn = layout.language == "en"
     val sub = state.subscription
     val session = state.session
-
-    var gatewayDraft by remember(state.serverBaseUrl) { mutableStateOf(state.serverBaseUrl) }
-    var showAdvancedGateway by remember { mutableStateOf(false) }
 
     val syncLabel = when (state.cloudSyncStatus) {
         CloudSyncStatus.SYNCING -> if (isEn) "Syncing cloud…" else "Синхронизация…"
@@ -466,6 +457,42 @@ fun SettingsScreen(
                     )
                     HorizontalDivider(color = palette.divider, modifier = Modifier.padding(vertical = 4.dp))
                     SettingsToggleRow(
+                        title = if (isEn) "AI push notifications" else "Push-уведомления ИИ",
+                        subtitle = if (isEn) "Alerts for Google Tasks, Calendar, Gmail, timers & reminders"
+                        else "Напоминания по Google Tasks, Calendar, Gmail, таймерам и задачам",
+                        checked = layout.notificationsEnabled,
+                        onCheckedChange = { checked ->
+                            viewModel.updateLayoutPrefs { it.copy(notificationsEnabled = checked) }
+                            if (checked) onRequestNotificationPermission()
+                        }
+                    )
+                    if (layout.notificationsEnabled) {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = {
+                                onRequestNotificationPermission()
+                                viewModel.sendTestNotification()
+                            },
+                            shape = RoundedCornerShape(13.dp),
+                            border = BorderStroke(1.dp, palette.glassBorder),
+                            modifier = Modifier.fillMaxWidth().height(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = LucideIcons.Bell,
+                                contentDescription = null,
+                                tint = palette.brand,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                text = if (isEn) "Send test push notification" else "Отправить тестовое уведомление",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.textPrimary
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = palette.divider, modifier = Modifier.padding(vertical = 8.dp))
+                    SettingsToggleRow(
                         title = if (isEn) "Biometric app lock" else "Защита биометрией",
                         subtitle = if (isEn) "Fingerprint, Face or PIN at launch" else "Отпечаток, лицо или PIN при запуске",
                         checked = layout.biometricLockEnabled,
@@ -473,101 +500,6 @@ fun SettingsScreen(
                             viewModel.updateLayoutPrefs { it.copy(biometricLockEnabled = checked) }
                         }
                     )
-                }
-            }
-
-            // 4. Collapsible Server Connection
-            item(key = "settings_connection") {
-                IGseekGlassCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { showAdvancedGateway = !showAdvancedGateway },
-                    shape = RoundedCornerShape(20.dp),
-                    contentPadding = 16.dp
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (isEn) "Server connection" else "Подключение сервера",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = palette.textPrimary
-                            )
-                            Text(
-                                text = if (isEn) "Automatic · IGseek Cloud" else "Автоматическое · IGseek Cloud",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.textMuted
-                            )
-                        }
-                        Icon(
-                            imageVector = if (showAdvancedGateway) LucideIcons.ChevronUp else LucideIcons.ChevronDown,
-                            contentDescription = null,
-                            tint = palette.textMuted,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    AnimatedVisibility(visible = showAdvancedGateway) {
-                        Column(modifier = Modifier.padding(top = 12.dp)) {
-                            Text(
-                                text = if (isEn) {
-                                    "Configured automatically. Only edit if migrating to a custom backend domain."
-                                } else {
-                                    "Работает автоматически из коробки. Меняйте адрес только при переезде на другой домен."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = palette.textMuted
-                            )
-                            Spacer(Modifier.height(10.dp))
-                            OutlinedTextField(
-                                value = gatewayDraft,
-                                onValueChange = { gatewayDraft = it },
-                                placeholder = {
-                                    Text("https://i-gdeploy-luan.vercel.app", color = palette.textMuted)
-                                },
-                                singleLine = true,
-                                shape = RoundedCornerShape(14.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = palette.brand,
-                                    unfocusedBorderColor = palette.glassBorder,
-                                    focusedTextColor = palette.textPrimary,
-                                    unfocusedTextColor = palette.textPrimary
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(Modifier.height(10.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { viewModel.updateServerBaseUrl(gatewayDraft) },
-                                    shape = RoundedCornerShape(13.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = palette.brand,
-                                        contentColor = palette.brandOn
-                                    ),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(if (isEn) "Save" else "Сохранить")
-                                }
-                                if (state.serverBaseUrl.isNotBlank()) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            gatewayDraft = ""
-                                            viewModel.updateServerBaseUrl("")
-                                        },
-                                        shape = RoundedCornerShape(13.dp),
-                                        border = BorderStroke(1.dp, palette.glassBorder),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text(if (isEn) "Reset" else "Сбросить", color = palette.textPrimary)
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }

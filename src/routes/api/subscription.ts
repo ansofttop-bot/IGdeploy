@@ -5,6 +5,7 @@ import {
   getUserSubscriptionStatus,
   redeemLicenseKey,
 } from "../../lib/subscription-server";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 
 function getClientIp(request: Request): string {
   const fwd = request.headers.get("x-forwarded-for") || "";
@@ -69,11 +70,11 @@ export async function handleSubscriptionRequest(request: Request): Promise<Respo
     return Response.json({ error: "Method not allowed" }, { status: 405 });
   } catch (err: any) {
     if (err instanceof LicenseKeyError) {
-      return Response.json({ error: err.message }, { status: err.status });
+      return Response.json({ error: sanitizeErrorForUser(err.message, "IGseek subscription error.") }, { status: err.status });
     }
     console.error("[subscription] Error:", err);
     return Response.json(
-      { error: err?.message || "Ошибка активации подписки." },
+      { error: sanitizeErrorForUser(err?.message, "IGseek subscription activation error.") },
       { status: 500 },
     );
   }

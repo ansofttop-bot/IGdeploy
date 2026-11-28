@@ -1,4 +1,5 @@
 import { isSafePublicHttpUrl } from "./deepseek-models";
+import { sanitizeErrorForUser } from "./error-sanitizer";
 
 export type SourceImageInput = {
   dataUrl: string;
@@ -16,7 +17,7 @@ const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 function getApimiraConfig(): { apiKey: string; baseUrl: string } {
   const apiKey = process.env.APIMIRA_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error("APIMIRA_API_KEY is not configured for GPT Image 2");
+    throw new Error("IGseek image service is temporarily unavailable.");
   }
   const baseUrl = (process.env.APIMIRA_BASE_URL?.trim() || DEFAULT_APIMIRA_BASE_URL).replace(/\/+$/, "");
   return { apiKey, baseUrl };
@@ -122,11 +123,11 @@ async function parseApimiraError(res: Response): Promise<string> {
   try {
     const parsed = JSON.parse(raw) as { error?: { message?: string; code?: string } };
     if (parsed?.error?.message) {
-      return `APIMIRA (${res.status}): ${parsed.error.message}`;
+      return `IGseek (${res.status}): ${sanitizeErrorForUser(parsed.error.message)}`;
     }
   } catch {
   }
-  return `APIMIRA (${res.status}): ${raw.slice(0, 240) || res.statusText || "Request failed"}`;
+  return `IGseek (${res.status}): ${sanitizeErrorForUser(raw.slice(0, 240) || res.statusText || "Request failed")}`;
 }
 
 async function extractDataUrlFromResponse(res: Response): Promise<string> {
@@ -150,7 +151,7 @@ async function extractDataUrlFromResponse(res: Response): Promise<string> {
       return `data:${mimeType};base64,${bytes.toString("base64")}`;
     }
   }
-  throw new Error("GPT Image 2 did not return image bytes");
+  throw new Error("IGseek image generator did not return image bytes");
 }
 
 function composeSignal(externalSignal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {

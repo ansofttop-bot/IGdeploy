@@ -1,4 +1,5 @@
 import { GROQ_BASE_URL, getGroqApiKey } from "../../lib/groq-free";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 
 const MAX_AUDIO_BASE64_LEN = 12 * 1024 * 1024; // ~9 MB raw audio
 
@@ -80,7 +81,7 @@ export async function handleTranscribePost(req: Request): Promise<Response> {
     const apiKey = getGroqApiKey();
     if (!apiKey) {
       return Response.json(
-        { error: "Server speech transcription is not configured (GROQ_API_KEY missing)" },
+        { error: "IGseek voice transcription is temporarily unavailable." },
         { status: 503 },
       );
     }
@@ -119,7 +120,7 @@ export async function handleTranscribePost(req: Request): Promise<Response> {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
-          throw new Error(`Groq Whisper HTTP ${res.status}: ${errText.slice(0, 200)}`);
+          throw new Error(sanitizeErrorForUser(errText, `IGseek voice transcription failed (HTTP ${res.status})`));
         }
 
         const data = (await res.json()) as { text?: string };
@@ -133,10 +134,10 @@ export async function handleTranscribePost(req: Request): Promise<Response> {
       }
     }
 
-    throw lastErr || new Error("Transcription failed");
+    throw lastErr || new Error("IGseek voice transcription failed");
   } catch (err: any) {
     console.error("API /api/transcribe error:", err);
-    const msg = err?.message || "Transcription failed";
+    const msg = sanitizeErrorForUser(err?.message, "IGseek voice transcription failed");
     return Response.json({ error: msg }, { status: 500 });
   }
 }

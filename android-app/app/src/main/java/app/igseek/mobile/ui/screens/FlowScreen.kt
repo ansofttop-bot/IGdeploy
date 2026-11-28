@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,8 +30,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,7 +42,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -252,8 +253,11 @@ fun FlowScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Autonomy selector + Goal composer
+            // Autonomy selector + sleek floating Flow capsule composer
             item(key = "flow_composer") {
+                var isComposerFocused by remember { mutableStateOf(false) }
+                val canLaunch = goalInput.isNotBlank() && !task.isPlanning && !task.isRunning
+
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     IGseekSegmentedControl(
                         options = autonomyModes,
@@ -267,127 +271,173 @@ fun FlowScreen(
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
 
-                    IGseekGlassCard(
+                    Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(22.dp),
-                        contentPadding = 16.dp
+                        shape = RoundedCornerShape(26.dp),
+                        color = palette.composerBg,
+                        shadowElevation = if (palette.isDark) 0.dp else 4.dp,
+                        border = BorderStroke(
+                            width = if (isComposerFocused) 1.5.dp else 1.dp,
+                            color = if (isComposerFocused || goalInput.isNotBlank()) palette.brandBorder else palette.composerBorder
+                        )
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Column(
+                            modifier = Modifier.padding(start = 18.dp, end = 12.dp, top = 16.dp, bottom = 11.dp)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(palette.brandSoft),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .padding(end = 6.dp, bottom = 14.dp)
                             ) {
-                                Icon(
-                                    imageVector = LucideIcons.Workflow,
-                                    contentDescription = null,
-                                    tint = palette.brand,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Text(
-                                text = if (isEn) "Mission goal" else "Цель задачи",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = palette.textPrimary
-                            )
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        OutlinedTextField(
-                            value = goalInput,
-                            onValueChange = { goalInput = it },
-                            placeholder = {
-                                Text(
-                                    text = if (isEn) "Describe a complex goal to break down and execute…"
-                                    else "Опишите сложную задачу — Flow разобьёт её на шаги и выполнит…",
-                                    color = palette.textMuted,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            },
-                            minLines = 3,
-                            maxLines = 6,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = palette.brand,
-                                unfocusedBorderColor = palette.glassBorder,
-                                focusedContainerColor = palette.bg.copy(alpha = 0.45f),
-                                unfocusedContainerColor = palette.bg.copy(alpha = 0.35f),
-                                focusedTextColor = palette.textPrimary,
-                                unfocusedTextColor = palette.textPrimary,
-                                cursorColor = palette.brand
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                val enriched = when (autonomyIndex) {
-                                    0 -> goalInput.trim()
-                                    2 -> "${goalInput.trim()} (автономный режим, подробный итоговый результат)"
-                                    else -> goalInput.trim()
+                                if (goalInput.isEmpty()) {
+                                    Text(
+                                        text = if (isEn) "Delegate a multi-step goal to Flow…"
+                                        else "Опишите цель для автономного Flow…",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = palette.textMuted
+                                    )
                                 }
-                                viewModel.planFlow(enriched)
-                            },
-                            enabled = goalInput.isNotBlank() && !task.isPlanning && !task.isRunning,
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.brand,
-                                contentColor = palette.brandOn
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            if (task.isPlanning) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(17.dp),
-                                    strokeWidth = 2.dp,
-                                    color = palette.brandOn
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = if (isEn) "Planning steps…" else "Строим маршрут…",
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            } else {
-                                Icon(LucideIcons.Sparkles, contentDescription = null, modifier = Modifier.size(17.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = if (task.steps.isEmpty()) {
-                                        if (isEn) "Create Flow Plan" else "Построить план Flow"
-                                    } else {
-                                        if (isEn) "Rebuild Plan" else "Пересобрать план"
-                                    },
-                                    fontWeight = FontWeight.SemiBold
+                                BasicTextField(
+                                    value = goalInput,
+                                    onValueChange = { goalInput = it },
+                                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = palette.textPrimary),
+                                    cursorBrush = SolidColor(palette.brand),
+                                    minLines = 2,
+                                    maxLines = 6,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onFocusChanged { isComposerFocused = it.isFocused }
                                 )
                             }
-                        }
 
-                        if (!task.error.isNullOrBlank()) {
-                            Spacer(Modifier.height(10.dp))
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    imageVector = LucideIcons.AlertCircle,
-                                    contentDescription = null,
-                                    tint = palette.danger,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Text(
-                                    text = task.error,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = palette.danger
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = palette.brandSoft,
+                                        border = BorderStroke(1.dp, palette.brandBorder)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = LucideIcons.Workflow,
+                                                contentDescription = null,
+                                                tint = palette.brand,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = autonomyModes[autonomyIndex],
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.brand
+                                            )
+                                        }
+                                    }
+
+                                    if (goalInput.isNotBlank() && !task.isPlanning && !task.isRunning) {
+                                        Surface(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .clip(CircleShape)
+                                                .clickable { goalInput = "" },
+                                            shape = CircleShape,
+                                            color = palette.chipBg,
+                                            border = BorderStroke(1.dp, palette.chipBorder)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = LucideIcons.X,
+                                                    contentDescription = if (isEn) "Clear" else "Очистить",
+                                                    tint = palette.textMuted,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    modifier = Modifier
+                                        .height(38.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .clickable(enabled = canLaunch) {
+                                            val enriched = when (autonomyIndex) {
+                                                0 -> goalInput.trim()
+                                                2 -> "${goalInput.trim()} (autonomous mode, detailed final deliverable)"
+                                                else -> goalInput.trim()
+                                            }
+                                            viewModel.planFlow(enriched)
+                                        },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (canLaunch || task.isPlanning) palette.brand else palette.chipBg
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (task.isPlanning) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(14.dp),
+                                                strokeWidth = 2.dp,
+                                                color = palette.brandOn
+                                            )
+                                            Text(
+                                                text = if (isEn) "Planning…" else "План…",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = palette.brandOn
+                                            )
+                                        } else {
+                                            Text(
+                                                text = if (task.steps.isEmpty()) {
+                                                    if (isEn) "Plan" else "План"
+                                                } else {
+                                                    if (isEn) "Rebuild" else "Обновить"
+                                                },
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (canLaunch) palette.brandOn else palette.textMuted
+                                            )
+                                            Icon(
+                                                imageVector = LucideIcons.ArrowUp,
+                                                contentDescription = null,
+                                                tint = if (canLaunch) palette.brandOn else palette.textMuted,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!task.error.isNullOrBlank()) {
+                                Spacer(Modifier.height(10.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = LucideIcons.AlertCircle,
+                                        contentDescription = null,
+                                        tint = palette.danger,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = task.error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.danger
+                                    )
+                                }
                             }
                         }
                     }

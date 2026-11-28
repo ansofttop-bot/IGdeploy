@@ -1538,7 +1538,7 @@ export function FlowView({
                   e.preventDefault();
                   void handleCreatePlan();
                 }}
-                className="relative flex flex-col gap-3 rounded-[24px] border border-zinc-200 dark:border-white/10 bg-white dark:bg-[#141416]/95 p-4 shadow-xl backdrop-blur-xl focus-within:border-zinc-400 dark:focus-within:border-white/20 transition-all"
+                className="relative flex flex-col gap-3 rounded-[28px] border border-zinc-200/90 dark:border-white/12 bg-white/95 dark:bg-[#141417]/95 p-4 sm:p-5 shadow-[0_18px_50px_-24px_rgba(0,0,0,0.22)] dark:shadow-[0_24px_60px_-28px_rgba(0,0,0,0.75)] backdrop-blur-xl focus-within:border-[var(--brand)]/50 focus-within:ring-2 focus-within:ring-[var(--brand)]/15 transition-all"
               >
                 <div className="flex items-center justify-between pb-1">
                   <div className="relative">

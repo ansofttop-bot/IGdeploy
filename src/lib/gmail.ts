@@ -152,10 +152,28 @@ export async function getGmailMessage(messageId: string): Promise<GmailMessageSu
   const date = getHeader('date') || new Date().toISOString();
 
   let body = msg.snippet || '';
-  if (msg.payload?.parts && msg.payload.parts.length > 0) {
-    const textPart = msg.payload.parts.find((p: any) => p.mimeType === 'text/plain') || msg.payload.parts[0];
-    if (textPart?.body?.data) {
-      body = decodeBase64Url(textPart.body.data);
+  const findPart = (parts: any[], mime: string): any => {
+    for (const p of parts) {
+      if (p?.mimeType === mime && p?.body?.data) return p;
+      if (Array.isArray(p?.parts)) {
+        const nested = findPart(p.parts, mime);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  };
+  if (Array.isArray(msg.payload?.parts) && msg.payload.parts.length > 0) {
+    const plainPart = findPart(msg.payload.parts, 'text/plain');
+    const htmlPart = !plainPart ? findPart(msg.payload.parts, 'text/html') : null;
+    if (plainPart?.body?.data) {
+      body = decodeBase64Url(plainPart.body.data);
+    } else if (htmlPart?.body?.data) {
+      body = decodeBase64Url(htmlPart.body.data)
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     }
   } else if (msg.payload?.body?.data) {
     body = decodeBase64Url(msg.payload.body.data);

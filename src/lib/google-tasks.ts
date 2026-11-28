@@ -181,6 +181,8 @@ export async function updateGoogleTask(
 
   if (taskData.status === 'completed' && !payload.completed) {
     payload.completed = new Date().toISOString();
+  } else if (taskData.status === 'needsAction') {
+    payload.completed = null;
   }
 
   const result = await fetchTasksApi(`/lists/${encodedListId}/tasks/${encodedTaskId}`, {

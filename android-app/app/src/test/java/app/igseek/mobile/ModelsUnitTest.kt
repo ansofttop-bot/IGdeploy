@@ -23,6 +23,9 @@ class ModelsUnitTest {
     @Test
     fun defaultLayoutHasFourQuickBarTabsAndAllNineWorkspacesExist() {
         val prefs = MobileLayoutPrefs()
+        assertFalse(prefs.darkTheme)
+        assertEquals("en", prefs.language)
+        assertTrue(prefs.notificationsEnabled)
         assertTrue(prefs.showBottomBar)
         assertEquals(4, prefs.tabOrder.size)
         assertEquals(IGseekTab.CHAT, prefs.tabOrder.first())

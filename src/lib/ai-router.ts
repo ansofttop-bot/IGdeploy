@@ -135,9 +135,9 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
 
     if (openRouterErr instanceof Error) throw openRouterErr;
     if (isProviderCircuitOpen("openrouter-free")) {
-      throw new Error("OpenRouter временно перегружен. Повторите запрос через пару секунд.");
+      throw new Error("IGseek AI is temporarily busy. Please try again in a few seconds.");
     }
-    throw new Error("OPENROUTER_API_KEY не настроен на сервере.");
+    throw new Error("IGseek AI service is temporarily unavailable.");
   }
 
   // PRO TIER (OpenRouter DeepSeek < V4.0 primary -> Direct DeepSeek -> ApiMira DeepSeek)
@@ -250,7 +250,7 @@ export async function routeChatStream(params: RouteChatStreamParams): Promise<Ro
     }
   }
 
-  throw new Error(`All Pro AI providers unavailable (${errors.join(", ") || "no keys configured"})`);
+  throw new Error("IGseek Pro AI is temporarily unavailable. Please try again shortly.");
 }
 
 export async function routeTextCompletion(params: {
@@ -283,7 +283,7 @@ export async function routeTextCompletion(params: {
   }
 
   if (params.tier === "free") {
-    throw new Error("Free OpenRouter DeepSeek unavailable (configure OPENROUTER_API_KEY)");
+    throw new Error("IGseek AI is temporarily unavailable. Please try again shortly.");
   }
 
   const directKey = (process.env.DEEPSEEK_API_KEY || "").trim();
@@ -365,7 +365,7 @@ export async function routeTextCompletion(params: {
     }
   }
 
-  throw new Error("All Pro text providers unavailable");
+  throw new Error("IGseek Pro AI is temporarily unavailable.");
 }
 
 export function getAiRouterHealthSummary() {

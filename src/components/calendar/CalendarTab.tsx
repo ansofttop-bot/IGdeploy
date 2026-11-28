@@ -190,8 +190,14 @@ export function CalendarTab({ onAskAiAboutEvent, onNavigateToChat }: CalendarTab
     setSaving(true);
     setError(null);
 
-    const startISO = new Date(`${formStartDate}T${formStartTime}:00`).toISOString();
-    const endISO = new Date(`${formEndDate}T${formEndTime}:00`).toISOString();
+    const startDateObj = new Date(`${formStartDate}T${formStartTime}:00`);
+    const rawEndObj = new Date(`${formEndDate}T${formEndTime}:00`);
+    const safeEndObj =
+      Number.isNaN(rawEndObj.getTime()) || rawEndObj.getTime() <= startDateObj.getTime()
+        ? new Date(startDateObj.getTime() + 3600_000)
+        : rawEndObj;
+    const startISO = startDateObj.toISOString();
+    const endISO = safeEndObj.toISOString();
 
     try {
       const token = getCachedCalendarToken();

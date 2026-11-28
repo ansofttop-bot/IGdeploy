@@ -165,6 +165,10 @@ const DICT: Record<string, Dict> = {
   "Image": { ru: "Изображение", es: "Imagen", fr: "Image", ar: "صورة" },
   "Generating image": { ru: "Создаю изображение", es: "Generando imagen", fr: "Génération de l'image", ar: "جاري إنشاء الصورة" },
   "Almost ready": { ru: "Почти готово", es: "Casi listo", fr: "Presque prêt", ar: "على وشك الانتهاء" },
+  "Composing scene": { ru: "Выстраиваем композицию", es: "Componiendo la escena", fr: "Composition de la scène", ar: "تكوين المشهد" },
+  "Shaping light & color": { ru: "Прорабатываем свет и цвет", es: "Ajustando luz y color", fr: "Travail de la lumière", ar: "ضبط الإضاءة والألوان" },
+  "Refining fine details": { ru: "Детализируем изображение", es: "Refinando detalles", fr: "Affinage des détails", ar: "تحسين التفاصيل الدقيقة" },
+  "Finalizing photo": { ru: "Завершаем проявку", es: "Finalizando foto", fr: "Finalisation de la photo", ar: "اللمسات الأخيرة للصورة" },
   "Something went wrong. Please try again.": {
     ru: "Что-то пошло не так. Попробуйте ещё раз.",
     es: "Algo salió mal. Inténtalo de nuevo.",

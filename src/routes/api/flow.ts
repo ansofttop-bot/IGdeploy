@@ -9,6 +9,7 @@ import {
 import { planFlowTask, executeFlowStep } from "../../lib/flow-engine";
 import { getUserFromToken } from "../../lib/memory-server";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 
 function bearer(request: Request) {
   const h = request.headers.get("authorization") ?? "";
@@ -258,7 +259,7 @@ export async function handleFlowRequest(request: Request): Promise<Response> {
       });
     } catch (err: any) {
       console.error("Flow API error:", err);
-      return new Response(JSON.stringify({ error: err.message || "Flow request failed" }), {
+      return new Response(JSON.stringify({ error: sanitizeErrorForUser(err?.message, "IGseek Flow request failed") }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });

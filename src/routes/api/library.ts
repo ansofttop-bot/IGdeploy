@@ -16,6 +16,7 @@ import {
   upsertLibraryFilePg,
 } from "../../lib/library-pg";
 import { getUserFromToken } from "../../lib/memory-server";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 
 function bearer(request: Request) {
   const h = request.headers.get("authorization") ?? "";
@@ -76,7 +77,7 @@ export async function handleLibraryRequest(request: Request): Promise<Response> 
         const fileId = (url.searchParams.get("id") || "").trim();
         if (!fileId) return jsonResponse({ error: "Missing id" }, 400);
         if (!usePg) {
-          return jsonResponse({ error: "Presigned downloads require PostgreSQL + S3" }, 404);
+          return jsonResponse({ error: "IGseek cloud download is not available right now" }, 404);
         }
         const dl = await getPresignedDownloadPg(authed.id, fileId);
         if (!dl) return jsonResponse({ error: "File not found" }, 404);
@@ -90,7 +91,7 @@ export async function handleLibraryRequest(request: Request): Promise<Response> 
       const items = await listAllLibraryFilesServer(authed, [], { bypassCache: true });
       return jsonResponse({ items, storageBackend: "firestore_fallback" });
     } catch (err: any) {
-      return jsonResponse({ error: err?.message || "Failed to load library" }, 500);
+      return jsonResponse({ error: sanitizeErrorForUser(err?.message, "Failed to load IGseek library") }, 500);
     }
   }
 

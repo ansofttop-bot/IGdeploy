@@ -18,13 +18,13 @@ import {
 } from "../../lib/memory-server";
 import { checkContent, refusalMessage } from "../../lib/content-filters";
 import { isChinaSensitive } from "../../lib/sensitive-topics";
-import { buildReferenceAwarePollinationsPrompt } from "../../lib/groq-free";
 import {
   callOpenRouterDeepSeekStream,
   isOpenRouterConfigured,
 } from "../../lib/openrouter-deepseek";
 import { routeChatStream } from "../../lib/ai-router";
-import { generateImageWithPollinations } from "../../lib/pollinations-image";
+import { generateImageWithOpenRouter } from "../../lib/openrouter-image";
+import { sanitizeErrorForUser } from "../../lib/error-sanitizer";
 import { resolveEffectiveUserTier } from "../../lib/subscription-server";
 import { searchWebLive, searchWebRich } from "../../lib/web-search";
 import {
@@ -73,6 +73,7 @@ const BodySchema = z.object({
   messages: z.array(MessageSchema).min(1).max(50),
   reasoning: z.boolean().optional().default(false),
   webSearch: z.boolean().optional().default(false),
+  imageMode: z.boolean().optional().default(false),
   model: z.enum(["instinct", "chat", "f1"]).optional().default("instinct"),
   agent: z.enum(["universal", "coder", "hacker", "mentor", "psy", "creative"]).optional().default("universal"),
   workspace: z.enum(["chat", "engine"]).optional().default("chat"),
@@ -153,7 +154,7 @@ const IMAGE_TOOL = {
   type: "function" as const,
   function: {
     name: "generate_image",
-    description: "Generate a NEW image from scratch using Pollinations. Use edit_image instead when editing an existing photo.",
+    description: "Generate a NEW image via OpenRouter (Free: fast lightweight model; Pro: smart multimodal model with reference image support). Use edit_image when modifying an existing photo.",
     parameters: {
       type: "object",
       properties: {
@@ -170,7 +171,7 @@ const EDIT_IMAGE_TOOL = {
   type: "function" as const,
   function: {
     name: "edit_image",
-    description: "Edit, modify, add/remove elements, retouch, or restyle an attached or previously generated image in chat.",
+    description: "Edit, modify, add/remove elements, retouch, or restyle an attached or previously generated reference image (native reference-image editing on Pro).",
     parameters: {
       type: "object",
       properties: {
@@ -261,11 +262,11 @@ const GMAIL_TOOL = {
   type: "function" as const,
   function: {
     name: "manage_gmail",
-    description: "List, search, read, or send emails via Gmail (supports attachments from generated_image, user_upload, memory, library). Always call even if Gmail is not signed in yet.",
+    description: "List, search, read, trash, or send emails via Gmail (supports attachments from generated_image, user_upload, memory, library). Always call even if Gmail is not signed in yet.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list", "read", "send", "search"] },
+        action: { type: "string", enum: ["list", "read", "send", "search", "trash"] },
         to: { type: "string", description: "Recipient email." },
         subject: { type: "string" },
         body: { type: "string" },
@@ -287,6 +288,35 @@ const GMAIL_TOOL = {
         },
       },
       required: ["action"],
+    },
+  },
+};
+
+const PUSH_NOTIFICATION_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "send_push_notification",
+    description: "Send an immediate or scheduled push notification to the user's device (web browser & Android) for Google Tasks, Calendar events, Gmail alerts, timers, reminders, or any important update.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short notification title (max 80 chars)." },
+        body: { type: "string", description: "Concise notification body text (max 240 chars)." },
+        source: {
+          type: "string",
+          enum: ["tasks", "calendar", "gmail", "general"],
+          description: "Origin category: tasks, calendar, gmail, or general.",
+        },
+        delay_seconds: {
+          type: "number",
+          description: "Optional delay in seconds before firing (0 or omitted = send immediately).",
+        },
+        scheduled_at: {
+          type: "string",
+          description: "Optional ISO 8601 timestamp when the reminder notification should fire.",
+        },
+      },
+      required: ["title", "body"],
     },
   },
 };
@@ -684,7 +714,7 @@ async function streamFallbackToClient(
         endpoints.push({ url: `${apimiraBase}/chat/completions`, apiKey: apimiraKey, model: modelId, isDirect: false });
       }
     }
-    if (endpoints.length === 0) throw new Error("No DeepSeek text provider configured");
+    if (endpoints.length === 0) throw new Error("IGseek AI service is temporarily unavailable.");
 
     for (const ep of endpoints) {
       if (signal?.aborted) break;
@@ -1065,6 +1095,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
               /(позвон|набери номер|отправ.{0,12}(смс|sms)|перевед.{0,16}(денег|деньг|рубл|доллар|на карт)|оплат.{0,14}(счет|счёт|заказ)|банк.{0,14}перевод|взломай.{0,24}(аккаунт|инстаграм|телеграм|telegram|вк|vk|телефон|сайт|почт|вайфай|wi-?fi)|вызови такси|закажи еду|купи билет|включи свет|открой дверь|опубликуй в (инст|тг|телеграм|вк|тикток)|call.{0,14}(phone|number|\+\d)|send.{0,10}sms|transfer.{0,14}money|order.{0,12}food|book.{0,12}flight|hack.{0,16}(account|instagram|telegram|phone)|post to (instagram|tiktok|vk|telegram))/i.test(
                 intentProbeText,
               );
+            const wantsNotification =
+              /(уведомл|пуш|push|напомн|таймер|будильн|оповест|пришли.{0,18}(уведомл|пуш|напомин)|notify|notification|alert\b|remind\s+me|timer\b|ping\s+me)/i.test(
+                intentProbeText,
+              );
             const wantsTabTransition =
               /(engine|энжин|движок|live preview|предпросмотр|full.?stack|фуллстек|ide\b|веб-приложени|github|гитхаб|git push|ci\/cd|терминал|bash|flow\b|флоу|воркфлоу|автономн.{0,14}агент|открой библиотек|open library|вкладк.{0,14}(библиотек|engine|flow|saved)|сохран[её]нн)/i.test(
                 intentProbeText,
@@ -1107,6 +1141,66 @@ export async function handleChatPost(request: Request): Promise<Response> {
             ]);
             const isProUser = userTierInfo.isPro;
             const useFreeModels = !isProUser;
+
+            // Direct Image Mode (/img, /imagine, or explicit imageMode flag from mobile/web)
+            const explicitImgCmd =
+              parsed.imageMode ||
+              /^\/(img|imagine)\s+/i.test(lastUserMessage.trim());
+            if (!isEngineRequest && explicitImgCmd) {
+              try {
+                const rawImgPrompt = lastUserMessage
+                  .replace(/^\/(img|imagine)\s+/i, "")
+                  .trim() || "minimal modern editorial artwork";
+                const refImages = (parsed.userAttachments ?? [])
+                  .filter((a) => a.dataUrl?.startsWith("data:image/"))
+                  .map((a) => ({ dataUrl: a.dataUrl, mimeType: a.type }));
+                if (refImages.length === 0 && parsed.previousGeneratedImage?.dataUrl?.startsWith("data:image/")) {
+                  refImages.push({ dataUrl: parsed.previousGeneratedImage.dataUrl, mimeType: undefined });
+                }
+
+                const imageTitle = rawImgPrompt.slice(0, 64);
+                send("image_start", JSON.stringify({ title: imageTitle, prompt: rawImgPrompt }));
+
+                const imgResult = await generateImageWithOpenRouter({
+                  prompt: rawImgPrompt,
+                  tier: isProUser ? "pro" : "free",
+                  referenceImages: isProUser ? refImages : [],
+                  mode: isProUser && refImages.length > 0 ? "edit" : "generate",
+                  signal: streamAbort.signal,
+                });
+
+                const imageObj: GeneratedImage = {
+                  id: `img_${Date.now().toString(36)}`,
+                  title: imageTitle,
+                  prompt: rawImgPrompt,
+                  dataUrl: imgResult.dataUrl,
+                };
+                send("image", JSON.stringify(imageObj));
+                const refNote =
+                  !isProUser && refImages.length > 0
+                    ? "\n\n*(Reference-image conditioning is available on IGseek Pro — generated from text prompt on Free plan.)*"
+                    : "";
+                send(
+                  "delta",
+                  JSON.stringify(`Generated image for **${imageTitle}**.${refNote}`),
+                );
+                send("done", "1");
+                safeClose();
+                return;
+              } catch (imgErr: any) {
+                if (streamAbort.signal.aborted || imgErr?.name === "AbortError") {
+                  safeClose();
+                  return;
+                }
+                const errMsg = sanitizeErrorForUser(imgErr?.message, "IGseek image generation failed. Please try again.");
+                send("image_error", JSON.stringify({ message: errMsg }));
+                send("error", JSON.stringify(errMsg));
+                send("done", "1");
+                safeClose();
+                return;
+              }
+            }
+
             let libraryItems: ServerLibraryItem[] = initialLibraryItems;
             let fullLibraryLoaded = false;
             const ensureFullLibraryItems = async (): Promise<ServerLibraryItem[]> => {
@@ -1203,6 +1297,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                   ...(wantsCalendar ? [CALENDAR_TOOL] : []),
                   ...(wantsTasks ? [TASKS_TOOL] : []),
                   ...(wantsGmail ? [GMAIL_TOOL] : []),
+                  ...(wantsNotification || wantsCalendar || wantsTasks || wantsGmail ? [PUSH_NOTIFICATION_TOOL] : []),
                   ...(wantsLibrary ? [SEARCH_AND_READ_LIBRARY_TOOL] : []),
                   ...(wantsMemory ? [MANAGE_MEMORY_TOOL, MEMORY_TOOL] : wantsGmail ? [MEMORY_TOOL] : []),
                   ...(wantsRefusalCheck ? [REFUSAL_TOOL] : []),
@@ -1253,8 +1348,8 @@ export async function handleChatPost(request: Request): Promise<Response> {
 - Files/Docs: call translate_file_with_deepseek for Word/PPT/Excel/PDF/.d/archive/binary interpretation; call search_and_read_library for files stored in Library.
 - Memory: call manage_memory (save/update/delete) when asked to remember/forget or given durable personal facts (for Library files: search_and_read_library first, then manage_memory with library_id/library_filename); call search_and_read_memory for contacts ("мама", "босс") or saved docs.
 - Email: call manage_gmail autonomously; supports attachments from library (search_and_read_library + library_id), generated_image (generate_image first), user_upload, or memory (memory_id).
-- Images: analyze attached images directly; call edit_image whenever asked to modify/add/remove/restyle an attached or previously generated image; call generate_image to create a new image from scratch; call find_web_image ONLY when asked how something real looks ("покажи фото", "как выглядит").
-- Productivity & Web: call manage_calendar_event for events/reminders, manage_google_task for tasks, create_artifact for substantial code/docs${effectiveWebSearch ? ", web_search for live/current info (cite sources)" : ""}.
+- Images: analyze attached images directly; call edit_image whenever asked to modify/add/remove/restyle an attached or previously generated image (${isProUser ? "Pro tier: native reference-image model enabled" : "Free tier: fast text-to-image model; mention Pro unlocks reference-image editing when user asks to edit a photo"}); call generate_image to create a new image from scratch; call find_web_image ONLY when asked how something real looks ("покажи фото", "как выглядит").
+- Productivity & Push Notifications: call manage_calendar_event for events/reminders, manage_google_task for tasks, send_push_notification to dispatch an immediate or scheduled push alert on the user's device (for Google Tasks, Calendar, Gmail, timers, or general reminders), create_artifact for substantial code/docs${effectiveWebSearch ? ", web_search for live/current info (cite sources)" : ""}.
 - Google Workspace honesty: manage_calendar_event, manage_google_task, and manage_gmail create an interactive confirmation card in the UI. NEVER claim the email is already sent or the event/task is already saved in Google — tell the user to click the Confirm button on the card (and sign in to Google if prompted).
 - Boundaries & Tabs: call refuse_unsupported_request immediately for impossible actions (calls, SMS, banking, physical acts, live hacking); call suggest_tab_transition ONLY for full-stack/IDE live preview ('engine'), GitHub/CI-CD/terminal ('flow'), or opening Library UI ('library' — NOT when asked to read/remember/email a Library file).
 - Never print raw tool markup; after tools, confirm briefly without repeating full payloads.`
@@ -1716,11 +1811,11 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     if (outcome.assistantText || outcome.toolCalls.length > 0) {
                       return { outcome };
                     }
-                    lastErr = new Error("deepseek gateway empty response");
+                    lastErr = new Error("IGseek AI returned an empty response");
                   } else {
                     markApimiraModelUnhealthy(att.modelOverride, upstream.status);
                     const text = await upstream.text().catch(() => "");
-                    lastErr = new Error(`deepseek gateway ${upstream.status}: ${text.slice(0, 160)}`);
+                    lastErr = new Error(sanitizeErrorForUser(text.slice(0, 160), `IGseek AI error (${upstream.status})`));
                     if (upstream.status === 401 || upstream.status === 402 || upstream.status === 403) {
                       break;
                     }
@@ -1806,7 +1901,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     if (outcome.assistantText || outcome.toolCalls.length > 0 || streamAbort.signal.aborted) {
                       return outcome;
                     }
-                    lastErr = new Error("Free DeepSeek returned an empty response");
+                    lastErr = new Error("IGseek AI returned an empty response");
                   } catch (freeErr) {
                     if (streamAbort.signal.aborted || (freeErr as Error)?.name === "AbortError") {
                       throw freeErr;
@@ -1819,7 +1914,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                     }
                   }
                 }
-                throw lastErr instanceof Error ? lastErr : new Error("free_deepseek_unavailable");
+                throw lastErr instanceof Error ? lastErr : new Error("IGseek AI is temporarily unavailable. Please try again.");
               }
 
               if (isOpenRouterConfigured() || (!deepseekKey && !apimiraKey)) {
@@ -1888,7 +1983,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       if (!apimiraKey || (upstream.status !== 401 && upstream.status !== 402 && upstream.status !== 403)) {
                         console.warn("DeepSeek primary fallback status", upstream.status, text.slice(0, 200));
                       }
-                      lastErr = new Error(`deepseek ${upstream.status}`);
+                      lastErr = new Error(`IGseek AI error (${upstream.status})`);
                       if (upstream.status === 401 || upstream.status === 402 || upstream.status === 403) {
                         break;
                       }
@@ -1913,7 +2008,7 @@ export async function handleChatPost(request: Request): Promise<Response> {
               if (dsGateway.outcome) return dsGateway.outcome;
               if (dsGateway.error) lastErr = dsGateway.error;
 
-              throw lastErr instanceof Error ? lastErr : new Error("deepseek_unavailable");
+              throw lastErr instanceof Error ? lastErr : new Error("IGseek AI is temporarily unavailable. Please try again.");
             }
 
             let finalAssistantText = "";
@@ -2028,27 +2123,18 @@ export async function handleChatPost(request: Request): Promise<Response> {
                       const imageTitle = String(parsedArgs.title ?? "Generated image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
 
-                      // Pollinations handles image generation across ALL plans (Free & Pro).
                       const attachedReferenceImages = (parsed.userAttachments ?? [])
                         .filter((a) => a.dataUrl?.startsWith("data:image/"))
                         .map((a) => ({ dataUrl: a.dataUrl, mimeType: a.type }));
 
-                      const finalPrompt =
-                        attachedReferenceImages.length > 0
-                          ? await buildReferenceAwarePollinationsPrompt({
-                              sourceImages: attachedReferenceImages,
-                              editPrompt: parsedArgs.prompt,
-                              extraDescription: parsedArgs.description,
-                              useDeepSeekSynthesis: isProUser,
-                              deepseekKey,
-                              apimiraKey,
-                              apimiraBaseUrl,
-                              signal: streamAbort.signal,
-                            })
-                          : parsedArgs.prompt;
-                      const dataUrl = (
-                        await generateImageWithPollinations(finalPrompt, { signal: streamAbort.signal })
-                      ).dataUrl;
+                      const generated = await generateImageWithOpenRouter({
+                        prompt: parsedArgs.prompt,
+                        tier: isProUser ? "pro" : "free",
+                        referenceImages: isProUser ? attachedReferenceImages : [],
+                        mode: "generate",
+                        signal: streamAbort.signal,
+                      });
+                      const dataUrl = generated.dataUrl;
 
                       lastGeneratedImageDataUrl = dataUrl;
                       lastGeneratedImageState = {
@@ -2071,7 +2157,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
-                          message: `Изображение «${image.title}» сгенерировано и показано пользователю карточкой. Не описывай картинку подробно — просто кратко подтверди.`,
+                          model: generated.modelUsed,
+                          tier: generated.tier,
+                          usedReferenceImages: isProUser && attachedReferenceImages.length > 0,
+                          message: `Image "${image.title}" generated via OpenRouter (${generated.tier}) and shown to the user. Confirm briefly without describing the image in detail.${!isProUser && attachedReferenceImages.length > 0 ? " Note briefly that reference-image conditioning is unlocked on Pro." : ""}`,
                         }),
                       });
                     } catch (e) {
@@ -2098,24 +2187,17 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         lastGeneratedImageState,
                       );
 
-                      // Pollinations handles image editing across ALL plans (Free & Pro).
                       const imageTitle = String(parsedArgs.title ?? "Edited image");
                       send("image_start", JSON.stringify({ title: imageTitle, prompt: parsedArgs.prompt }));
 
-                      const synthesizedPrompt = await buildReferenceAwarePollinationsPrompt({
-                        sourceImages,
-                        sourceImageDataUrl: sourceImages[0]?.dataUrl ?? null,
-                        editPrompt: parsedArgs.prompt,
-                        extraDescription: parsedArgs.description,
-                        useDeepSeekSynthesis: isProUser,
-                        deepseekKey,
-                        apimiraKey,
-                        apimiraBaseUrl,
+                      const edited = await generateImageWithOpenRouter({
+                        prompt: parsedArgs.prompt,
+                        tier: isProUser ? "pro" : "free",
+                        referenceImages: isProUser ? sourceImages : [],
+                        mode: isProUser && sourceImages.length > 0 ? "edit" : "generate",
                         signal: streamAbort.signal,
                       });
-                      const editedDataUrl = (
-                        await generateImageWithPollinations(synthesizedPrompt, { signal: streamAbort.signal })
-                      ).dataUrl;
+                      const editedDataUrl = edited.dataUrl;
 
                       lastGeneratedImageDataUrl = editedDataUrl;
                       lastGeneratedImageState = {
@@ -2138,7 +2220,10 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         tool_call_id: tc.id,
                         content: JSON.stringify({
                           ok: true,
-                          message: `Изображение «${image.title}» отредактировано по запросу и показано пользователю карточкой. Кратко подтверди, что правка выполнена.`,
+                          model: edited.modelUsed,
+                          tier: edited.tier,
+                          usedReferenceImages: isProUser && sourceImages.length > 0,
+                          message: `Image "${image.title}" ready via OpenRouter (${edited.tier}) and shown to the user. Confirm briefly.${!isProUser && sourceImages.length > 0 ? " Mention briefly that native reference-image editing requires IGseek Pro." : ""}`,
                         }),
                       });
                     } catch (e) {
@@ -2149,6 +2234,62 @@ export async function handleChatPost(request: Request): Promise<Response> {
                         role: "tool",
                         tool_call_id: tc.id,
                         content: JSON.stringify({ ok: false, error: errMsg }),
+                      });
+                    }
+                  } else if (tc.function.name === "send_push_notification") {
+                    try {
+                      const parsedArgs = JSON.parse(tc.function.arguments || "{}") as {
+                        title?: string;
+                        body?: string;
+                        source?: "tasks" | "calendar" | "gmail" | "general";
+                        delay_seconds?: number;
+                        scheduled_at?: string;
+                      };
+                      const title = String(parsedArgs.title || "IGseek Notification").trim().slice(0, 80);
+                      const body = String(parsedArgs.body || "").trim().slice(0, 240);
+                      if (!body) throw new Error("missing notification body");
+                      const source =
+                        parsedArgs.source === "tasks" ||
+                        parsedArgs.source === "calendar" ||
+                        parsedArgs.source === "gmail"
+                          ? parsedArgs.source
+                          : "general";
+                      const delaySeconds =
+                        typeof parsedArgs.delay_seconds === "number" && Number.isFinite(parsedArgs.delay_seconds)
+                          ? Math.max(0, Math.min(86400 * 14, Math.round(parsedArgs.delay_seconds)))
+                          : undefined;
+                      let scheduledAt: string | undefined;
+                      if (parsedArgs.scheduled_at && parsedArgs.scheduled_at.trim()) {
+                        const d = new Date(parsedArgs.scheduled_at.trim());
+                        if (!Number.isNaN(d.getTime())) scheduledAt = d.toISOString();
+                      }
+                      const notifPayload = {
+                        id: tc.id,
+                        title,
+                        body,
+                        source,
+                        delaySeconds,
+                        scheduledAt,
+                        createdAt: new Date().toISOString(),
+                      };
+                      send("notification_event", JSON.stringify(notifPayload));
+                      followupMessages.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({
+                          ok: true,
+                          notification: notifPayload,
+                          message:
+                            delaySeconds || scheduledAt
+                              ? `Push notification "${title}" scheduled on the user's device.`
+                              : `Push notification "${title}" dispatched to the user's device.`,
+                        }),
+                      });
+                    } catch (e) {
+                      followupMessages.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify({ ok: false, error: (e as Error).message }),
                       });
                     }
                   } else if (tc.function.name === "web_search") {
@@ -2918,8 +3059,11 @@ export async function handleChatPost(request: Request): Promise<Response> {
               }
               console.error("stream error", err);
               if (!lastGeneratedImageDataUrl && !finalAssistantText) {
-                const errDetail = err instanceof Error ? err.message.slice(0, 260) : "stream_failed";
-                send("error", JSON.stringify(errDetail || "stream_failed"));
+                const errDetail = sanitizeErrorForUser(
+                  err instanceof Error ? err.message : "",
+                  "IGseek AI request failed. Please try again.",
+                );
+                send("error", JSON.stringify(errDetail));
               } else {
                 send("done", "1");
               }

@@ -12,6 +12,7 @@ import { lovable } from "@/integrations/lovable";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { LegalDocModal, type LegalDocType } from "@/components/auth/LegalDocModal";
 import { PRIVACY_POLICY_URL, USER_AGREEMENT_URL } from "@/lib/legal";
+import { sanitizeErrorForUser } from "@/lib/error-sanitizer";
 import { useTheme, useAccent, applyAccent, ACCENT_PRESETS, type AccentId } from "@/lib/theme";
 import {
   readFlowLibraryFiles,
@@ -155,6 +156,7 @@ import {
   Cloud,
   CloudOff,
   Crown,
+  Bell,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -169,6 +171,7 @@ import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  checkCalendarFreeBusy,
   type CalendarEvent,
   type CalendarEventPayload,
 } from "@/lib/google-calendar";
@@ -182,6 +185,7 @@ import {
 import {
   getCachedGmailToken,
   listGmailMessages,
+  getGmailMessage,
   sendGmailMessage,
   trashGmailMessage,
   saveLocalEmail,
@@ -192,6 +196,16 @@ import {
   connectGoogleWorkspace,
   getWorkspaceAccessToken,
 } from "@/lib/google-workspace-auth";
+import {
+  getNotificationPermission,
+  isPushNotificationSupported,
+  isPushNotificationsEnabled,
+  requestPushNotificationPermission,
+  setPushNotificationsEnabled,
+  startPushNotificationEngine,
+  triggerOrSchedulePushNotification,
+  type PushNotificationPayload,
+} from "@/lib/notifications";
 import { FlowView } from "@/components/flow/FlowView";
 import { LibraryPickerModal } from "@/components/LibraryPickerModal";
 import { ConfirmModal, type ConfirmDialogConfig } from "@/components/ConfirmModal";
@@ -329,6 +343,7 @@ type ChatMessage = {
     query?: string;
     attachments?: Array<{ filename: string; mimeType?: string; dataUrl?: string }>;
   }>;
+  notifications?: PushNotificationPayload[];
   refusals?: Array<{ id?: string; action: string; reason: string; alternative: string }>;
   tabTransitions?: Array<{
     id?: string;
@@ -715,6 +730,10 @@ function Index() {
       window.clearInterval(periodicTimer);
     };
   }, [user?.id, isGuest]);
+
+  useEffect(() => {
+    return startPushNotificationEngine();
+  }, []);
 
   useEffect(() => {
     if (!user || isGuest || user.id === GUEST_ID || user.id.startsWith("local_")) return;
@@ -2087,11 +2106,11 @@ function Index() {
                     retryAfterMinutes?: number;
                     limit?: number;
                   };
-                  const noticeText =
-                    notice.message ||
-                    `Лимит GPT Image 2 (${notice.limit ?? 4} изображений/час) временно исчерпан. Используется облегчённая модель${
-                      notice.retryAfterMinutes ? ` (~${notice.retryAfterMinutes} мин.)` : ""
-                    }.`;
+                  const noticeText = notice.message
+                    ? sanitizeErrorForUser(notice.message)
+                    : `IGseek Image limit (${notice.limit ?? 4} images/hr) reached. Using fast IGseek model${
+                        notice.retryAfterMinutes ? ` (~${notice.retryAfterMinutes} min)` : ""
+                      }.`;
                   currentAssistantMsg.imageFallbackNotice = noticeText;
                   toast.info(noticeText, { duration: 6000 });
                   updateLiveUi();
@@ -2185,6 +2204,13 @@ function Index() {
                     });
                   }
                 } catch {  }
+              } else if (currentEvent === "notification_event") {
+                try {
+                  const notifEvt = JSON.parse(raw) as PushNotificationPayload;
+                  currentAssistantMsg.notifications = [...(currentAssistantMsg.notifications ?? []), notifEvt];
+                  updateLiveUi();
+                  void triggerOrSchedulePushNotification(notifEvt);
+                } catch {  }
               } else if (currentEvent === "refusal_event") {
                 try {
                   const refEvt = JSON.parse(raw);
@@ -2211,17 +2237,18 @@ function Index() {
                   currentAssistantMsg.calendarEvents?.length ||
                   currentAssistantMsg.taskEvents?.length ||
                   currentAssistantMsg.gmailEvents?.length ||
+                  currentAssistantMsg.notifications?.length ||
                   contentBuf.trim()
                 );
                 if (!hasExistingResult) {
-                  let errMsg = "stream error";
+                  let errMsg = "IGseek AI stream error";
                   try {
                     const parsedErr = JSON.parse(raw);
                     if (typeof parsedErr === "string" && parsedErr.trim()) errMsg = parsedErr.trim();
                   } catch {
                     if (raw) errMsg = raw;
                   }
-                  throw new Error(errMsg);
+                  throw new Error(sanitizeErrorForUser(errMsg, "IGseek AI stream error"));
                 }
               }
             }
@@ -2262,7 +2289,8 @@ function Index() {
           currentAssistantMsg.tabTransitions?.length
         );
         if (!hasExistingResult) {
-          const errorDetail = err?.message ? `: ${err.message}` : "";
+          const cleanErr = err?.message ? sanitizeErrorForUser(err.message, "") : "";
+          const errorDetail = cleanErr ? `: ${cleanErr}` : "";
           currentAssistantMsg.content = currentAssistantMsg.content || ("⚠️ " + t("Something went wrong. Please try again.") + errorDetail);
           updateLiveUi(true);
         }
@@ -2852,8 +2880,8 @@ function Index() {
                     <Icon className={`h-4 w-4 shrink-0 ${active ? "text-white dark:text-[var(--brand)]" : "text-zinc-500 dark:text-zinc-400"}`} />
                     <span className="text-left whitespace-nowrap">{t(label)}</span>
                     {soon && (
-                      <span className="ml-auto text-[10px] uppercase tracking-wider font-medium text-zinc-500 dark:text-zinc-400">
-                        {t("SOON")}
+                      <span className="ml-auto rounded-md bg-zinc-200/75 dark:bg-white/[0.08] px-1.5 py-0.5 text-[9px] uppercase tracking-wider font-semibold text-zinc-600 dark:text-zinc-300">
+                        SOON
                       </span>
                     )}
                   </button>
@@ -4642,6 +4670,7 @@ function ArtifactCard({ artifact }: { artifact: Artifact }) {
 
 function GeneratedImageCard({ image }: { image: GeneratedImage }) {
   const t = useT();
+  const [revealed, setRevealed] = useState(false);
   const filename =
     image.title
       .toLowerCase()
@@ -4659,8 +4688,8 @@ function GeneratedImageCard({ image }: { image: GeneratedImage }) {
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      className="w-full max-w-full min-w-0 overflow-hidden rounded-[18px] border border-zinc-200/80 dark:border-white/[0.09] bg-white/90 dark:bg-[#151518]"
+      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-full min-w-0 overflow-hidden rounded-[18px] border border-zinc-200/80 dark:border-white/[0.09] bg-white/95 dark:bg-[#151518]"
     >
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200/70 dark:border-white/[0.07] px-3 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -4684,12 +4713,16 @@ function GeneratedImageCard({ image }: { image: GeneratedImage }) {
         </button>
       </div>
       <div className="p-2">
-        <img
-          src={image.dataUrl}
-          alt={image.title}
-          className="w-full max-h-[480px] rounded-[12px] bg-zinc-100 dark:bg-black/30 object-contain"
-          loading="lazy"
-        />
+        <div className="relative overflow-hidden rounded-[12px] bg-zinc-100 dark:bg-black/30">
+          <img
+            src={image.dataUrl}
+            alt={image.title}
+            referrerPolicy="no-referrer"
+            onLoad={() => setRevealed(true)}
+            className={`w-full max-h-[480px] rounded-[12px] object-contain ${revealed ? "igseek-photo-reveal" : "opacity-0"}`}
+            loading="lazy"
+          />
+        </div>
         {image.description && (
           <p className="mt-2 px-1 text-[12px] leading-relaxed text-zinc-500 dark:text-zinc-400">
             {image.description}
@@ -4838,9 +4871,28 @@ function CalendarEventCard({
         return;
       }
 
+      if (action === "check_free_busy") {
+        const timeMin = event.start?.dateTime || new Date().toISOString();
+        const timeMax = event.end?.dateTime || new Date(Date.parse(timeMin) + 2 * 3600_000).toISOString();
+        const fb = await checkCalendarFreeBusy({ timeMin, timeMax });
+        const busyBlocks: Array<{ start: string; end: string }> = fb?.calendars?.primary?.busy || [];
+        setListedEvents(
+          busyBlocks.map((b, idx) => ({
+            id: `busy_${idx}`,
+            summary: t("Busy slot"),
+            start: { dateTime: b.start },
+            end: { dateTime: b.end },
+          })),
+        );
+        setStatus("done");
+        toast.success(busyBlocks.length === 0 ? t("Time slot is free") : `${busyBlocks.length} busy slot(s) found`);
+        return;
+      }
+
       if (action === "delete") {
         const targetId = await resolveTargetEventId();
         await deleteCalendarEvent(targetId);
+        window.dispatchEvent(new CustomEvent("igseek:local-reminders-updated"));
         setStatus("done");
         toast.success(t("Deleted from Google Calendar"));
         return;
@@ -4857,6 +4909,7 @@ function CalendarEventCard({
           reminderMinutes: event.reminderMinutes,
         });
         if (updated.htmlLink) setResultLink(updated.htmlLink);
+        window.dispatchEvent(new CustomEvent("igseek:local-reminders-updated"));
         setStatus("done");
         toast.success(t("Saved to Google Calendar"));
         return;
@@ -4864,6 +4917,19 @@ function CalendarEventCard({
 
       const created = await createCalendarEvent(event);
       if (created.htmlLink) setResultLink(created.htmlLink);
+      window.dispatchEvent(new CustomEvent("igseek:local-reminders-updated"));
+      const startMs = event.start?.dateTime ? Date.parse(event.start.dateTime) : NaN;
+      if (!Number.isNaN(startMs) && startMs > Date.now() + 60_000) {
+        const leadMins = event.reminderMinutes?.[0] ?? 10;
+        const fireMs = Math.max(Date.now() + 5_000, startMs - leadMins * 60_000);
+        void triggerOrSchedulePushNotification({
+          id: `cal_rem_${created.id || Date.now()}`,
+          title: event.summary || t("Calendar reminder"),
+          body: `${formatDate(event.start.dateTime)} · ${formatTime(event.start.dateTime)}${event.location ? ` · ${event.location}` : ""}`,
+          source: "calendar",
+          scheduledAt: new Date(fireMs).toISOString(),
+        });
+      }
       setStatus("done");
       toast.success(t("Saved to Google Calendar"));
     } catch (err: any) {
@@ -4879,13 +4945,17 @@ function CalendarEventCard({
       ? isConnected
         ? t("Load Calendar Events")
         : t("Connect Google & Load Events")
-      : action === "delete"
-        ? t("Confirm & Delete Event")
-        : action === "update"
-          ? t("Confirm & Update Event")
-          : isConnected
-            ? t("Confirm & Add to Calendar")
-            : t("Connect Google & Add to Calendar");
+      : action === "check_free_busy"
+        ? isConnected
+          ? t("Check Availability")
+          : t("Connect Google & Check Availability")
+        : action === "delete"
+          ? t("Confirm & Delete Event")
+          : action === "update"
+            ? t("Confirm & Update Event")
+            : isConnected
+              ? t("Confirm & Add to Calendar")
+              : t("Connect Google & Add to Calendar");
 
   return (
     <motion.div
@@ -5081,10 +5151,23 @@ function TaskEventCard({
         return;
       }
 
-      await createGoogleTask(
+      const createdTask = await createGoogleTask(
         { title: task.title, notes: task.notes, due: task.due, taskListId: listId },
         listId,
       );
+      window.dispatchEvent(new CustomEvent("igseek:local-tasks-updated"));
+      if (task.due) {
+        const dueMs = Date.parse(task.due);
+        if (!Number.isNaN(dueMs) && dueMs > Date.now() + 60_000) {
+          void triggerOrSchedulePushNotification({
+            id: `task_rem_${createdTask.id || Date.now()}`,
+            title: `Task due: ${task.title}`,
+            body: task.notes?.slice(0, 140) || "Scheduled Google Task reminder",
+            source: "tasks",
+            scheduledAt: new Date(dueMs).toISOString(),
+          });
+        }
+      }
       setStatus("done");
       toast.success(t("Saved to Google Tasks"));
     } catch (err: any) {
@@ -5267,6 +5350,13 @@ function GmailEventCard({
     try {
       if (!getWorkspaceAccessToken()) {
         await connectGoogleWorkspace();
+      }
+
+      if (action === "read" && email.messageId) {
+        const fullMsg = await getGmailMessage(email.messageId);
+        setListedEmails([fullMsg]);
+        setStatus("done");
+        return;
       }
 
       if (action === "list" || action === "search" || action === "read") {
@@ -5457,6 +5547,95 @@ function GmailEventCard({
   );
 }
 
+function NotificationEventCard({ notification }: { notification: PushNotificationPayload }) {
+  const t = useT();
+  const lang = useLang();
+  const [perm, setPerm] = useState<NotificationPermission | "unsupported">(() => getNotificationPermission());
+  const [resent, setResent] = useState(false);
+
+  const sourceLabel =
+    notification.source === "calendar"
+      ? "Google Calendar"
+      : notification.source === "tasks"
+        ? "Google Tasks"
+        : notification.source === "gmail"
+          ? "Gmail"
+          : "IGseek Push";
+
+  const scheduleText = useMemo(() => {
+    if (notification.scheduledAt) {
+      const d = new Date(notification.scheduledAt);
+      if (!Number.isNaN(d.getTime())) {
+        return d.toLocaleString(localeFor(lang), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      }
+    }
+    if (notification.delaySeconds && notification.delaySeconds > 0) {
+      const mins = Math.round(notification.delaySeconds / 60);
+      return mins >= 1 ? `in ${mins} min` : `in ${notification.delaySeconds}s`;
+    }
+    return t("Sent now");
+  }, [notification.scheduledAt, notification.delaySeconds, lang, t]);
+
+  const handleEnableOrResend = async () => {
+    if (perm !== "granted" && isPushNotificationSupported()) {
+      const next = await requestPushNotificationPermission();
+      setPerm(next);
+    }
+    await triggerOrSchedulePushNotification({
+      ...notification,
+      delaySeconds: 0,
+      scheduledAt: undefined,
+    });
+    setResent(true);
+    setTimeout(() => setResent(false), 2500);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="w-full max-w-full min-w-0 overflow-hidden rounded-[18px] border border-zinc-200/80 dark:border-white/[0.09] bg-white/90 dark:bg-[#151518] p-3.5"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand/12 text-brand">
+            <Bell className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">
+              {notification.title}
+            </div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-x-2">
+              <span>{sourceLabel}</span>
+              <span>·</span>
+              <span className="tabular-nums">{scheduleText}</span>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleEnableOrResend()}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 hover:bg-zinc-100 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 transition-colors cursor-pointer shrink-0"
+        >
+          <Bell className="h-3 w-3" />
+          <span>
+            {perm !== "granted" && isPushNotificationSupported()
+              ? t("Enable Push")
+              : resent
+                ? t("Sent")
+                : t("Send again")}
+          </span>
+        </button>
+      </div>
+      {notification.body && (
+        <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-white/[0.03] px-2.5 py-2 rounded-xl break-words">
+          {notification.body}
+        </p>
+      )}
+    </motion.div>
+  );
+}
+
 function RefusalEventCard({
   refusal,
 }: {
@@ -5597,54 +5776,173 @@ function TabTransitionCard({
   );
 }
 
-function ImageGenerationPlaceholder({ title }: { title: string }) {
+function ImageGenerationPlaceholder({ title, prompt }: { title: string; prompt?: string }) {
   const t = useT();
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSec((Date.now() - startedAt) / 1000);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const stageIndex = elapsedSec < 2.6 ? 0 : elapsedSec < 6.2 ? 1 : elapsedSec < 11.5 ? 2 : 3;
+  const stageLabels = [
+    t("Composing scene"),
+    t("Shaping light & color"),
+    t("Refining fine details"),
+    t("Finalizing photo"),
+  ];
+  const activeStage = stageLabels[stageIndex];
+  const progress = Math.min(0.94, 0.1 + 0.84 * (1 - Math.exp(-elapsedSec / 7.5)));
+  const cleanPrompt = prompt?.trim() || "";
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      className="w-full max-w-full min-w-0 overflow-hidden rounded-[18px] border border-zinc-200/80 dark:border-white/[0.09] bg-white/90 dark:bg-[#151518]"
+      initial={{ opacity: 0, y: 8, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+      className="w-full max-w-full min-w-0 overflow-hidden rounded-[18px] border border-zinc-200/85 dark:border-white/[0.09] bg-white/95 dark:bg-[#141418]"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-200/70 dark:border-white/[0.07] px-3 py-2.5">
+      {/* Clean studio header */}
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-200/70 dark:border-white/[0.07] px-3.5 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-zinc-200/80 dark:border-white/10 bg-zinc-50 dark:bg-white/[0.04]">
             <ImageIcon className="h-4 w-4 text-brand" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-medium text-zinc-900 dark:text-zinc-100" title={title}>{title}</div>
-            <div className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-              {t("Image")}
+            <div className="truncate text-[13px] font-medium text-zinc-900 dark:text-zinc-100" title={title}>
+              {title}
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <span>IGseek Studio</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono tabular-nums">{elapsedSec.toFixed(1)}s</span>
             </div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-          <Loader2 className="h-3 w-3 animate-spin text-brand" />
+        <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
           <span className="whitespace-nowrap">{t("Generating image")}…</span>
         </div>
       </div>
+
+      {/* Latent Diffusion / Optical Darkroom Canvas */}
       <div className="p-2">
-        <div className="relative flex h-44 w-full items-center justify-center overflow-hidden rounded-[12px] bg-zinc-100/80 dark:bg-black/30">
-          <motion.div
-            className="pointer-events-none absolute h-36 w-36 rounded-full bg-brand/15 blur-3xl"
-            animate={{ scale: [1, 1.15, 1], opacity: [0.35, 0.55, 0.35] }}
-            transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+        <div className="relative flex h-64 sm:h-72 w-full flex-col items-center justify-center overflow-hidden rounded-[12px] bg-zinc-100 dark:bg-[#0c0c10] border border-zinc-200/60 dark:border-white/[0.06]">
+          {/* Living pigment wash layers (GPU transform + opacity only) */}
+          <div
+            className="pointer-events-none absolute -top-12 -left-10 h-56 w-56 rounded-full blur-3xl bg-amber-400/20 dark:bg-rose-500/22"
+            style={{ animation: "igseek-photo-drift-a 7.2s ease-in-out infinite" }}
           />
-          <div className="relative z-10 flex h-12 w-12 items-center justify-center rounded-2xl border border-zinc-200/80 dark:border-white/10 bg-white/90 dark:bg-[#1a1a1f]">
-            <ImageIcon className="h-5 w-5 text-brand" />
+          <div
+            className="pointer-events-none absolute -bottom-14 -right-10 h-60 w-60 rounded-full blur-3xl bg-sky-400/20 dark:bg-amber-500/18"
+            style={{ animation: "igseek-photo-drift-b 8.4s ease-in-out infinite" }}
+          />
+          <div
+            className="pointer-events-none absolute top-1/3 left-1/3 h-48 w-48 rounded-full blur-3xl bg-zinc-400/20 dark:bg-red-500/18"
+            style={{ animation: "igseek-photo-drift-c 6.4s ease-in-out infinite" }}
+          />
+
+          {/* Subtle architectural composition grid */}
+          <div className="pointer-events-none absolute inset-0 igseek-photo-grid opacity-80" />
+
+          {/* Sweeping optical developing light band */}
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-28"
+            style={{ animation: "igseek-photo-scan 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite" }}
+          >
+            <div className="h-[1.5px] w-full bg-gradient-to-r from-transparent via-zinc-900/35 dark:via-white/45 to-transparent" />
+            <div className="h-full w-full bg-gradient-to-b from-zinc-900/[0.06] dark:from-white/[0.09] via-zinc-900/[0.02] dark:via-white/[0.03] to-transparent" />
           </div>
-        </div>
-        <div className="mt-2 px-1">
-          <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
-            <span>{t("Almost ready")}…</span>
-            <span className="h-1 w-24 overflow-hidden rounded-full bg-zinc-200 dark:bg-white/10">
-              <motion.span
-                className="block h-full rounded-full bg-brand/70"
-                initial={{ width: "0%" }}
-                animate={{ width: ["0%", "70%", "100%"] }}
-                transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
-              />
-            </span>
+
+          {/* Optical viewfinder corner registration marks */}
+          <span aria-hidden="true" className="pointer-events-none absolute top-3.5 left-3.5 h-3.5 w-3.5 border-t-[1.5px] border-l-[1.5px] border-zinc-400/70 dark:border-white/30 rounded-tl-[2px]" />
+          <span aria-hidden="true" className="pointer-events-none absolute top-3.5 right-3.5 h-3.5 w-3.5 border-t-[1.5px] border-r-[1.5px] border-zinc-400/70 dark:border-white/30 rounded-tr-[2px]" />
+          <span aria-hidden="true" className="pointer-events-none absolute bottom-12 left-3.5 h-3.5 w-3.5 border-b-[1.5px] border-l-[1.5px] border-zinc-400/70 dark:border-white/30 rounded-bl-[2px]" />
+          <span aria-hidden="true" className="pointer-events-none absolute bottom-12 right-3.5 h-3.5 w-3.5 border-b-[1.5px] border-r-[1.5px] border-zinc-400/70 dark:border-white/30 rounded-br-[2px]" />
+
+          {/* Central optical aperture focus reticle */}
+          <div className="relative z-10 flex flex-col items-center justify-center -mt-4">
+            <div className="relative flex h-20 w-20 items-center justify-center">
+              <svg
+                viewBox="0 0 80 80"
+                className="absolute inset-0 h-full w-full text-zinc-900/25 dark:text-white/25"
+                style={{ animation: "igseek-photo-aperture 9s linear infinite" }}
+                aria-hidden="true"
+              >
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="35"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.25"
+                  strokeDasharray="10 7"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <svg
+                viewBox="0 0 80 80"
+                className="absolute inset-0 h-full w-full text-brand/60"
+                style={{ animation: "igseek-photo-aperture 14s linear infinite reverse" }}
+                aria-hidden="true"
+              >
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="27"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeDasharray="24 58"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <motion.div
+                animate={{ scale: [0.96, 1.03, 0.96] }}
+                transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+                className="relative flex h-11 w-11 items-center justify-center rounded-2xl border border-zinc-200/90 dark:border-white/15 bg-white/85 dark:bg-[#18181e]/90 backdrop-blur-md shadow-sm"
+              >
+                <ImageIcon className="h-5 w-5 text-brand" />
+              </motion.div>
+            </div>
+          </div>
+
+          {/* Bottom stage caption + prompt preview + hairline progress ribbon */}
+          <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-white/90 via-white/65 to-transparent dark:from-[#0c0c10]/95 dark:via-[#0c0c10]/70 dark:to-transparent px-3.5 pt-5 pb-3">
+            <div className="flex items-center justify-between gap-2 text-[11.5px]">
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={stageIndex}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.22 }}
+                  className="font-medium text-zinc-800 dark:text-zinc-200"
+                >
+                  {activeStage}…
+                </motion.span>
+              </AnimatePresence>
+              <span className="font-mono text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">
+                {Math.round(progress * 100)}%
+              </span>
+            </div>
+            {cleanPrompt && cleanPrompt.toLowerCase() !== title.trim().toLowerCase() && (
+              <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                {cleanPrompt}
+              </p>
+            )}
+          </div>
+
+          {/* Bottom-edge compositor-only asymptotic progress ribbon */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[2.5px] bg-zinc-200/80 dark:bg-white/[0.08]">
+            <div
+              className="h-full w-full origin-left bg-brand transition-transform duration-300 ease-out"
+              style={{ transform: `scaleX(${progress})` }}
+            />
           </div>
         </div>
       </div>
@@ -6437,7 +6735,10 @@ const MessageBubble = memo(function MessageBubble({
               )}
               {message.pendingImage && (
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
-                  <ImageGenerationPlaceholder title={message.pendingImage.title} />
+                  <ImageGenerationPlaceholder
+                    title={message.pendingImage.title}
+                    prompt={message.pendingImage.prompt}
+                  />
                 </div>
               )}
               {message.images?.length ? (
@@ -6472,6 +6773,13 @@ const MessageBubble = memo(function MessageBubble({
                 <div className="mt-2.5 space-y-2 w-full min-w-0">
                   {message.gmailEvents.map((g, idx) => (
                     <GmailEventCard key={g.id || idx} email={g} />
+                  ))}
+                </div>
+              ) : null}
+              {message.notifications?.length ? (
+                <div className="mt-2.5 space-y-2 w-full min-w-0">
+                  {message.notifications.map((n, idx) => (
+                    <NotificationEventCard key={n.id || idx} notification={n} />
                   ))}
                 </div>
               ) : null}
@@ -8761,14 +9069,14 @@ Engine Studio automatically parses these blocks and writes files directly into t
                 } catch {}
               } else if (currentEvent === "error") {
                 if (!fullText.trim()) {
-                  let errMsg = "stream error";
+                  let errMsg = "IGseek Engine stream error";
                   try {
                     const parsedErr = JSON.parse(raw);
                     if (typeof parsedErr === "string" && parsedErr.trim()) errMsg = parsedErr.trim();
                   } catch {
                     if (raw) errMsg = raw;
                   }
-                  throw new Error(errMsg);
+                  throw new Error(sanitizeErrorForUser(errMsg, "IGseek Engine stream error"));
                 }
               }
             }
@@ -8854,7 +9162,8 @@ Engine Studio automatically parses these blocks and writes files directly into t
           ]);
         }
       } else {
-        const detail = err?.message ? `: ${err.message}` : "";
+        const cleanErr = err?.message ? sanitizeErrorForUser(err.message, "") : "";
+        const detail = cleanErr ? `: ${cleanErr}` : "";
         if (activeChatIdRef.current === currentChatId) {
           setChatMessages([
             ...newChatMsgs,
@@ -9099,7 +9408,7 @@ Engine Studio automatically parses these blocks and writes files directly into t
                 e.preventDefault();
                 void generateWithAI();
               }}
-              className="igseek-chat-composer relative flex flex-col gap-3 rounded-[24px] border border-zinc-200 dark:border-white/10 bg-white dark:bg-[#141416]/95 p-4 shadow-xl backdrop-blur-xl transition-colors focus-within:border-zinc-400 dark:focus-within:border-white/20 min-w-0 w-full overflow-hidden"
+              className="igseek-chat-composer relative flex flex-col gap-3 rounded-[28px] border border-zinc-200/90 dark:border-white/12 bg-white dark:bg-[#141416]/95 p-4 shadow-[0_12px_36px_-12px_rgba(0,0,0,0.12)] dark:shadow-[0_16px_44px_-14px_rgba(0,0,0,0.55)] backdrop-blur-xl transition-all focus-within:border-[var(--brand)]/55 focus-within:ring-2 focus-within:ring-[var(--brand)]/12 min-w-0 w-full overflow-hidden"
             >
               <textarea
                 ref={engineStartComposerRef}
@@ -9459,7 +9768,7 @@ Engine Studio automatically parses these blocks and writes files directly into t
                   e.preventDefault();
                   void generateWithAI();
                 }}
-                className="igseek-chat-composer shrink-0 relative flex flex-col rounded-2xl border border-zinc-200 dark:border-white/10 bg-white dark:bg-[#141416]/95 shadow-lg backdrop-blur-xl overflow-hidden min-w-0 w-full"
+                className="igseek-chat-composer shrink-0 relative flex flex-col rounded-[26px] border border-zinc-200/90 dark:border-white/12 bg-white dark:bg-[#141416]/95 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.12)] backdrop-blur-xl transition-all focus-within:border-[var(--brand)]/55 focus-within:ring-2 focus-within:ring-[var(--brand)]/12 overflow-hidden min-w-0 w-full"
               >
                 <textarea
                   ref={engineActiveComposerRef}
@@ -10706,6 +11015,8 @@ function ProfileModal({
                   ))}
                 </div>
               </div>
+
+              <PushNotificationSettingsSection />
             </>
           ) : activeTab === "personalization" ? (
             <div className="rounded-2xl border border-border/70 bg-surface-elevated/40 p-4 sm:p-5 space-y-5 shadow-sm">
@@ -10960,6 +11271,132 @@ function ProfileModal({
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function PushNotificationSettingsSection() {
+  const t = useT();
+  const [supported] = useState(() => isPushNotificationSupported());
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(() => getNotificationPermission());
+  const [enabled, setEnabled] = useState<boolean>(() => isPushNotificationsEnabled());
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    const sync = () => {
+      setPermission(getNotificationPermission());
+      setEnabled(isPushNotificationsEnabled());
+    };
+    window.addEventListener("igseek:notifications-pref-changed", sync);
+    return () => window.removeEventListener("igseek:notifications-pref-changed", sync);
+  }, []);
+
+  const handleToggle = async () => {
+    if (!enabled) {
+      if (supported && permission !== "granted") {
+        const result = await requestPushNotificationPermission();
+        setPermission(result);
+        if (result === "denied") {
+          toast.error(t("Notifications are blocked in browser settings."));
+          return;
+        }
+      }
+      setPushNotificationsEnabled(true);
+      setEnabled(true);
+      toast.success(t("AI push notifications enabled"));
+    } else {
+      setPushNotificationsEnabled(false);
+      setEnabled(false);
+      toast.info(t("AI push notifications paused"));
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      if (supported && permission === "default") {
+        const res = await requestPushNotificationPermission();
+        setPermission(res);
+      }
+      await triggerOrSchedulePushNotification({
+        id: `test_${Date.now()}`,
+        title: t("IGseek AI Push Ready"),
+        body: t("AI can now notify you about Google Tasks, Calendar events, Gmail, and reminders."),
+        source: "general",
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const statusText = !supported
+    ? t("In-app notifications only")
+    : permission === "granted"
+      ? enabled
+        ? t("Active (Tasks, Calendar, Gmail & AI)")
+        : t("Paused")
+      : permission === "denied"
+        ? t("Blocked by browser")
+        : t("Permission needed");
+
+  return (
+    <div className="rounded-xl border border-border/80 bg-surface-elevated/40 p-3.5 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-0.5 min-w-0">
+          <div className="font-medium text-foreground flex items-center gap-1.5">
+            <Bell className="h-3.5 w-3.5 text-brand shrink-0" />
+            <span>{t("AI Push Notifications")}</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            {t("Allow IGseek to send push alerts for Google Tasks, Calendar, Gmail, timers, and reminders.")}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled && permission !== "denied"}
+          onClick={() => void handleToggle()}
+          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+            enabled && permission !== "denied" ? "bg-brand" : "bg-foreground/20"
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+              enabled && permission !== "denied" ? "translate-x-4.5" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/50">
+        <span className="text-[11px] text-muted-foreground truncate">{statusText}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {supported && permission !== "granted" && permission !== "denied" && (
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await requestPushNotificationPermission();
+                setPermission(res);
+                if (res === "granted") {
+                  setEnabled(true);
+                  toast.success(t("Browser push permission granted"));
+                }
+              }}
+              className="rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1 text-[11px] font-medium text-brand hover:bg-brand/20 transition-colors cursor-pointer"
+            >
+              {t("Allow")}
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={testing}
+            onClick={() => void handleTest()}
+            className="rounded-lg border border-border bg-background/70 px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-surface-elevated transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {testing ? t("Sending…") : t("Test push")}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
